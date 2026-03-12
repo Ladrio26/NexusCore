@@ -1,0 +1,665 @@
+<template>
+  <div class="app" :class="{ 'app-with-sidebar': isAuthenticated }">
+    <div class="app-bg" aria-hidden="true" />
+    <NexusParticles />
+    <aside v-if="isAuthenticated" class="app-sidebar">
+      <div class="sidebar-user" v-if="currentUser">
+        <img :src="getAvatarUrl(currentUser)" alt="" class="sidebar-avatar" />
+        <div class="sidebar-username">{{ currentUser.display_name || currentUser.email || '—' }}</div>
+        <div class="sidebar-wallet">
+          <span class="sidebar-wallet-item credits" title="Crédits">💰 {{ wallet.credits }}</span>
+          <span class="sidebar-wallet-item cores" title="Cores">🔷 {{ wallet.cores }}</span>
+          <span class="sidebar-wallet-item fragments" title="Fragments">🧩 {{ wallet.fragments }}</span>
+          <span class="sidebar-wallet-item gold" title="Or">🪙 {{ wallet.gold }}</span>
+        </div>
+      </div>
+      <h1 class="sidebar-title">Nexus Core Arena</h1>
+      <nav class="sidebar-menu">
+        <router-link to="/collection" class="menu-item">Ma Collection</router-link>
+        <router-link to="/team-builder" class="menu-item">Team Builder</router-link>
+        <router-link to="/sanctuary" class="menu-item menu-item-with-indicator">
+          <span>Sanctuaire</span>
+          <span v-if="hasSanctuaryNotification" class="menu-item-indicator" aria-label="Invocation disponible" title="Invocation disponible" />
+        </router-link>
+        <router-link to="/artifacts" class="menu-item">Artefacts</router-link>
+        <router-link to="/guild" class="menu-item">Guilde</router-link>
+        <div class="menu-dropdown">
+          <button type="button" class="menu-item menu-item-trigger" :class="{ open: combatsMenuOpen, 'router-link-active': isCombatsRoute }" @click="combatsMenuOpen = !combatsMenuOpen" aria-haspopup="true" :aria-expanded="combatsMenuOpen">
+            Combats
+          </button>
+          <div v-show="combatsMenuOpen" class="menu-dropdown-panel">
+            <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false">Campagne</router-link>
+            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false">PvP</router-link>
+          </div>
+        </div>
+        <router-link to="/classement" class="menu-item">Classement</router-link>
+        <router-link to="/bestiaire" class="menu-item">Bestiaire</router-link>
+        <div v-if="isAdmin" class="menu-dropdown">
+          <button type="button" class="menu-item menu-item-trigger" :class="{ open: adminMenuOpen, 'router-link-active': isAdminRoute }" @click="adminMenuOpen = !adminMenuOpen" aria-haspopup="true" :aria-expanded="adminMenuOpen">
+            Admin
+          </button>
+          <div v-show="adminMenuOpen" class="menu-dropdown-panel">
+            <router-link to="/admin/unit-builder" class="menu-item menu-subitem" @click="adminMenuOpen = false">Unit Builder</router-link>
+            <router-link to="/admin/player-units" class="menu-item menu-subitem" @click="adminMenuOpen = false">Gestion unités joueurs</router-link>
+            <router-link to="/admin/users" class="menu-item menu-subitem" @click="adminMenuOpen = false">Gestion Utilisateurs</router-link>
+          </div>
+        </div>
+      </nav>
+      <div class="sidebar-bottom">
+        <router-link to="/profile" class="btn-profile menu-item">Profil</router-link>
+        <button type="button" class="btn-logout nx-btn nx-btn-danger" @click="logout">Déconnexion</button>
+      </div>
+    </aside>
+    <main class="app-main" :class="{ 'app-main-fullwidth': route.meta.fullWidth }">
+      <router-view />
+    </main>
+    <Transition name="daily-reward">
+      <div
+        v-if="dailyRewardPopup"
+        class="daily-reward-overlay"
+        @click.self="closeDailyRewardPopup"
+      >
+        <section class="daily-reward-modal nx-panel">
+          <span class="daily-reward-kicker">Connexion quotidienne validée</span>
+          <h2 class="daily-reward-title">Récompense journalière</h2>
+          <p class="daily-reward-text">
+            Ta première connexion du jour t'offre ces ressources :
+          </p>
+          <div class="daily-reward-grid">
+            <div class="daily-reward-card credits">
+              <span class="daily-reward-icon">💰</span>
+              <strong>+{{ dailyRewardPopup.credits }}</strong>
+              <span>Crédits</span>
+            </div>
+            <div class="daily-reward-card cores">
+              <span class="daily-reward-icon">🔷</span>
+              <strong>+{{ dailyRewardPopup.cores }}</strong>
+              <span>Cores</span>
+            </div>
+            <div class="daily-reward-card fragments">
+              <span class="daily-reward-icon">🧩</span>
+              <strong>+{{ dailyRewardPopup.fragments }}</strong>
+              <span>Fragments</span>
+            </div>
+          </div>
+          <button type="button" class="nx-btn daily-reward-close" @click="closeDailyRewardPopup">
+            Super
+          </button>
+        </section>
+      </div>
+    </Transition>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
+import { authToken, clearToken, isAdminUser } from './api';
+import api from './api';
+import { getAvatarUrl } from './utils/avatar';
+import NexusParticles from './components/NexusParticles.vue';
+
+const router = useRouter();
+const route = useRoute();
+const isAuthenticated = computed(() => !!authToken.value);
+const isAdmin = computed(() => {
+  void authToken.value;
+  return isAdminUser();
+});
+const currentUser = ref<{ id: number; email: string; display_name: string; avatar_url?: string | null } | null>(null);
+const adminMenuOpen = ref(false);
+const combatsMenuOpen = ref(false);
+const dailyRewardPopup = ref<{ credits: number; cores: number; fragments: number } | null>(null);
+const dailyRewardTimerId = ref<number | null>(null);
+const dailyRewardCheckInFlight = ref(false);
+const wallet = ref({ credits: 0, cores: 0, fragments: 0, gold: 0 });
+const isAdminRoute = computed(() => route.path.startsWith('/admin'));
+const isCombatsRoute = computed(() => route.path === '/campaign' || route.path === '/pvp');
+const hasSanctuaryNotification = computed(() => (
+  wallet.value.cores >= 10
+  || wallet.value.credits >= 100
+  || wallet.value.fragments >= 100
+));
+
+watch(() => route.path, (path) => {
+  adminMenuOpen.value = path.startsWith('/admin');
+  combatsMenuOpen.value = path === '/campaign' || path === '/pvp';
+}, { immediate: true });
+
+async function fetchCurrentUser() {
+  if (!authToken.value) return;
+  try {
+    const { data } = await api.get('/auth/me');
+    currentUser.value = data.user;
+  } catch {
+    currentUser.value = null;
+  }
+}
+
+async function fetchWallet() {
+  if (!authToken.value) return;
+  try {
+    const { data } = await api.get('/wallet');
+    wallet.value = {
+      credits: Number(data.credits ?? 0),
+      cores: Number(data.cores ?? 0),
+      fragments: Number(data.fragments ?? 0),
+      gold: Number(data.gold ?? 0)
+    };
+  } catch {
+    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0 };
+  }
+}
+
+function handleWalletUpdated(event: Event) {
+  const detail = (event as CustomEvent<{ credits?: number; cores?: number; fragments?: number; gold?: number }>).detail;
+  if (!detail) return;
+  wallet.value = {
+    credits: Number(detail.credits ?? wallet.value.credits ?? 0),
+    cores: Number(detail.cores ?? wallet.value.cores ?? 0),
+    fragments: Number(detail.fragments ?? wallet.value.fragments ?? 0),
+    gold: Number(detail.gold ?? wallet.value.gold ?? 0)
+  };
+}
+
+function closeDailyRewardPopup() {
+  dailyRewardPopup.value = null;
+}
+
+function clearDailyRewardTimer() {
+  if (dailyRewardTimerId.value != null) {
+    window.clearTimeout(dailyRewardTimerId.value);
+    dailyRewardTimerId.value = null;
+  }
+}
+
+function scheduleDailyRewardCheck(nextResetAt?: string | null) {
+  clearDailyRewardTimer();
+  if (!authToken.value) return;
+  let delayMs = 60_000;
+  if (nextResetAt) {
+    const targetMs = new Date(nextResetAt).getTime();
+    if (Number.isFinite(targetMs)) {
+      delayMs = Math.max(1_000, targetMs - Date.now() + 1_000);
+    }
+  }
+  dailyRewardTimerId.value = window.setTimeout(() => {
+    void checkDailyReward();
+  }, delayMs);
+}
+
+function emitWalletUpdated(wallet?: { credits: number; cores: number; fragments: number; gold?: number; ascension_essence?: number }) {
+  if (!wallet) return;
+  window.dispatchEvent(new CustomEvent('wallet-updated', { detail: wallet }));
+}
+
+async function checkDailyReward() {
+  if (!authToken.value || dailyRewardCheckInFlight.value) return;
+  dailyRewardCheckInFlight.value = true;
+  try {
+    const { data } = await api.post('/auth/daily-reward/claim');
+    scheduleDailyRewardCheck(data.nextResetAt);
+    emitWalletUpdated(data.wallet);
+    if (data.claimed && data.reward) {
+      dailyRewardPopup.value = {
+        credits: Number(data.reward.credits ?? 0),
+        cores: Number(data.reward.cores ?? 0),
+        fragments: Number(data.reward.fragments ?? 0)
+      };
+    }
+  } catch {
+    scheduleDailyRewardCheck();
+  } finally {
+    dailyRewardCheckInFlight.value = false;
+  }
+}
+
+function handleWindowResume() {
+  if (document.visibilityState === 'hidden') return;
+  void checkDailyReward();
+}
+
+watch(authToken, async (token) => {
+  clearDailyRewardTimer();
+  if (!token) {
+    currentUser.value = null;
+    dailyRewardPopup.value = null;
+    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0 };
+    return;
+  }
+  await fetchCurrentUser();
+  await fetchWallet();
+  await checkDailyReward();
+}, { immediate: true });
+
+onMounted(() => {
+  window.addEventListener('profile-updated', fetchCurrentUser);
+  window.addEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.addEventListener('focus', handleWindowResume);
+  document.addEventListener('visibilitychange', handleWindowResume);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('profile-updated', fetchCurrentUser);
+  window.removeEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.removeEventListener('focus', handleWindowResume);
+  document.removeEventListener('visibilitychange', handleWindowResume);
+  clearDailyRewardTimer();
+});
+
+function logout() {
+  clearToken();
+  currentUser.value = null;
+  router.push('/login');
+}
+</script>
+
+<style scoped>
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: #f9fafb;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  position: relative;
+}
+
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: url('/images/Fond.png') center center / cover no-repeat;
+  pointer-events: none;
+}
+
+.app.app-with-sidebar {
+  flex-direction: row;
+}
+
+.app-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border-right: 1px solid rgba(0, 255, 255, 0.15);
+  background: rgba(10, 15, 30, 0.65);
+  box-shadow: 0 0 25px rgba(0, 255, 255, 0.05);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  overflow-y: auto;
+  z-index: 5;
+}
+
+.sidebar-user {
+  padding: 20px 16px;
+  text-align: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.sidebar-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.4);
+}
+
+.sidebar-username {
+  margin-top: 0.5rem;
+}
+
+.sidebar-wallet {
+  margin-top: 0.45rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+  color: #cbd5e1;
+}
+
+.sidebar-wallet-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  white-space: nowrap;
+}
+
+.sidebar-wallet-item.credits {
+  color: #fcd34d;
+}
+
+.sidebar-wallet-item.cores {
+  color: #93c5fd;
+}
+
+.sidebar-wallet-item.fragments {
+  color: #c4b5fd;
+}
+
+.sidebar-wallet-item.gold {
+  color: #f59e0b;
+}
+.sidebar-username {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #e5e7eb;
+  word-break: break-word;
+}
+
+.sidebar-title {
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 1rem 1.25rem 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e5e7eb;
+}
+
+.sidebar-menu {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0.75rem;
+  overflow-y: auto;
+}
+
+.sidebar-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+.btn-profile {
+  display: block;
+  color: rgba(0, 255, 255, 0.9);
+  text-decoration: none;
+  text-align: left;
+  padding: 0.55rem 0.9rem;
+  border-radius: 0.6rem;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.btn-profile:hover {
+  background: rgba(0, 255, 255, 0.12);
+  border-color: rgba(0, 255, 255, 0.35);
+  box-shadow: 0 0 14px rgba(0, 255, 255, 0.25);
+}
+.btn-profile.router-link-active {
+  color: #00ffff;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0.75rem;
+}
+
+.sidebar-nav a {
+  display: block;
+  color: #e5e7eb;
+  text-decoration: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.menu-item {
+  position: relative;
+  display: block;
+  color: #e5e7eb;
+  text-decoration: none;
+  padding: 0.55rem 0.9rem;
+  border-radius: 0.6rem;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease,
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.menu-item-with-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.menu-item-indicator {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, #fef08a, #f59e0b 60%, #dc2626 100%);
+  box-shadow:
+    0 0 0 2px rgba(15, 23, 42, 0.9),
+    0 0 10px rgba(245, 158, 11, 0.75);
+}
+
+.menu-item:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 255, 255, 0.15),
+    rgba(0, 255, 255, 0.05)
+  );
+  border-color: rgba(56, 189, 248, 0.3);
+  transform: translateX(6px);
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.2);
+}
+
+.menu-item.router-link-active {
+  position: relative;
+  color: #00ffff;
+}
+
+.menu-item.router-link-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(to bottom, #00ffff, #8a2be2);
+  box-shadow: 0 0 10px #00ffff;
+  border-radius: 999px;
+}
+
+.menu-dropdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.menu-item-trigger {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  font: inherit;
+  color: inherit;
+}
+.menu-item-trigger.open {
+  background: linear-gradient(90deg, rgba(0, 255, 255, 0.12), rgba(0, 255, 255, 0.04));
+  border-color: rgba(56, 189, 248, 0.25);
+}
+.menu-dropdown-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-left: 1rem;
+  border-left: 2px solid rgba(0, 255, 255, 0.2);
+  margin-left: 0.5rem;
+}
+.menu-subitem {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+.menu-subitem.router-link-active {
+  color: #00ffff;
+}
+
+.btn-logout {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(248, 113, 113, 0.6);
+  background: transparent;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 0.9rem;
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s ease;
+}
+
+.btn-logout:hover {
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.app-main {
+  flex: 1;
+  padding: 2rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.app-main.app-main-fullwidth {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  max-width: 100%;
+}
+
+.daily-reward-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.daily-reward-modal {
+  width: min(100%, 520px);
+  padding: 1.75rem;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  background:
+    radial-gradient(circle at top, rgba(56, 189, 248, 0.22), transparent 55%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.98));
+  box-shadow:
+    0 24px 80px rgba(2, 6, 23, 0.72),
+    0 0 30px rgba(34, 211, 238, 0.14);
+  text-align: center;
+}
+
+.daily-reward-kicker {
+  display: inline-block;
+  margin-bottom: 0.85rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  color: #67e8f9;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.daily-reward-title {
+  margin: 0;
+  font-size: 1.9rem;
+  color: #f8fafc;
+}
+
+.daily-reward-text {
+  margin: 0.9rem 0 1.4rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.daily-reward-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.daily-reward-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1rem 0.75rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.72);
+  color: #e2e8f0;
+}
+
+.daily-reward-card strong {
+  font-size: 1.45rem;
+  color: #f8fafc;
+}
+
+.daily-reward-card.credits {
+  box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.18);
+}
+
+.daily-reward-card.cores {
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.22);
+}
+
+.daily-reward-card.fragments {
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.22);
+}
+
+.daily-reward-icon {
+  font-size: 1.6rem;
+}
+
+.daily-reward-close {
+  margin-top: 1.4rem;
+  min-width: 160px;
+}
+
+.daily-reward-enter-active,
+.daily-reward-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.daily-reward-enter-from,
+.daily-reward-leave-to {
+  opacity: 0;
+}
+
+.daily-reward-enter-from .daily-reward-modal,
+.daily-reward-leave-to .daily-reward-modal {
+  transform: translateY(12px) scale(0.98);
+}
+
+@media (max-width: 640px) {
+  .daily-reward-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+

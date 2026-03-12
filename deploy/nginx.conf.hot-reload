@@ -1,0 +1,64 @@
+# Config nginx pour hot reload : proxy vers Vite (5174) au lieu de servir dist.
+# À copier vers /etc/nginx/sites-enabled/nexuscore.goodloss.conf puis : nginx -t && systemctl reload nginx
+
+#########################################
+#  NE PAS TOUCHER AUX LIGNES EN DESSOUS #
+#########################################
+
+server {
+    server_name nexuscore.goodloss.fr;
+    root /root/web/src/nexuscore.goodloss.fr/frontend/dist;
+
+#########################################
+#  NE PAS TOUCHER AUX LIGNES EN DESSUS  #
+#########################################
+
+    index index.html index.php;
+
+    # API → backend (backend écoute sur PORT=3205)
+    location /api/ {
+        proxy_pass http://127.0.0.1:3205/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # Tout le reste → Vite dev server (WebSocket HMR)
+    location / {
+        proxy_pass http://127.0.0.1:5174;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+
+    # Exécution des fichiers PHP normaux
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_NAME $fastcgi_script_name;
+        fastcgi_index index.php;
+    }
+
+#########################################
+#  NE PAS TOUCHER AUX LIGNES EN DESSOUS #
+#########################################
+
+    access_log /mnt/hdd/web/logs/nexuscore_access.log;
+    error_log /mnt/hdd/web/logs/nexuscore_error.log;
+
+}
+
+#########################################
+#  NE PAS TOUCHER AUX LIGNES EN DESSUS  #
+#########################################

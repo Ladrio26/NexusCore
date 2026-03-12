@@ -1,0 +1,245 @@
+:root {
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--nx-bg-main, #0B1C2F);
+  background: radial-gradient(ellipse 100% 80% at 50% 0%, #132844 0%, var(--nx-bg-main, #0B1C2F) 50%);
+  color: var(--nx-text-primary, #EAF6FF);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  overflow-x: hidden;
+}
+
+button {
+  cursor: pointer;
+}
+
+input,
+button {
+  font-family: inherit;
+}
+
+#nexus-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* Fiche unité (popup) — style jeu, partagé Collection / Bestiaire */
+.nexus-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 30% 20%, rgba(0, 255, 255, 0.08), rgba(0, 0, 0, 0.75));
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.nexus-modal {
+  width: min(860px, 92vw);
+  max-height: 88vh;
+  overflow: auto;
+  border-radius: 18px;
+  background: linear-gradient(160deg, rgba(10, 15, 30, 0.92), rgba(6, 10, 22, 0.92));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.65);
+}
+
+.nexus-modal-header {
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.nexus-modal-header .unit-name {
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: #f8fafc;
+}
+
+.nexus-modal-header .unit-badges {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.nexus-modal-header .badge {
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 1px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(248, 250, 252, 0.95);
+}
+
+.nexus-modal-header .badge.rarity-common { background: rgba(120, 113, 108, 0.7); }
+.nexus-modal-header .badge.rarity-uncommon { background: rgba(34, 197, 94, 0.6); }
+.nexus-modal-header .badge.rarity-rare { background: rgba(59, 130, 246, 0.6); }
+.nexus-modal-header .badge.rarity-epic { background: rgba(168, 85, 247, 0.6); }
+.nexus-modal-header .badge.rarity-legendary { background: rgba(234, 179, 8, 0.7); color: #1f2937; }
+.nexus-modal-header .badge.rarity-mythic { background: rgba(220, 38, 38, 0.6); }
+.nexus-modal-header .badge.element-water { background: rgba(14, 165, 233, 0.6); }
+.nexus-modal-header .badge.element-fire { background: rgba(239, 68, 68, 0.6); }
+.nexus-modal-header .badge.element-plant { background: rgba(34, 197, 94, 0.6); }
+.nexus-modal-header .badge.element-neutral { background: rgba(120, 113, 108, 0.6); }
+
+.nexus-modal .modal-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(248, 250, 252, 0.9);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 160ms ease;
+}
+
+.nexus-modal .modal-close:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+}
+
+.nexus-modal-body {
+  padding: 14px 16px 18px;
+}
+
+.nexus-modal .modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.nexus-modal .modal-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.nexus-modal .modal-card {
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.nexus-modal .card-title {
+  font-size: 0.85rem;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: rgba(0, 255, 255, 0.85);
+  margin: 0 0 10px 0;
+}
+
+.nexus-modal .kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.9rem;
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.nexus-modal .kv span:first-child {
+  color: rgba(203, 213, 225, 0.85);
+}
+
+.nexus-modal .stats-rows .stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 0.9rem;
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.nexus-modal .stats-rows .stat-row span:first-child {
+  color: rgba(203, 213, 225, 0.85);
+}
+
+.nexus-modal .divider-soft {
+  height: 1px;
+  margin: 10px 0;
+  background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.1), transparent);
+}
+
+.nexus-modal .skill-line {
+  font-size: 0.9rem;
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.nexus-modal .skill-line .skill-name {
+  font-weight: 700;
+}
+
+.nexus-modal .skill-line .skill-meta {
+  color: rgba(203, 213, 225, 0.85);
+  margin-left: 8px;
+}
+
+.nexus-modal .spec-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.nexus-modal .spec-card {
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.nexus-modal .spec-name {
+  font-weight: 900;
+  font-size: 0.9rem;
+}
+
+.nexus-modal .spec-bonus {
+  font-size: 0.82rem;
+  color: rgba(203, 213, 225, 0.85);
+  margin-top: 4px;
+}
+
+.nexus-modal .spec-empty {
+  font-size: 0.85rem;
+  color: rgba(148, 163, 184, 0.8);
+  grid-column: 1 / -1;
+}
+
+.nexus-modal .owned-badge-inline {
+  color: #4ade80;
+}
+
+.nexus-modal .locked-badge-inline {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+@media (max-width: 780px) {
+  .nexus-modal .modal-grid,
+  .nexus-modal .modal-grid-2,
+  .nexus-modal .spec-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
