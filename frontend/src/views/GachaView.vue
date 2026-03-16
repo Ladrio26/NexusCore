@@ -146,6 +146,20 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
+@media (max-width: 768px) {
+  .gacha {
+    padding: 0 0.5rem;
+  }
+  .card {
+    padding: 1rem;
+    max-width: 100%;
+  }
+  .wallet {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+}
+
 .status,
 .error {
   margin-top: 1rem;

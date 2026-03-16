@@ -8,6 +8,7 @@ import {
   acceptGuildJoinRequest,
   refuseGuildJoinRequest,
   updateGuildMemberRole,
+  kickGuildMember,
   leaveGuild,
   addGuildCurrency
 } from '../services/guildService.js';
@@ -30,6 +31,9 @@ function sendGuildError(reply, err) {
     return reply.code(400).send({ success: false, error: code, message: err.message });
   }
   if (code === 'ALREADY_IN_GUILD' || code === 'JOIN_REQUEST_ALREADY_PENDING' || code === 'GUILD_NAME_ALREADY_USED' || code === 'TARGET_ALREADY_IN_GUILD' || code === 'CANNOT_CHANGE_LEADER_ROLE' || code === 'INSUFFICIENT_GUILD_COINS' || code === 'INVALID_GUILD_CHAT_MESSAGE' || code === 'GUILD_CHAT_MESSAGE_TOO_LONG') {
+    return reply.code(400).send({ success: false, error: code, message: err.message });
+  }
+  if (code === 'CANNOT_KICK_SELF' || code === 'CANNOT_KICK_LEADER') {
     return reply.code(400).send({ success: false, error: code, message: err.message });
   }
   if (code === 'NOT_IN_GUILD' || code === 'INSUFFICIENT_PERMISSIONS') {
@@ -133,6 +137,16 @@ export function registerGuildRoutes(fastify, authenticate, requireAdminUser) {
       return { success: true, ...result };
     } catch (err) {
       fastify.log?.error?.(err, 'Guild role update error');
+      return sendGuildError(reply, err);
+    }
+  });
+
+  fastify.post('/guild/members/:memberUserId/kick', preAuth, async (request, reply) => {
+    try {
+      const result = await kickGuildMember(request.user.id, request.params?.memberUserId);
+      return { success: true, ...result };
+    } catch (err) {
+      fastify.log?.error?.(err, 'Guild kick error');
       return sendGuildError(reply, err);
     }
   });

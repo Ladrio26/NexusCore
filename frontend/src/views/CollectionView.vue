@@ -240,39 +240,39 @@
               <section class="modal-card nx-panel">
                 <div class="card-title nx-subtitle">Profil</div>
                 <div class="kv"><span>Rôle</span><span>{{ toRoleFr(detailUnit.role) }}</span></div>
-                <div class="kv"><span>Type</span><span>{{ toAttackTypeFr(detailUnit.attack_type) }} · {{ toArchetypeFr(detailUnit.archetype) }}</span></div>
-                <div class="kv"><span>Élément</span><span>{{ toElementFr(detailUnit.element) }}</span></div>
-                <div class="kv"><span>Traits</span><span>{{ formatTraits(detailUnit.traits) || '—' }}</span></div>
-                <div v-if="noyauDescription" class="kv noyau-kv"><span>Noyau</span><span class="noyau-desc">{{ noyauDescription }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_TYPE">Type</span><span>{{ toAttackTypeFr(detailUnit.attack_type) }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_ELEMENT">Élément</span><span>{{ toElementFr(detailUnit.element) }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_TRAITS">Traits</span><span>{{ formatTraits(detailUnit.traits) || '—' }}</span></div>
+                <div v-if="noyauDescription" class="kv noyau-kv"><span :title="TOOLTIP_NOYAU">Noyau</span><span class="noyau-desc">{{ noyauDescription }}</span></div>
               </section>
               <section class="modal-card nx-panel">
                 <div class="card-title nx-subtitle">Stats</div>
                 <div class="stats-rows stats-rows-compact">
-                  <div class="stat-row"><span>{{ STAT_FR.HP }}</span><span>{{ detailUnit.maxHp ?? detailUnit.base_hp }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.ATK }}</span><span>{{ detailUnit.attack ?? detailUnit.base_attack }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.DEF }}</span><span>{{ detailUnit.defense ?? detailUnit.base_defense }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.SPD }}</span><span>{{ (detailUnit.fatigue ?? 0) > 0 ? effectiveSpeed(detailUnit) : (detailUnit.speed ?? detailUnit.base_speed) }}{{ (detailUnit.fatigue ?? 0) > 0 ? ` (-${speedReductionPercent(detailUnit)}%)` : '' }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.MASTERY }}</span><span>{{ detailUnit.mastery }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_HP">{{ STAT_FR.HP }}</span><span>{{ detailUnit.maxHp ?? detailUnit.base_hp }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_ATK">{{ STAT_FR.ATK }}</span><span>{{ detailUnit.attack ?? detailUnit.base_attack }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_DEF">{{ STAT_FR.DEF }}</span><span>{{ detailUnit.defense ?? detailUnit.base_defense }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_SPD">{{ STAT_FR.SPD }}</span><span>{{ (detailUnit.fatigue ?? 0) > 0 ? effectiveSpeed(detailUnit) : (detailUnit.speed ?? detailUnit.base_speed) }}{{ (detailUnit.fatigue ?? 0) > 0 ? ` (-${speedReductionPercent(detailUnit)}%)` : '' }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_MASTERY">{{ STAT_FR.MASTERY }}</span><span>{{ detailUnit.mastery }}</span></div>
                 </div>
               </section>
             </div>
             <div class="modal-grid-2 modal-grid-compact">
               <section class="modal-card nx-panel">
                 <div class="card-title nx-subtitle">État</div>
-                <div class="kv"><span>XP</span><span>{{ detailUnit.xp }} / {{ detailUnit.xpRequired }}</span></div>
-                <div class="kv"><span>Puissance</span><span>{{ detailUnit.power_level ?? 1 }} (+{{ Math.max(0, ((detailUnit.power_level ?? 1) - 1) * 5) }}%)</span></div>
+                <div class="kv"><span :title="TOOLTIP_XP">XP</span><span>{{ detailUnit.xp }} / {{ detailUnit.xpRequired }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_PUISSANCE">Puissance</span><span>{{ detailUnit.power_level ?? 1 }} (+{{ Math.max(0, ((detailUnit.power_level ?? 1) - 1) * 5) }}%)</span></div>
                 <div class="kv"><span>Doublons obtenus</span><span>{{ duplicateCount(detailUnit) }}</span></div>
-                <div class="kv"><span>Ouvertures totales</span><span>{{ detailUnit.power_openings ?? 1 }}</span></div>
-                <div class="kv"><span>Progression puissance</span><span>{{ powerProgressLabel(detailUnit) }}</span></div>
-                <div class="kv"><span>Fatigue</span><span>{{ detailUnit.fatigue }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_OUVERTURES_TOTALES">Ouvertures totales</span><span>{{ detailUnit.power_openings ?? 1 }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_PROGRESSION_PUISSANCE">Progression puissance</span><span>{{ powerProgressLabel(detailUnit) }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_FATIGUE">Fatigue</span><span>{{ detailUnit.fatigue }}</span></div>
                 <div class="kv"><span>Blessure</span><span>{{ detailUnit.injury_level ?? '—' }}</span></div>
               </section>
               <section v-if="canAscend" class="modal-card nx-panel ascend-section">
-                <div class="card-title nx-subtitle">✨ Spécialisation</div>
-                <p class="ascend-desc">Niveau 50 sans spé. Choisir A ou B (coût : 1 essence).</p>
+                <div class="card-title nx-subtitle" :title="TOOLTIP_SPEC">✨ Spécialisation</div>
+                <p class="ascend-desc">Niveau 50 sans spé. Choisir la spécialisation A ou B (coût : 1 essence).</p>
                 <div class="ascend-choices">
-                  <label class="ascend-choice"><input type="radio" v-model="pendingSpecChoice" value="A" /> A</label>
-                  <label class="ascend-choice"><input type="radio" v-model="pendingSpecChoice" value="B" /> B</label>
+                  <label class="ascend-choice"><input type="radio" v-model="pendingSpecChoice" value="A" /> Spé A</label>
+                  <label class="ascend-choice"><input type="radio" v-model="pendingSpecChoice" value="B" /> Spé B</label>
                 </div>
                 <p v-if="ascendError" class="ascend-error">{{ ascendError }}</p>
                 <button type="button" class="nx-btn ascend-validate" :disabled="ascendLoading" @click="validateAscend">
@@ -280,11 +280,18 @@
                 </button>
               </section>
               <section class="modal-card nx-panel unit-skill-section">
-                <h3 class="skill-section-title nx-subtitle">⚡ Compétence</h3>
+                <h3 class="skill-section-title nx-subtitle">
+                  ⚡ Compétence
+                  <span v-if="detailUnit && hasSpec(detailUnit) && detailUnit.specialization" class="spec-badge-chosen">
+                    — Spécialisation {{ String(detailUnit.specialization).toUpperCase() }}
+                  </span>
+                </h3>
+                <p v-if="skillCooldown != null" class="skill-cd-badge" :title="TOOLTIP_CD">CD : {{ skillCooldown }} action{{ skillCooldown > 1 ? 's' : '' }}</p>
                 <p class="skill-description-text">{{ descriptionSkill }}</p>
                 <div class="unit-spec-section">
-                  <p v-if="descriptionSpecA" class="spec-line"><strong>A</strong> — {{ descriptionSpecA }}</p>
-                  <p v-if="descriptionSpecB" class="spec-line"><strong>B</strong> — {{ descriptionSpecB }}</p>
+                  <p v-if="detailUnit && !hasSpec(detailUnit)" class="spec-section-title" :title="TOOLTIP_SPEC">Spécialisations</p>
+                  <p v-if="descriptionSpecA && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'A'))" class="spec-line"><strong>Spécialisation A</strong> — {{ descriptionSpecA }}</p>
+                  <p v-if="descriptionSpecB && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'B'))" class="spec-line"><strong>Spécialisation B</strong> — {{ descriptionSpecB }}</p>
                   <p v-if="!descriptionSpecA && !descriptionSpecB" class="spec-line spec-empty">—</p>
                 </div>
               </section>
@@ -340,6 +347,24 @@ import {
 } from '../utils/i18nFr';
 import { normalizeSkillDescription } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
+import {
+  TOOLTIP_TYPE,
+  TOOLTIP_ELEMENT,
+  TOOLTIP_TRAITS,
+  TOOLTIP_NOYAU,
+  TOOLTIP_HP,
+  TOOLTIP_ATK,
+  TOOLTIP_DEF,
+  TOOLTIP_SPD,
+  TOOLTIP_MASTERY,
+  TOOLTIP_CD,
+  TOOLTIP_SPEC,
+  TOOLTIP_XP,
+  TOOLTIP_PUISSANCE,
+  TOOLTIP_OUVERTURES_TOTALES,
+  TOOLTIP_PROGRESSION_PUISSANCE,
+  TOOLTIP_FATIGUE
+} from '../utils/unitPopupTooltips';
 
 type CollectionUnit = {
   user_unit_id: number;
@@ -563,6 +588,29 @@ function formatTraits(t: CollectionUnit['traits']): string {
   return arr.map(toTraitFr).join(', ');
 }
 
+function getMainSkillCooldown(skillData: CollectionUnit['skill_data']): number | null {
+  if (!skillData) return null;
+  let data: Record<string, unknown>;
+  if (typeof skillData === 'string') {
+    try {
+      data = JSON.parse(skillData) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  } else {
+    data = skillData as Record<string, unknown>;
+  }
+  const skills = data.skills as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(skills)) {
+    const active = skills.find((s) => String(s?.type ?? '').toUpperCase() === 'ACTIVE');
+    const cd = active && typeof active.cd_actions === 'number' ? active.cd_actions : null;
+    if (cd != null) return cd;
+  }
+  const skill = (data.skill ?? data.basic ?? data) as Record<string, unknown> | undefined;
+  if (skill && typeof skill.cd_actions === 'number') return skill.cd_actions;
+  return null;
+}
+
 function buildSkillDescription(skillData: CollectionUnit['skill_data']): string {
   if (!skillData) return 'Compétence de base sans effet particulier.';
   let data: Record<string, unknown>;
@@ -582,6 +630,8 @@ function buildSkillDescription(skillData: CollectionUnit['skill_data']): string 
   const cd = s.cd_actions != null ? `CD ${s.cd_actions}` : '';
   return [label, mult, cd].filter(Boolean).join(' • ') || label;
 }
+
+const skillCooldown = computed(() => getMainSkillCooldown(detailUnit.value?.skill_data ?? null));
 
 const skillDescription = computed(() =>
   detailUnit.value ? buildSkillDescription(detailUnit.value.skill_data ?? null) : ''
@@ -765,6 +815,28 @@ const specBModifierText = computed(() =>
 @media (max-width: 1200px) {
   .collection-wrapper {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .collection {
+    padding: 1rem;
+  }
+  .collection-header {
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .page-title {
+    font-size: 1.35rem;
+  }
+  .collection-wrapper {
+    gap: 1rem;
+  }
+  .element-column {
+    padding: 1rem;
+  }
+  .collection-sort-select {
+    min-width: 120px;
   }
 }
 
@@ -1097,11 +1169,36 @@ const specBModifierText = computed(() =>
   color: #e2e8f0;
 }
 
+.spec-badge-chosen {
+  font-weight: 600;
+  color: rgba(0, 255, 200, 0.95);
+}
+
+.skill-cd-badge {
+  display: inline-block;
+  margin: 0 0 8px 0;
+  padding: 4px 10px;
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #c7d2fe;
+}
+
 .skill-description-text {
   margin: 0;
   font-size: 0.9rem;
   line-height: 1.4;
   color: #cbd5e1;
+}
+
+.skill-cd-badge {
+  display: inline-block;
+  margin: 0 0 8px 0;
+  padding: 4px 10px;
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #c7d2fe;
 }
 
 .unit-spec-section {

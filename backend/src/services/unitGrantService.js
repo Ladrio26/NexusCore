@@ -83,8 +83,8 @@ export async function grantSummonedUnitToUser(userId, unitId, rarity, executor =
 
   if (isNewUnit) {
     await runQuery(
-      `INSERT INTO user_units (user_id, unit_id, level, xp, fatigue, injury_level, is_injured, power_level, power_openings)
-       VALUES (?, ?, 1, 0, 0, 0, 0, 1, 1)`,
+      `INSERT INTO user_units (user_id, unit_id, level, xp, fatigue, fatigue_last_update, injury_level, is_injured, power_level, power_openings)
+       VALUES (?, ?, 1, 0, 0, NOW(), 0, 0, 1, 1)`,
       [userId, unitId]
     );
   } else {

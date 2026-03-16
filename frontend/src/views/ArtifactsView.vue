@@ -973,4 +973,13 @@ onMounted(() => {
     width: 100%;
   }
 }
+
+@media (max-width: 768px) {
+  .artifacts-page {
+    padding: 1rem;
+  }
+  .artifacts-layout {
+    gap: 12px;
+  }
+}
 </style>

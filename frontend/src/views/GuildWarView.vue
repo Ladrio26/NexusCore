@@ -1198,6 +1198,26 @@ onUnmounted(() => {
 
 /* ── Tabs ───────────────────────────────────────────────────────────────── */
 .gw-tabs { display: flex; gap: 8px; padding: 10px 16px; }
+@media (max-width: 768px) {
+  .gw-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px 12px;
+  }
+  .gw-tab-btn {
+    flex-shrink: 0;
+  }
+  .gw-view {
+    padding: 0 1rem 40px;
+  }
+  .gw-defense-grid {
+    grid-template-columns: 1fr;
+  }
+  .gw-target-slots {
+    grid-template-columns: 1fr;
+  }
+}
 .gw-tab-btn {
   padding: 7px 18px;
   border-radius: 10px;

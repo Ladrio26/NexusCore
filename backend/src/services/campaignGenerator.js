@@ -87,11 +87,7 @@ function getXpForFight(chapter, isBoss) {
 
 // Nombre d’ennemis par chapitre / mode
 function getEnemyCount(chapter, isBoss, mode) {
-  if (mode === 'hard') return 5;
-  // Normal
-  if (chapter <= 3) return 3;
-  if (chapter <= 7) return 4;
-  return 5;
+  return 6;
 }
 
 // Cap de rareté max selon mode / chapitre
@@ -188,24 +184,21 @@ function fromJsonElement(el) {
 // Règles de CAC / distance
 function pickRangeCategoryForSlot(dominantElement, currentCounts, totalPlanned, rng) {
   const { cac, distance } = currentCounts;
-  // Contraintes globales
-  if (cac === 0 && totalPlanned - (cac + distance) === 1) {
-    // Dernier slot et encore aucun CAC => CAC obligatoire
-    return 'cac';
-  }
-  if (distance >= 3) return 'cac';
+  const remaining = totalPlanned - (cac + distance);
+  // Max 5 CAC (au moins 1 distance), max 5 distance (au moins 1 CAC)
+  if (cac >= 5) return 'distance';
+  if (distance >= 5) return 'cac';
+  if (distance === 0 && remaining === 1) return 'distance';
+  if (cac === 0 && remaining === 1) return 'cac';
 
   // Biais par dominante
   const r = rng();
   if (dominantElement === 'feu') {
-    // Plus de distance
     return r < 0.6 ? 'distance' : 'cac';
   }
   if (dominantElement === 'plante') {
-    // Plus de CAC
     return r < 0.7 ? 'cac' : 'distance';
   }
-  // Eau : équilibré
   return r < 0.5 ? 'cac' : 'distance';
 }
 

@@ -235,11 +235,20 @@ button {
   color: rgba(148, 163, 184, 0.9);
 }
 
-@media (max-width: 780px) {
+@media (max-width: 768px) {
+  .nexus-modal {
+    width: min(95vw, 100%);
+    max-height: 90vh;
+  }
+
   .nexus-modal .modal-grid,
   .nexus-modal .modal-grid-2,
   .nexus-modal .spec-grid {
     grid-template-columns: 1fr;
+  }
+
+  .nexus-modal-overlay {
+    padding: 0.5rem;
   }
 }
 

@@ -18,8 +18,8 @@ import { getToken, isAdminUser } from './api';
 
 const routes = [
   { path: '/', redirect: '/collection' },
-  { path: '/login', component: LoginView, meta: { guestOnly: true } },
-  { path: '/register', component: RegisterView, meta: { guestOnly: true } },
+  { path: '/login', component: LoginView, meta: { guestOnly: true, authPage: true } },
+  { path: '/register', component: RegisterView, meta: { guestOnly: true, authPage: true } },
   { path: '/dashboard', redirect: '/collection' },
   { path: '/team-builder', component: TeamBuilderView, meta: { requiresAuth: true } },
   { path: '/collection/:userId?', component: CollectionView, meta: { requiresAuth: true } },
@@ -38,7 +38,10 @@ const routes = [
   { path: '/admin/unit-builder', component: AdminUnitBuilder, meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
   { path: '/admin/player-units', component: () => import('./views/AdminPlayerUnits.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
   { path: '/admin/player-artifacts', component: () => import('./views/AdminPlayerArtifacts.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
-  { path: '/admin/users', component: () => import('./views/AdminUsers.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } }
+  { path: '/admin/users', component: () => import('./views/AdminUsers.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
+  { path: '/faq', component: () => import('./views/FAQView.vue'), meta: { requiresAuth: true } },
+  { path: '/feedback', component: () => import('./views/FeedbackView.vue'), meta: { requiresAuth: true } },
+  { path: '/admin/feedback', component: () => import('./views/AdminFeedbackView.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } }
 ];
 
 const router = createRouter({

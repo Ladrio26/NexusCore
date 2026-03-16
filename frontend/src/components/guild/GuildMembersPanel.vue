@@ -47,6 +47,14 @@
             >
               {{ loadingRoleUserId === member.user_id ? '...' : 'Rétrograder' }}
             </button>
+            <button
+              type="button"
+              class="nx-btn nx-btn-kick nx-btn-small"
+              :disabled="kickLoadingUserId === member.user_id"
+              @click="confirmKick(member)"
+            >
+              {{ kickLoadingUserId === member.user_id ? '...' : 'Expulser' }}
+            </button>
           </div>
         </div>
       </article>
@@ -63,13 +71,21 @@ defineProps<{
   currentRole: string | null;
   guildCoins: number;
   loadingRoleUserId: number | null;
+  kickLoadingUserId: number | null;
   leaveLoading?: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'change-role', payload: { userId: number; role: 'officer' | 'member' }): void;
+  (event: 'kick', payload: { userId: number }): void;
   (event: 'leave'): void;
 }>();
+
+function confirmKick(member: { user_id: number; display_name: string }) {
+  if (window.confirm(`Expulser ${member.display_name} de la guilde ?`)) {
+    emit('kick', { userId: member.user_id });
+  }
+}
 
 function roleLabel(role: string) {
   if (role === 'leader') return 'Leader';
@@ -233,6 +249,18 @@ function formatDate(value: string) {
 .member-actions :deep(.nx-btn-small) {
   padding: 4px 10px;
   font-size: 0.78rem;
+}
+
+.nx-btn-kick {
+  background: rgba(220, 38, 38, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.nx-btn-kick:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.32);
+  border-color: rgba(239, 68, 68, 0.7);
+  color: #fecaca;
 }
 
 @media (max-width: 640px) {

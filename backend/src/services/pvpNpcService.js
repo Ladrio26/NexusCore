@@ -7,7 +7,11 @@ import { computeScaledStats } from '../../../core/combatEngine.js';
 
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 
-/** Nouvelle grille PvP PNJ (image de config): division -> level, rareté min/max, bonus artefacts. */
+/**
+ * Grille PvP PNJ selon le tableau de config joint.
+ * Bronze 3 → Challenger 1 : niveau unités, rareté min/max, bonus artefacts.
+ * Les boss de campagne sont exclus (géré par getBossUnitCodes).
+ */
 const ELO_TIERS = [
   { min: 0, max: 99, level: 1, rarityMin: 'common', rarityMax: 'common', artifactBonus: 0, specCount: 0 }, // Bronze 3
   { min: 100, max: 199, level: 5, rarityMin: 'common', rarityMax: 'uncommon', artifactBonus: 0, specCount: 0 }, // Bronze 2
@@ -21,12 +25,12 @@ const ELO_TIERS = [
   { min: 900, max: 999, level: 45, rarityMin: 'uncommon', rarityMax: 'epic', artifactBonus: 40, specCount: 0 }, // Platine 3
   { min: 1000, max: 1099, level: 50, rarityMin: 'uncommon', rarityMax: 'legendary', artifactBonus: 50, specCount: 0 }, // Platine 2
   { min: 1100, max: 1199, level: 50, rarityMin: 'uncommon', rarityMax: 'legendary', artifactBonus: 60, specCount: 0 }, // Platine 1
-  { min: 1200, max: 1299, level: 50, rarityMin: 'epic', rarityMax: 'legendary', artifactBonus: 70, specCount: 1 }, // Diamant 3
-  { min: 1300, max: 1399, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 80, specCount: 2 }, // Diamant 2
-  { min: 1400, max: 1499, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 90, specCount: 3 }, // Diamant 1
-  { min: 1500, max: 1599, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 100, specCount: 4 }, // Master 1
-  { min: 1600, max: 1699, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 150, specCount: 5 }, // Grand Master 1
-  { min: 1700, max: 9999, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 200, specCount: 6 } // Challenger 1
+  { min: 1200, max: 1299, level: 50, rarityMin: 'epic', rarityMax: 'legendary', artifactBonus: 70, specCount: 0 }, // Diamant 3
+  { min: 1300, max: 1399, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 80, specCount: 0 }, // Diamant 2
+  { min: 1400, max: 1499, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 90, specCount: 0 }, // Diamant 1
+  { min: 1500, max: 1599, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 100, specCount: 0 }, // Master 1
+  { min: 1600, max: 1699, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 150, specCount: 0 }, // Grand Master 1
+  { min: 1700, max: 9999, level: 50, rarityMin: 'epic', rarityMax: 'mythic', artifactBonus: 200, specCount: 0 } // Challenger 1
 ];
 
 function getTierForElo(elo) {

@@ -301,12 +301,25 @@ export async function findOpponent(attackerId, excludeDefenderId = null) {
 
 /**
  * Enregistre une notification pour un joueur.
+ * @param {object} [dataOrExecutor] - données JSON (ex: { result: 'win'|'loss', elo_delta }) ou objet tx avec .query
+ * @param {object} [executor] - tx quand dataOrExecutor est des données
  */
-export async function createNotification(userId, type, message, executor = null) {
-  const runQuery = executor?.query ?? query;
+export async function createNotification(userId, type, message, dataOrExecutor = null, executor = null) {
+  let data = null;
+  let runExecutor = executor;
+  if (dataOrExecutor && typeof dataOrExecutor === 'object') {
+    if (typeof dataOrExecutor.query === 'function') {
+      runExecutor = dataOrExecutor;
+    } else {
+      data = dataOrExecutor;
+      runExecutor = executor;
+    }
+  }
+  const runQuery = runExecutor?.query ?? query;
+  const dataJson = data != null ? JSON.stringify(data) : null;
   await runQuery(
-    'INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)',
-    [userId, type, message]
+    'INSERT INTO notifications (user_id, type, message, data) VALUES (?, ?, ?, ?)',
+    [userId, type, message, dataJson]
   );
 }
 
@@ -342,12 +355,14 @@ export async function recordPvpBattle(attackerId, defenderId, defenderType, atta
         : Number(defenderEloBefore ?? 0);
     }
 
+    let defenderDelta = null;
     if (!isDraw) {
-      const { attackerDelta, defenderDelta } = computePvpEloDeltas(
+      const { attackerDelta, defenderDelta: defDelta } = computePvpEloDeltas(
         lockedAttackerElo,
         lockedDefenderElo,
         attackerWon
       );
+      defenderDelta = defDelta;
       attackerEloAfter = await updateElo(attackerId, lockedAttackerElo, attackerDelta, tx);
       if (defenderType === 'player' && defenderId) {
         defenderEloAfter = await updateElo(defenderId, lockedDefenderElo, defenderDelta, tx);
@@ -376,17 +391,24 @@ export async function recordPvpBattle(attackerId, defenderId, defenderType, atta
 
     if (defenderType === 'player' && defenderId) {
       const attackerName = attackerRow?.display_name || 'Un joueur';
-      await createNotification(
-        defenderId,
-        'pvp_attack',
-        `Votre défense PvP a été attaquée par ${attackerName}.`,
-        tx
-      );
+      let pvpMsg;
+      let pvpData = null;
+      if (isDraw) {
+        pvpMsg = `Vous avez été attaqué en PvP par "${attackerName}" : Match nul.`;
+        pvpData = { result: 'draw' };
+      } else {
+        const defenderWon = !attackerWon;
+        const sign = defenderDelta >= 0 ? '+' : '';
+        pvpMsg = `Vous avez été attaqué en PvP par "${attackerName}" : ${defenderWon ? 'Victoire' : 'Défaite'} ${sign}${defenderDelta} Elo.`;
+        pvpData = { result: defenderWon ? 'win' : 'loss', elo_delta: defenderDelta };
+      }
+      await createNotification(defenderId, 'pvp_attack', pvpMsg, pvpData, tx);
       for (const reward of defenderRankRewardResult.rewards) {
         await createNotification(
           defenderId,
           'pvp_rank_reward',
           `Palier PvP atteint : ${reward.label}. Récompense obtenue : ${formatRewardSummary(reward)}.`,
+          null,
           tx
         );
       }
@@ -397,6 +419,7 @@ export async function recordPvpBattle(attackerId, defenderId, defenderType, atta
         attackerId,
         'pvp_rank_reward',
         `Palier PvP atteint : ${reward.label}. Récompense obtenue : ${formatRewardSummary(reward)}.`,
+        null,
         tx
       );
     }

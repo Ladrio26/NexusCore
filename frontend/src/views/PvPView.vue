@@ -265,6 +265,7 @@ async function handleBattleFinalized(payload: Record<string, any>) {
     rankRewardPopup.value = [...payload.rank_rewards];
   }
   await loadPvpMe();
+  window.dispatchEvent(new Event('notifications-refresh'));
 }
 
 function formatRewardParts(reward: RankReward) {
@@ -492,5 +493,25 @@ onMounted(() => {
 .rank-reward-popup-enter-from .pvp-rank-popup,
 .rank-reward-popup-leave-to .pvp-rank-popup {
   transform: translateY(12px) scale(0.98);
+}
+
+@media (max-width: 768px) {
+  .pvp {
+    padding: 0.75rem;
+  }
+  .card {
+    padding: 1rem 1.25rem;
+    max-width: 100%;
+  }
+  .pvp-elo-value {
+    font-size: 1.25rem;
+  }
+  .pvp-select {
+    max-width: 100%;
+  }
+  .pvp-unit-row-label {
+    width: 60px;
+    flex: 0 0 60px;
+  }
 }
 </style>

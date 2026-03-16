@@ -17,7 +17,8 @@
         }"
         @mouseenter="$emit('unit-hover', u)"
         @mouseleave="$emit('unit-hover', null)"
-        @click="$emit('unit-click', u)"
+        @click="onUnitTap(u)"
+        @touchend="onUnitTap(u, $event)"
       >
         <UnitCircle
           :ref="(el) => registerUnitRef(u.id, el)"
@@ -43,7 +44,8 @@
         }"
         @mouseenter="$emit('unit-hover', u)"
         @mouseleave="$emit('unit-hover', null)"
-        @click="$emit('unit-click', u)"
+        @click="onUnitTap(u)"
+        @touchend="onUnitTap(u, $event)"
       >
         <UnitCircle
           :ref="(el) => registerUnitRef(u.id, el)"
@@ -71,7 +73,8 @@
         }"
         @mouseenter="$emit('unit-hover', u)"
         @mouseleave="$emit('unit-hover', null)"
-        @click="$emit('unit-click', u)"
+        @click="onUnitTap(u)"
+        @touchend="onUnitTap(u, $event)"
       >
         <UnitCircle
           :ref="(el) => registerUnitRef(u.id, el)"
@@ -97,7 +100,8 @@
         }"
         @mouseenter="$emit('unit-hover', u)"
         @mouseleave="$emit('unit-hover', null)"
-        @click="$emit('unit-click', u)"
+        @click="onUnitTap(u)"
+        @touchend="onUnitTap(u, $event)"
       >
         <UnitCircle
           :ref="(el) => registerUnitRef(u.id, el)"
@@ -128,10 +132,20 @@ const props = withDefaults(
   { enemyTeamLabel: 'Équipe Ennemie', targetableUnitIds: () => [], selectedTargetId: null }
 );
 
-defineEmits<{
+const emit = defineEmits<{
   (e: 'unit-hover', unit: unknown): void;
   (e: 'unit-click', unit: unknown): void;
 }>();
+
+/** Clic ou touchend — sur mobile, touchend avec preventDefault pour réponse immédiate */
+function onUnitTap(unit: unknown, e?: Event) {
+  const u = unit as { id?: string };
+  if (!isTargetable(u?.id ?? '')) return;
+  if (e && 'changedTouches' in e) {
+    e.preventDefault();
+  }
+  emit('unit-click', unit);
+}
 
 function isTargetable(unitId: string): boolean {
   return (props.targetableUnitIds || []).some((id) => String(id) === String(unitId));
@@ -187,6 +201,8 @@ defineExpose({
   margin-top: 15px;
   min-height: 0;
   align-items: center;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .team-label {
@@ -292,5 +308,48 @@ defineExpose({
 .float-container {
   position: absolute;
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .battlefield-outer {
+    height: auto;
+    min-height: 200px;
+    gap: 2px 4px;
+    grid-template-columns: 1fr;
+  }
+
+  .battle-row {
+    gap: 2px;
+  }
+
+  .team-label,
+  .team-label-enemy,
+  .team-label-ally {
+    display: none;
+  }
+
+  .battle-row.enemy-back,
+  .battle-row.enemy-front,
+  .battle-row.ally-front,
+  .battle-row.ally-back {
+    grid-column: 1;
+  }
+
+  .unit-slot.unit-targetable {
+    /* Zone tactile plus grande (44px min recommandé) + pas de délai 300ms sur mobile */
+    touch-action: manipulation;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .unit-slot.unit-targetable::after {
+    inset: -3px;
+    border-width: 1px;
+  }
+
+  .battle-row.ally-front .unit-slot.unit-active::before,
+  .battle-row.ally-back .unit-slot.unit-active::before {
+    inset: -4px;
+  }
 }
 </style>

@@ -1244,7 +1244,7 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
         }
         for (let i = 0; i < count; i++) {
           await getPool().execute(
-            'INSERT INTO user_units (user_id, unit_id, level, xp, fatigue, injury_level, is_injured) VALUES (?, ?, 1, 0, 0, 0, 0)',
+            'INSERT INTO user_units (user_id, unit_id, level, xp, fatigue, fatigue_last_update, injury_level, is_injured) VALUES (?, ?, 1, 0, 0, NOW(), 0, 0)',
             [userId, unitId]
           );
         }

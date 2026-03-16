@@ -28,7 +28,7 @@ export const ROLE_FR: Record<string, string> = {
   DPS: 'DPS',
   FRONTLINE: 'Frontline',
   BACKLINE: 'Backline',
-  RANGED: 'Distance',
+  RANGED: 'DPS',
   CAC: 'Corps à corps',
   DISTANCE: 'Distance',
   MELEE: 'Corps à corps'

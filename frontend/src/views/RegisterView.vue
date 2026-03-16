@@ -66,10 +66,18 @@ async function onSubmit() {
 
 <style scoped>
 .auth {
+  position: fixed;
+  inset: 0;
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: calc(100vh - 80px);
+  width: 100vw;
+  height: 100vh;
+  background-image: url('/images/NexusLogin.png?v=3'), linear-gradient(90deg, #050810 0%, #0f172a 18%, #1e293b 50%, #0f172a 82%, #050810 100%);
+  background-position: center, 0 0;
+  background-repeat: no-repeat, no-repeat;
+  /* Hauteur 100%, rognage égal à gauche/droite si besoin */
+  background-size: auto 100%, 100% 100%;
 }
 
 .auth-card {
@@ -79,6 +87,7 @@ async function onSubmit() {
   width: 360px;
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.4);
+  margin-top: 10vh;
 }
 
 h2 {
@@ -133,6 +142,15 @@ button {
 
 button:disabled {
   opacity: 0.7;
+}
+
+@media (max-width: 768px) {
+  .auth-card {
+    width: 100%;
+    max-width: 90%;
+    padding: 1.5rem;
+    margin: 0;
+  }
 }
 
 .btn.secondary {

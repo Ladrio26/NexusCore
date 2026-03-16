@@ -51,8 +51,10 @@
             :current-role="guildState.role"
             :guild-coins="guildState.guild_coins"
             :loading-role-user-id="roleUpdateLoadingUserId"
+            :kick-loading-user-id="kickLoadingUserId"
             :leave-loading="leaveLoading"
             @change-role="handleRoleChange"
+            @kick="handleKickMember"
             @leave="handleLeaveGuild"
           />
 
@@ -88,6 +90,8 @@
             v-else-if="activeTab === 'war'"
           />
 
+          <GuildFAQPanel v-else-if="activeTab === 'faq'" />
+
           <GuildChatPanel
             v-else
             :messages="guildMessages"
@@ -119,6 +123,7 @@ import GuildListPanel from '../components/guild/GuildListPanel.vue';
 import GuildMembersPanel from '../components/guild/GuildMembersPanel.vue';
 import GuildPortalPanel from '../components/guild/GuildPortalPanel.vue';
 import GuildRequestsPanel from '../components/guild/GuildRequestsPanel.vue';
+import GuildFAQPanel from '../components/guild/GuildFAQPanel.vue';
 
 type GuildSummary = { id: number; name: string; member_count: number; created_at: string | null };
 type GuildMember = { user_id: number; display_name: string; avatar_url?: string | null; role: string; joined_at: string | null };
@@ -200,7 +205,8 @@ const portalState = ref<PortalState | null>(null);
 const summonResult = ref<{ rarity: string; guild_coins: number; unit: { name?: string | null; image_url?: string | null; element?: string | null; role?: string | null } | null } | null>(null);
 const chatDraft = ref('');
 const feedback = ref({ success: true, message: '' });
-const activeTab = ref<'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war'>('members');
+const activeTab = ref<'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq'>('members');
+const kickLoadingUserId = ref<number | null>(null);
 
 // Notifications d'onglet
 const lastSeenChatMessageId = ref<number>(-1);
@@ -229,12 +235,13 @@ function markChatSeen() {
 }
 
 const availableTabs = computed(() => {
-  const tabs: Array<{ id: 'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war'; label: string }> = [
+  const tabs: Array<{ id: 'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq'; label: string }> = [
     { id: 'members', label: 'Membres' },
     { id: 'portal', label: 'Portail de Guilde' },
     { id: 'activity', label: 'Activité' },
     { id: 'war', label: 'Guerre de Guilde' },
-    { id: 'chat', label: 'Chat de Guilde' }
+    { id: 'chat', label: 'Chat de Guilde' },
+    { id: 'faq', label: 'Guide & FAQ' },
   ];
   if (guildState.value?.permissions?.canManageRequests) {
     tabs.splice(1, 0, { id: 'requests', label: 'Demandes' });
@@ -589,6 +596,22 @@ async function handleRoleChange(payload: { userId: number; role: 'officer' | 'me
   }
 }
 
+async function handleKickMember(payload: { userId: number }) {
+  kickLoadingUserId.value = payload.userId;
+  clearFeedback();
+  try {
+    const { data } = await api.post(`/guild/members/${payload.userId}/kick`);
+    if (guildState.value) {
+      guildState.value.members = Array.isArray(data.members) ? data.members : guildState.value.members;
+    }
+    setFeedback(data.message || 'Membre expulsé.');
+  } catch (error: any) {
+    setFeedback(error.response?.data?.message || 'Expulsion impossible.', false);
+  } finally {
+    kickLoadingUserId.value = null;
+  }
+}
+
 async function handleLeaveGuild() {
   leaveLoading.value = true;
   clearFeedback();
@@ -776,6 +799,16 @@ onUnmounted(() => {
 .guild-tab-fade-leave-to {
   opacity: 0;
   transform: translateY(8px);
+}
+
+@media (max-width: 768px) {
+  .guild-view {
+    gap: 12px;
+    padding: 0 1rem;
+  }
+  .guild-empty-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {

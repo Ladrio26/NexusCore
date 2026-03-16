@@ -307,6 +307,16 @@ async function updatePassword() {
   box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
 }
 
+@media (max-width: 768px) {
+  .profile-page {
+    padding: 0.75rem 0;
+  }
+  .profile-card {
+    padding: 1.25rem;
+    max-width: 100%;
+  }
+}
+
 .avatar-actions {
   display: flex;
   align-items: center;

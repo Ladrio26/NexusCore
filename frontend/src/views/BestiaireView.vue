@@ -102,34 +102,36 @@
               <section class="modal-card nx-panel">
                 <div class="card-title nx-subtitle">Profil</div>
                 <div class="kv"><span>Rôle</span><span>{{ toRoleFr(detailUnit.role) }}</span></div>
-                <div class="kv"><span>Type</span><span>{{ toAttackTypeFr(detailUnit.attack_type) }} · {{ toArchetypeFr(detailUnit.archetype) }}</span></div>
-                <div class="kv"><span>Élément</span><span>{{ toElementFr(detailUnit.element) }}</span></div>
-                <div class="kv"><span>Traits</span><span>{{ formatTraits(detailUnit.traits) || '—' }}</span></div>
-                <div v-if="noyauDescription" class="kv noyau-kv"><span>Noyau</span><span class="noyau-desc">{{ noyauDescription }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_TYPE">Type</span><span>{{ toAttackTypeFr(detailUnit.attack_type) }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_ELEMENT">Élément</span><span>{{ toElementFr(detailUnit.element) }}</span></div>
+                <div class="kv"><span :title="TOOLTIP_TRAITS">Traits</span><span>{{ formatTraits(detailUnit.traits) || '—' }}</span></div>
+                <div v-if="noyauDescription" class="kv noyau-kv"><span :title="TOOLTIP_NOYAU">Noyau</span><span class="noyau-desc">{{ noyauDescription }}</span></div>
               </section>
               <section class="modal-card nx-panel">
                 <div class="card-title nx-subtitle">Stats</div>
                 <div class="stats-rows stats-rows-compact">
-                  <div class="stat-row"><span>{{ STAT_FR.HP }}</span><span>{{ detailUnit.base_hp }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.ATK }}</span><span>{{ detailUnit.base_attack }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.DEF }}</span><span>{{ detailUnit.base_defense }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.SPD }}</span><span>{{ detailUnit.base_speed }}</span></div>
-                  <div class="stat-row"><span>{{ STAT_FR.MASTERY }}</span><span>{{ detailUnit.mastery }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_HP">{{ STAT_FR.HP }}</span><span>{{ detailUnit.base_hp }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_ATK">{{ STAT_FR.ATK }}</span><span>{{ detailUnit.base_attack }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_DEF">{{ STAT_FR.DEF }}</span><span>{{ detailUnit.base_defense }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_SPD">{{ STAT_FR.SPD }}</span><span>{{ detailUnit.base_speed }}</span></div>
+                  <div class="stat-row"><span :title="TOOLTIP_MASTERY">{{ STAT_FR.MASTERY }}</span><span>{{ detailUnit.mastery }}</span></div>
                 </div>
               </section>
             </div>
             <div class="modal-grid-2 modal-grid-compact">
               <section class="modal-card nx-panel unit-skill-section">
                 <h3 class="skill-section-title nx-subtitle">⚡ Compétence</h3>
+                <p v-if="skillCooldown != null" class="skill-cd-badge" :title="TOOLTIP_CD">CD : {{ skillCooldown }} action{{ skillCooldown > 1 ? 's' : '' }}</p>
                 <p class="skill-description-text">{{ descriptionSkill }}</p>
                 <div class="unit-spec-section">
+                  <p class="spec-section-title" :title="TOOLTIP_SPEC">Spécialisations</p>
                   <template v-if="hasSpecs">
                     <div v-if="specALabel || specAModifierText || descriptionSpecA" class="spec-block">
-                      <p class="spec-line"><strong>A</strong> {{ specALabel }} {{ specAModifierText }}</p>
+                      <p class="spec-line"><strong>Spécialisation A</strong> {{ specALabel }} {{ specAModifierText }}</p>
                       <p v-if="descriptionSpecA" class="spec-line spec-desc">{{ descriptionSpecA }}</p>
                     </div>
                     <div v-if="specBLabel || specBModifierText || descriptionSpecB" class="spec-block">
-                      <p class="spec-line"><strong>B</strong> {{ specBLabel }} {{ specBModifierText }}</p>
+                      <p class="spec-line"><strong>Spécialisation B</strong> {{ specBLabel }} {{ specBModifierText }}</p>
                       <p v-if="descriptionSpecB" class="spec-line spec-desc">{{ descriptionSpecB }}</p>
                     </div>
                     <p v-if="!specALabel && !specAModifierText && !descriptionSpecA && !specBLabel && !specBModifierText && !descriptionSpecB" class="spec-line spec-empty">—</p>
@@ -166,6 +168,19 @@ import {
 } from '../utils/i18nFr';
 import { normalizeSkillDescription } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
+import {
+  TOOLTIP_TYPE,
+  TOOLTIP_ELEMENT,
+  TOOLTIP_TRAITS,
+  TOOLTIP_NOYAU,
+  TOOLTIP_HP,
+  TOOLTIP_ATK,
+  TOOLTIP_DEF,
+  TOOLTIP_SPD,
+  TOOLTIP_MASTERY,
+  TOOLTIP_CD,
+  TOOLTIP_SPEC
+} from '../utils/unitPopupTooltips';
 
 type Unit = {
   id: number;
@@ -333,6 +348,21 @@ function formatPassive(p: Unit['specA_passive']): string {
 
 const skillDescription = computed(() => buildSkillDescription(detailUnit.value?.skill_data));
 
+function getMainSkillCooldown(skillData: Unit['skill_data']): number | null {
+  const data = parseSkillData(skillData);
+  if (!data) return null;
+  const skills = data.skills as Array<{ type?: string; cd_actions?: number }> | undefined;
+  if (Array.isArray(skills) && skills.length > 0) {
+    const active = skills.find((s) => s && String(s?.type ?? '').toUpperCase() === 'ACTIVE');
+    if (active && typeof active.cd_actions === 'number') return active.cd_actions;
+  }
+  const skill = (data.skill ?? data) as Record<string, unknown>;
+  if (skill && typeof skill === 'object' && typeof skill.cd_actions === 'number') return skill.cd_actions;
+  return null;
+}
+
+const skillCooldown = computed(() => getMainSkillCooldown(detailUnit.value?.skill_data ?? null));
+
 function getDescriptionFromSkillData(skillData: Unit['skill_data']): { skill?: string; specA?: string; specB?: string } | null {
   if (!skillData || typeof skillData !== 'object') return null;
   const d = (skillData as Record<string, unknown>).description;
@@ -428,13 +458,13 @@ const sortedUnits = computed(() => {
     });
     return list;
   }
+  /* Tri par stat uniquement, sans regroupement par rareté */
   list.sort((a, b) => {
-    const ra = RARITY_ORDER.indexOf((a.rarity || 'common').toLowerCase());
-    const rb = RARITY_ORDER.indexOf((b.rarity || 'common').toLowerCase());
-    if (ra !== rb) return rb - ra;
     const va = Number((a as Record<string, unknown>)[key]) || 0;
     const vb = Number((b as Record<string, unknown>)[key]) || 0;
-    return order === 'asc' ? va - vb : vb - va;
+    const diff = order === 'asc' ? va - vb : vb - va;
+    if (diff !== 0) return diff;
+    return (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base' });
   });
   return list;
 });
@@ -888,6 +918,16 @@ onMounted(async () => {
   }
   .modal-unit-image-wrap {
     width: 160px;
+  }
+}
+
+@media (max-width: 768px) {
+  .bestiaire {
+    padding: 1rem;
+  }
+  .bestiaire-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 }
 </style>

@@ -1,10 +1,17 @@
 <template>
-  <div class="app" :class="{ 'app-with-sidebar': isAuthenticated }">
+  <div class="app" :class="{ 'app-with-sidebar': isAuthenticated, 'sidebar-open': sidebarOpen }">
     <div class="app-bg" aria-hidden="true" />
     <NexusParticles />
+    <header v-if="isAuthenticated" class="app-header-mobile">
+      <button type="button" class="hamburger-btn" aria-label="Ouvrir le menu" @click="sidebarOpen = true">
+        <span class="hamburger-bar" />
+        <span class="hamburger-bar" />
+        <span class="hamburger-bar" />
+      </button>
+    </header>
+    <div v-if="isAuthenticated && sidebarOpen" class="sidebar-backdrop" aria-hidden="true" @click="sidebarOpen = false" />
     <aside v-if="isAuthenticated" class="app-sidebar">
       <div class="sidebar-user" v-if="currentUser">
-        <img :src="getAvatarUrl(currentUser)" alt="" class="sidebar-avatar" />
         <div class="sidebar-username">{{ currentUser.display_name || currentUser.email || '—' }}</div>
         <div class="sidebar-wallet">
           <span class="sidebar-wallet-item credits" title="Crédits">💰 {{ wallet.credits }}</span>
@@ -15,44 +22,49 @@
       </div>
       <h1 class="sidebar-title">Nexus Core Arena</h1>
       <nav class="sidebar-menu">
-        <router-link to="/collection" class="menu-item">Ma Collection</router-link>
-        <router-link to="/team-builder" class="menu-item">Team Builder</router-link>
-        <router-link to="/sanctuary" class="menu-item menu-item-with-indicator">
+        <router-link to="/collection" class="menu-item" @click="sidebarOpen = false">Ma Collection</router-link>
+        <router-link to="/team-builder" class="menu-item" @click="sidebarOpen = false">Mes Equipes</router-link>
+        <router-link to="/sanctuary" class="menu-item menu-item-with-indicator" @click="sidebarOpen = false">
           <span>Sanctuaire</span>
           <span v-if="hasSanctuaryNotification" class="menu-item-indicator" aria-label="Invocation disponible" title="Invocation disponible" />
         </router-link>
-        <router-link to="/artifacts" class="menu-item">Artefacts</router-link>
-        <router-link to="/guild" class="menu-item">Guilde</router-link>
+        <router-link to="/artifacts" class="menu-item" @click="sidebarOpen = false">Artefacts</router-link>
+        <router-link to="/guild" class="menu-item" @click="sidebarOpen = false">Guilde</router-link>
         <div class="menu-dropdown">
           <button type="button" class="menu-item menu-item-trigger" :class="{ open: combatsMenuOpen, 'router-link-active': isCombatsRoute }" @click="combatsMenuOpen = !combatsMenuOpen" aria-haspopup="true" :aria-expanded="combatsMenuOpen">
             Combats
           </button>
           <div v-show="combatsMenuOpen" class="menu-dropdown-panel">
-            <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false">Campagne</router-link>
-            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false">PvP</router-link>
+            <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Campagne</router-link>
+            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">PvP</router-link>
           </div>
         </div>
-        <router-link to="/classement" class="menu-item">Classement</router-link>
-        <router-link to="/bestiaire" class="menu-item">Bestiaire</router-link>
+        <router-link to="/classement" class="menu-item" @click="sidebarOpen = false">Classement</router-link>
+        <router-link to="/bestiaire" class="menu-item" @click="sidebarOpen = false">Bestiaire</router-link>
+        <router-link to="/faq" class="menu-item" @click="sidebarOpen = false">FAQ</router-link>
+        <router-link to="/feedback" class="menu-item" @click="sidebarOpen = false">Feedback</router-link>
         <div v-if="isAdmin" class="menu-dropdown">
           <button type="button" class="menu-item menu-item-trigger" :class="{ open: adminMenuOpen, 'router-link-active': isAdminRoute }" @click="adminMenuOpen = !adminMenuOpen" aria-haspopup="true" :aria-expanded="adminMenuOpen">
             Admin
           </button>
           <div v-show="adminMenuOpen" class="menu-dropdown-panel">
-            <router-link to="/admin/unit-builder" class="menu-item menu-subitem" @click="adminMenuOpen = false">Unit Builder</router-link>
-            <router-link to="/admin/player-units" class="menu-item menu-subitem" @click="adminMenuOpen = false">Gestion unités joueurs</router-link>
-            <router-link to="/admin/users" class="menu-item menu-subitem" @click="adminMenuOpen = false">Gestion Utilisateurs</router-link>
+            <router-link to="/admin/unit-builder" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Unit Builder</router-link>
+            <router-link to="/admin/player-units" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Gestion unités joueurs</router-link>
+            <router-link to="/admin/users" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Gestion Utilisateurs</router-link>
+            <router-link to="/admin/feedback" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Feedback / Tickets</router-link>
           </div>
         </div>
       </nav>
       <div class="sidebar-bottom">
-        <router-link to="/profile" class="btn-profile menu-item">Profil</router-link>
-        <button type="button" class="btn-logout nx-btn nx-btn-danger" @click="logout">Déconnexion</button>
+        <router-link to="/profile" class="btn-profile" @click="sidebarOpen = false">Profil</router-link>
+        <button type="button" class="btn-logout" @click="logout">Déconnexion</button>
       </div>
     </aside>
-    <main class="app-main" :class="{ 'app-main-fullwidth': route.meta.fullWidth }">
+    <main class="app-main" :class="{ 'app-main-fullwidth': route.meta.fullWidth, 'app-main-auth': route.meta.authPage }">
+      <NotificationBell v-if="isAuthenticated" class="app-notification-bell" />
       <router-view />
     </main>
+    <TutorialOverlay />
     <Transition name="daily-reward">
       <div
         v-if="dailyRewardPopup"
@@ -96,8 +108,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { authToken, clearToken, isAdminUser } from './api';
 import api from './api';
-import { getAvatarUrl } from './utils/avatar';
 import NexusParticles from './components/NexusParticles.vue';
+import NotificationBell from './components/NotificationBell.vue';
+import TutorialOverlay from './components/TutorialOverlay.vue';
+import { startTutorial } from './composables/useTutorial';
 
 const router = useRouter();
 const route = useRoute();
@@ -107,6 +121,7 @@ const isAdmin = computed(() => {
   return isAdminUser();
 });
 const currentUser = ref<{ id: number; email: string; display_name: string; avatar_url?: string | null } | null>(null);
+const sidebarOpen = ref(false);
 const adminMenuOpen = ref(false);
 const combatsMenuOpen = ref(false);
 const dailyRewardPopup = ref<{ credits: number; cores: number; fragments: number } | null>(null);
@@ -122,6 +137,7 @@ const hasSanctuaryNotification = computed(() => (
 ));
 
 watch(() => route.path, (path) => {
+  sidebarOpen.value = false;
   adminMenuOpen.value = path.startsWith('/admin');
   combatsMenuOpen.value = path === '/campaign' || path === '/pvp';
 }, { immediate: true });
@@ -230,13 +246,25 @@ watch(authToken, async (token) => {
   await fetchCurrentUser();
   await fetchWallet();
   await checkDailyReward();
+  // Démarrer le tutoriel pour les nouveaux joueurs (après un délai pour laisser la popup quotidienne s'afficher)
+  setTimeout(() => startTutorial(), 1800);
 }, { immediate: true });
+
+function handleTutorialOpenCombats() {
+  combatsMenuOpen.value = true;
+}
+
+function handleTutorialOpenSidebar() {
+  sidebarOpen.value = true;
+}
 
 onMounted(() => {
   window.addEventListener('profile-updated', fetchCurrentUser);
   window.addEventListener('wallet-updated', handleWalletUpdated as EventListener);
   window.addEventListener('focus', handleWindowResume);
   document.addEventListener('visibilitychange', handleWindowResume);
+  window.addEventListener('tutorial:open-combats', handleTutorialOpenCombats);
+  window.addEventListener('tutorial:open-sidebar', handleTutorialOpenSidebar);
 });
 
 onUnmounted(() => {
@@ -244,6 +272,8 @@ onUnmounted(() => {
   window.removeEventListener('wallet-updated', handleWalletUpdated as EventListener);
   window.removeEventListener('focus', handleWindowResume);
   document.removeEventListener('visibilitychange', handleWindowResume);
+  window.removeEventListener('tutorial:open-combats', handleTutorialOpenCombats);
+  window.removeEventListener('tutorial:open-sidebar', handleTutorialOpenSidebar);
   clearDailyRewardTimer();
 });
 
@@ -272,6 +302,60 @@ function logout() {
   pointer-events: none;
 }
 
+/* Header mobile (hamburger) — visible uniquement sur mobile */
+.app-header-mobile {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  padding: 0 0.5rem;
+  align-items: center;
+  background: rgba(10, 15, 30, 0.9);
+  border-bottom: 1px solid rgba(0, 255, 255, 0.15);
+  z-index: 20;
+}
+
+.hamburger-btn {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.8);
+  color: #e5e7eb;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.hamburger-btn:hover {
+  background: rgba(0, 255, 200, 0.12);
+  border-color: rgba(0, 255, 200, 0.4);
+}
+
+.hamburger-bar {
+  display: block;
+  width: 20px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+  margin: 0 auto;
+}
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 25;
+  cursor: pointer;
+}
+
 .app.app-with-sidebar {
   flex-direction: row;
 }
@@ -293,41 +377,42 @@ function logout() {
 }
 
 .sidebar-user {
-  padding: 20px 16px;
+  padding: 6px 8px;
   text-align: center;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
-.sidebar-avatar {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  object-fit: cover;
-  box-shadow: 0 0 15px rgba(0, 255, 255, 0.4);
-}
 
 .sidebar-username {
-  margin-top: 0.5rem;
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #e5e7eb;
+  word-break: break-word;
+  line-height: 1.2;
 }
 
 .sidebar-wallet {
-  margin-top: 0.45rem;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.3rem 0.5rem;
-  font-size: 0.75rem;
+  margin-top: 0.35rem;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.15rem 0.2rem;
+  font-size: 0.6rem;
   color: #cbd5e1;
 }
 
 .sidebar-wallet-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.18rem;
-  padding: 0.12rem 0.38rem;
+  justify-content: center;
+  gap: 0.12rem;
+  padding: 0.08rem 0.2rem;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.55);
   border: 1px solid rgba(148, 163, 184, 0.2);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-wallet-item.credits {
@@ -344,13 +429,6 @@ function logout() {
 
 .sidebar-wallet-item.gold {
   color: #f59e0b;
-}
-.sidebar-username {
-  margin-top: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #e5e7eb;
-  word-break: break-word;
 }
 
 .sidebar-title {
@@ -374,20 +452,22 @@ function logout() {
 
 .sidebar-bottom {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px 6px;
   border-top: 1px solid rgba(148, 163, 184, 0.2);
 }
 .btn-profile {
-  display: block;
+  flex: 1;
+  min-width: 0;
   color: rgba(0, 255, 255, 0.9);
   text-decoration: none;
-  text-align: left;
-  padding: 0.55rem 0.9rem;
-  border-radius: 0.6rem;
+  text-align: center;
+  padding: 0.18rem 0.28rem;
+  border-radius: 0.3rem;
   border: 1px solid transparent;
-  font-size: 0.9rem;
+  font-size: 0.68rem;
   transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
 }
 .btn-profile:hover {
@@ -514,15 +594,16 @@ function logout() {
 }
 
 .btn-logout {
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.2rem 0.35rem;
+  border-radius: 0.35rem;
   border: 1px solid rgba(248, 113, 113, 0.6);
   background: transparent;
   color: #fca5a5;
   cursor: pointer;
-  font-size: 0.9rem;
-  text-align: left;
-  width: 100%;
+  font-size: 0.7rem;
+  text-align: center;
   transition: background 0.15s ease;
 }
 
@@ -540,10 +621,22 @@ function logout() {
   z-index: 1;
 }
 
+.app-notification-bell {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 10;
+}
+
 .app-main.app-main-fullwidth {
   padding-left: 0 !important;
   padding-right: 0 !important;
   max-width: 100%;
+}
+
+.app-main.app-main-auth {
+  padding: 0 !important;
+  overflow: hidden;
 }
 
 .daily-reward-overlay {
@@ -654,6 +747,41 @@ function logout() {
 .daily-reward-enter-from .daily-reward-modal,
 .daily-reward-leave-to .daily-reward-modal {
   transform: translateY(12px) scale(0.98);
+}
+
+/* Mobile layout (< 768px) */
+@media (max-width: 768px) {
+  .app-header-mobile {
+    display: flex;
+  }
+
+  .app.app-with-sidebar .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 220px;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 30;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .app.sidebar-open .app-sidebar {
+    transform: translateX(0);
+  }
+
+  .app-main {
+    padding: 1rem;
+    padding-top: calc(44px + 0.5rem);
+  }
+
+  .app-notification-bell {
+    top: 0.5rem;
+    right: 1rem;
+    left: auto;
+  }
 }
 
 @media (max-width: 640px) {

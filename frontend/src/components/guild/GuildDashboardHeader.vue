@@ -276,6 +276,17 @@ function formatDate(value: string | null) {
   }
 }
 
+@media (max-width: 768px) {
+  .guild-header-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .guild-header-tab {
+    flex-shrink: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .guild-inline-stat {
     min-width: calc(50% - 4px);

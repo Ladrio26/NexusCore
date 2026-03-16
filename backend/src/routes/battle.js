@@ -110,7 +110,7 @@ export function registerBattleRoutes(fastify, authenticate) {
         }
       }
 
-      const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!pendingBattle.success });
+      const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!pendingBattle.success, battleType: 'campaign' });
 
       // Notification guilde pour boss vaincu (silencieuse, non-bloquante)
       if (pendingBattle.success && isBoss) {
@@ -164,13 +164,15 @@ export function registerBattleRoutes(fastify, authenticate) {
         await grantPvpXp(ids, !!attackerWon);
         await applyPvpFatigue(ids);
       }
-      const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!attackerWon });
+      const creditsBonus = attackerWon && !isDraw ? 1 : 0;
+      const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!attackerWon, creditsBonus, battleType: 'pvp' });
       await deletePendingBattle(userId, pendingBattleId);
       return {
         battleType: 'pvp',
         elo_before: eloBefore,
         elo_after: attackerEloAfter,
         rank_rewards: attackerRankRewards,
+        credits_gained: creditsBonus,
         gold_gained: artifactRewards.goldGained,
         artifact_drop: artifactRewards.artifactDrop,
         wallet: artifactRewards.wallet,

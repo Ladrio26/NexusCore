@@ -50,14 +50,21 @@ export async function getWalletWithGold(userId, executor = null) {
   };
 }
 
-export async function grantCombatArtifactRewards(userId, { victory, executor = null } = {}) {
+export async function grantCombatArtifactRewards(userId, { victory, executor = null, creditsBonus = 0, battleType = 'campaign' } = {}) {
   const runQuery = executor?.query ?? query;
   await ensureWalletWithGold(userId, executor);
   const goldGained = victory ? 20 : 10;
-  await runQuery('UPDATE user_wallet SET gold = gold + ? WHERE user_id = ?', [goldGained, userId]);
+  const updates = ['gold = gold + ?'];
+  const params = [goldGained];
+  if (creditsBonus > 0) {
+    updates.push('credits = credits + ?');
+    params.push(creditsBonus);
+  }
+  params.push(userId);
+  await runQuery(`UPDATE user_wallet SET ${updates.join(', ')} WHERE user_id = ?`, params);
 
   let artifactDrop = null;
-  if (victory && Math.random() < 0.01) {
+  if (victory && battleType === 'pvp' && Math.random() < 0.01) {
     const statKey = chooseRandomArtifactStat();
     const result = await runQuery(
       'INSERT INTO user_artifacts (user_id, stat_key, level, equipped_user_unit_id) VALUES (?, ?, 0, NULL)',
@@ -73,6 +80,7 @@ export async function grantCombatArtifactRewards(userId, { victory, executor = n
 
   return {
     goldGained,
+    creditsBonus: creditsBonus || 0,
     artifactDrop,
     wallet: await getWalletWithGold(userId, executor)
   };

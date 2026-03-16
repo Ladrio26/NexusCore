@@ -1,7 +1,11 @@
 <template>
   <section class="team-builder team-builder-page">
     <div class="team-builder-bg" aria-hidden="true" />
-    <div class="team-builder-layout">
+    <div class="team-builder-layout" :class="{ 'units-panel-hidden': !showUnitsPanel }">
+      <div class="mobile-units-toggle" @click="showUnitsPanel = !showUnitsPanel">
+        <span>{{ showUnitsPanel ? 'Masquer les unités' : 'Afficher les unités' }}</span>
+        <span class="toggle-icon" aria-hidden="true">{{ showUnitsPanel ? '▼' : '▲' }}</span>
+      </div>
       <div class="collection-area nexus-panel nx-panel">
         <div class="collection-search">
           <input
@@ -319,6 +323,7 @@
             :class="{ active: trait.isActive }"
             @mouseenter="onTraitCardEnter(trait.name, $event)"
             @mouseleave="hoveredTrait = null; hoveredTraitTarget = null"
+            @click="onTraitCardEnter(trait.name, $event)"
           >
             <span class="trait-card-content" :class="{ inactive: !trait.isActive, zero: trait.count === 0 }">
               <div class="trait-name">
@@ -544,6 +549,7 @@ const FAVORITES_KEY = 'nexus_team_favorites';
 const favoriteIds = ref<Set<number>>(new Set());
 const searchQuery = ref('');
 const selectedUnitId = ref<number | null>(null);
+const showUnitsPanel = ref(true);
 const lastAddedSlot = ref<{ row: 'front' | 'back'; idx: number } | null>(null);
 const displayedPower = ref(0);
 
@@ -1003,17 +1009,42 @@ function onTraitCardEnter(traitName: string, e: MouseEvent) {
   hoveredTraitTarget.value = e.currentTarget as HTMLElement;
 }
 
-/** Style de position pour la bulle trait (évite d'être coupée par le conteneur) */
+/** Style de position pour la bulle trait (évite d'être coupée, reste dans l'écran sur mobile) */
 const traitTooltipStyle = computed(() => {
   const el = hoveredTraitTarget.value;
   if (!el) return {};
   const rect = el.getBoundingClientRect();
-  return {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const padding = 12;
+  const tooltipWidth = Math.min(320, vw - padding * 2);
+
+  // Horizontal : centrer sur l'élément mais rester dans la viewport
+  const centerX = rect.left + rect.width / 2;
+  const minCenter = padding + tooltipWidth / 2;
+  const maxCenter = vw - padding - tooltipWidth / 2;
+  const left = Math.max(minCenter, Math.min(maxCenter, centerX));
+
+  // Vertical : au-dessus par défaut, en dessous si pas assez de place en haut
+  const estimatedHeight = 150;
+  const spaceAbove = rect.top;
+  const spaceBelow = vh - rect.bottom;
+  const above = spaceAbove >= estimatedHeight || spaceAbove >= spaceBelow;
+  const style: Record<string, string> = {
     position: 'fixed',
-    bottom: `${window.innerHeight - rect.top + 10}px`,
-    left: `${rect.left + rect.width / 2}px`,
-    transform: 'translateX(-50%)'
+    left: `${left}px`,
+    transform: 'translateX(-50%)',
+    maxWidth: `calc(100vw - ${padding * 2}px)`
   };
+  if (above) {
+    // Ne pas dépasser le haut de l'écran (top >= padding)
+    const desiredBottom = vh - rect.top + 10;
+    const maxBottom = vh - estimatedHeight - padding;
+    style.bottom = `${Math.min(desiredBottom, maxBottom)}px`;
+  } else {
+    style.top = `${rect.bottom + 10}px`;
+  }
+  return style;
 });
 
 /** Liste affichable : tous les traits avec count, paliers et statut actif */
@@ -1326,6 +1357,41 @@ onMounted(() => {
   .team-builder-layout {
     height: auto;
     min-height: calc(100vh - 60px);
+    grid-template-rows: auto auto 1fr;
+  }
+  .team-builder-layout.units-panel-hidden .collection-area {
+    display: none !important;
+  }
+}
+
+.mobile-units-toggle {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 255, 200, 0.1);
+  border: 1px solid rgba(0, 255, 200, 0.3);
+  border-radius: 10px;
+  color: #a5f3fc;
+  font-size: 0.85rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+.mobile-units-toggle:hover {
+  background: rgba(0, 255, 200, 0.18);
+  border-color: rgba(0, 255, 200, 0.45);
+}
+.mobile-units-toggle .toggle-icon {
+  font-size: 0.75rem;
+  opacity: 0.9;
+}
+
+@media (max-width: 768px) {
+  .mobile-units-toggle {
+    display: flex;
+    grid-column: 1 / -1;
   }
 }
 
@@ -2279,6 +2345,15 @@ onMounted(() => {
   padding: 12px;
   box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
   border: 1px solid rgba(100, 180, 255, 0.3);
+}
+
+@media (max-width: 768px) {
+  .trait-tooltip {
+    width: auto;
+    max-width: calc(100vw - 24px);
+    max-height: 60vh;
+    overflow-y: auto;
+  }
 }
 
 .trait-tooltip .tooltip-level {

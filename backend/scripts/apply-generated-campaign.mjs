@@ -16,24 +16,91 @@ function getBossCodeForChapter(chapter) {
   return `BOSS_CH${chapter}_10`;
 }
 
-function computeNormalMultiplier(chapter, stage) {
-  return Number((1 + chapter * 0.15 + stage * 0.03).toFixed(3));
+// Niveaux par (stage-1, chapter-1) - Normal mode (non spécialisé)
+// Lignes = stages 1-9, puis Boss (stage 10)
+// Colonnes = chapitres 1-10
+const NORMAL_LEVELS = [
+  [1,  15, 20, 25, 30, 35, 40, 45, 50, 50], // stage 1
+  [2,  16, 21, 26, 31, 36, 41, 46, 50, 50], // stage 2
+  [3,  16, 21, 26, 31, 36, 41, 46, 50, 50], // stage 3
+  [4,  17, 22, 27, 32, 37, 42, 47, 50, 50], // stage 4
+  [5,  17, 22, 27, 32, 37, 42, 47, 50, 50], // stage 5
+  [7,  18, 23, 28, 33, 38, 43, 48, 50, 50], // stage 6
+  [9,  18, 23, 28, 33, 38, 43, 48, 50, 50], // stage 7
+  [11, 19, 24, 29, 34, 39, 44, 49, 50, 50], // stage 8
+  [13, 19, 24, 29, 34, 39, 44, 49, 50, 50], // stage 9
+  [15, 20, 25, 30, 35, 40, 45, 50, 50, 50], // boss (stage 10)
+];
+
+// Niveaux par (stage-1, chapter-1) - Difficile mode (spécialisé)
+const HARD_LEVELS = [
+  [21, 35, 40, 45, 50, 55, 60, 65, 70, 70], // stage 1
+  [22, 36, 41, 46, 51, 56, 61, 66, 70, 70], // stage 2
+  [23, 36, 41, 46, 51, 56, 61, 66, 70, 70], // stage 3
+  [24, 37, 42, 47, 52, 57, 62, 67, 70, 70], // stage 4
+  [25, 37, 42, 47, 52, 57, 62, 67, 70, 70], // stage 5
+  [27, 38, 43, 48, 53, 58, 63, 68, 70, 70], // stage 6
+  [29, 38, 43, 48, 53, 58, 63, 68, 70, 70], // stage 7
+  [31, 39, 44, 49, 54, 59, 64, 69, 70, 70], // stage 8
+  [33, 39, 44, 49, 54, 59, 64, 69, 70, 70], // stage 9
+  [35, 40, 45, 50, 55, 60, 65, 70, 70, 70], // boss (stage 10)
+];
+
+function getNormalLevel(stage, chapter) {
+  return NORMAL_LEVELS[stage - 1][chapter - 1];
 }
 
-function computeHardMultiplier(normalMultiplier) {
-  return Number((normalMultiplier * 1.6).toFixed(3));
+function getHardLevel(stage, chapter) {
+  return HARD_LEVELS[stage - 1][chapter - 1];
 }
 
-function buildEnemyTemplateFromFight(fight, bossCodeIfBoss) {
+// RNG déterministe pour la spécialisation (mulberry32-like)
+function makeSpecRng(seed) {
+  let h = (seed >>> 0) ^ 0xdeadbeef;
+  return () => {
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+    h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+    return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
+  };
+}
+
+function randomSpec(rng) {
+  return rng() > 0.5 ? 'A' : 'B';
+}
+
+function computeNormalMultiplier() {
+  return 1.000;
+}
+
+function computeHardMultiplier() {
+  return 1.000;
+}
+
+function buildEnemyTemplateFromFight(fight, bossCodeIfBoss, chapter, stage) {
   const unitsSource = Array.isArray(fight.enemies) ? fight.enemies : [];
   const minions = bossCodeIfBoss
     ? unitsSource.filter((e) => e.unitId !== bossCodeIfBoss)
     : unitsSource;
+  const normalLevel = getNormalLevel(stage, chapter);
+  const hardLevel = getHardLevel(stage, chapter);
+  const rng = makeSpecRng(chapter * 1000 + stage * 100);
   const units = minions.map((e, idx) => ({
     code: e.unitId,
-    position: idx === 0 || idx % 2 === 0 ? 'front' : 'back'
+    position: idx === 0 || idx % 2 === 0 ? 'front' : 'back',
+    level: normalLevel,
+    hard_level: hardLevel,
+    specialization: null,
+    hard_specialization: randomSpec(rng)
   }));
-  return { units };
+  const template = { units };
+  if (bossCodeIfBoss) {
+    const bossRng = makeSpecRng(chapter * 1000 + stage * 100 + 99);
+    template.boss_level = normalLevel;
+    template.boss_hard_level = hardLevel;
+    template.boss_specialization = randomSpec(bossRng);
+    template.boss_hard_specialization = randomSpec(bossRng);
+  }
+  return template;
 }
 
 function buildBossModifierPair(chapter) {
@@ -170,6 +237,12 @@ async function main() {
   try {
     await conn.beginTransaction();
 
+    // Suppression de tous les stages existants
+    await conn.execute('DELETE FROM campaign_stages');
+    await conn.execute('DELETE FROM campaign_rewards');
+    await conn.execute('DELETE FROM campaign_boss_modifiers');
+    console.log('[apply-generated-campaign] Stages, rewards et boss modifiers supprimés.');
+
     await ensureBossUnits(conn);
 
     const normalFights = fights.filter((f) => f.mode === 'normal');
@@ -178,9 +251,9 @@ async function main() {
       const stage = Number(fight.fight);
       const isBoss = Boolean(fight.isBoss);
       const bossCode = isBoss ? getBossCodeForChapter(chapter) : null;
-      const enemyTemplate = buildEnemyTemplateFromFight(fight, bossCode);
-      const normalMultiplier = computeNormalMultiplier(chapter, stage);
-      const hardMultiplier = computeHardMultiplier(normalMultiplier);
+      const enemyTemplate = buildEnemyTemplateFromFight(fight, bossCode, chapter, stage);
+      const normalMultiplier = computeNormalMultiplier();
+      const hardMultiplier = computeHardMultiplier();
 
       await conn.execute(
         `INSERT INTO campaign_stages (chapter, stage, is_boss, normal_multiplier, hard_multiplier, enemy_template, boss_unit_code)

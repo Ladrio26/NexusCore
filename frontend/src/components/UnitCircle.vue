@@ -295,6 +295,60 @@ function triggerAtbTick() {
   text-align: center;
 }
 
+@media (max-width: 768px) {
+  .unit-circle-wrap.unit :deep(.atb-arc) {
+    display: none;
+  }
+
+  .unit-circle-wrap.unit {
+    width: 30px;
+    height: 28px;
+  }
+
+  /* Centrer correctement dans le wrap 30x28 : (30-22)/2=4, (28-22)/2=3 */
+  .unit-ring,
+  .unit-circle.unit-portrait,
+  .buff-container {
+    top: 3px;
+    left: 4px;
+    width: 22px;
+    height: 22px;
+  }
+
+  .unit-circle.unit-portrait {
+    border-width: 1px;
+  }
+
+  .buff-orb {
+    transform: rotate(var(--orbit-offset, 0deg)) translateX(12px) rotate(calc(-1 * var(--orbit-offset, 0deg)));
+  }
+
+  .buff-orb-icon {
+    width: 8px;
+    height: 8px;
+    font-size: 6px;
+  }
+
+  .buff-orb-duration {
+    font-size: 5px;
+  }
+
+  .unit-name {
+    font-size: 6px;
+    margin-top: 1px;
+  }
+
+  /* Masquer la barre ATB en responsive (trop grosse) */
+  :deep(.atb-arc) {
+    display: none;
+  }
+
+  /* Désactiver les buffs en orbite sur mobile */
+  .buff-container {
+    display: none;
+  }
+}
+
 .unit-circle.recoil {
   animation: atbRecoil 0.15s ease-out;
 }
@@ -370,8 +424,11 @@ function triggerAtbTick() {
   pointer-events: none;
 }
 
-/* ---- Conteneur d'icônes en orbite ---- */
+/* ---- Conteneur d'icônes en orbite (désactivé — interférait avec les clics sur mobile) ---- */
 .buff-container {
+  display: none;
+}
+.buff-container--legacy {
   position: absolute;
   top: 18px;
   left: 12px;
@@ -439,4 +496,6 @@ function triggerAtbTick() {
   from { opacity: 1; }
   to { opacity: 0; }
 }
+
+/* Duplicate removed - mobile styles already in first @media block */
 </style>

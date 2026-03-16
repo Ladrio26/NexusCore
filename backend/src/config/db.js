@@ -134,6 +134,19 @@ export async function ensureDatabaseSchema() {
     }
 
     try {
+      await query('ALTER TABLE user_units ADD COLUMN fatigue_last_update DATETIME DEFAULT NULL');
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    try {
       await query('ALTER TABLE user_wallet ADD COLUMN gold INT UNSIGNED NOT NULL DEFAULT 0');
     } catch (err) {
       if (err?.code !== 'ER_DUP_FIELDNAME') {
@@ -159,11 +172,25 @@ export async function ensureDatabaseSchema() {
       }
     }
 
+    try {
+      await query('ALTER TABLE notifications ADD COLUMN data JSON DEFAULT NULL');
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+
     await query(
       "UPDATE users SET role = 'player' WHERE role IS NULL OR TRIM(role) = '' OR LOWER(role) NOT IN ('player', 'admin')"
     );
     await query('UPDATE user_units SET power_level = 1 WHERE power_level IS NULL OR power_level < 1');
     await query('UPDATE user_units SET power_openings = 1 WHERE power_openings IS NULL OR power_openings < 1');
+    await query('UPDATE user_units SET fatigue_last_update = NOW() WHERE fatigue_last_update IS NULL');
 
     await query(`
       CREATE TABLE IF NOT EXISTS pvp_rank_reward_claims (
@@ -421,6 +448,20 @@ export async function ensureDatabaseSchema() {
         KEY idx_gwn_war_guild (war_id, guild_id),
         FOREIGN KEY (war_id) REFERENCES guild_wars(id) ON DELETE CASCADE,
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS feedback_tickets (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        status ENUM('proposes','non_prio','acceptes','en_cours','realises','disponibles','refuser') NOT NULL DEFAULT 'proposes',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_feedback_tickets_user (user_id),
+        KEY idx_feedback_tickets_status (status),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     return;

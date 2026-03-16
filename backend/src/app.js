@@ -22,6 +22,8 @@ import { registerPvpRoutes } from './routes/pvp.js';
 import { registerArtifactRoutes } from './routes/artifacts.js';
 import { registerGuildRoutes } from './routes/guild.js';
 import { registerGuildWarRoutes } from './routes/guildWar.js';
+import { registerFeedbackRoutes } from './routes/feedback.js';
+import { registerNotificationsRoutes } from './routes/notifications.js';
 import { startGuildWarCron } from './services/guildWarCronService.js';
 
 export async function buildApp({ logger = true } = {}) {
@@ -65,6 +67,8 @@ export async function buildApp({ logger = true } = {}) {
   registerGuildRoutes(fastify, authMiddleware, requireAdminUser);
   registerGuildWarRoutes(fastify, authMiddleware);
   registerAdminRoutes(fastify, authMiddleware, requireAdminUser);
+  registerFeedbackRoutes(fastify, authMiddleware, requireAdminUser);
+  registerNotificationsRoutes(fastify, authMiddleware);
 
   startGuildWarCron();
 

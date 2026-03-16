@@ -1,7 +1,7 @@
 import { withTransaction } from '../config/db.js';
 
 export const DAILY_REWARD = Object.freeze({
-  credits: 90,
+  credits: 100,
   cores: 2,
   fragments: 10
 });

@@ -237,6 +237,17 @@ function getUnitBaseSkillCooldown(unit) {
   return Number.isFinite(baseCd) && baseCd >= 0 ? baseCd : 0;
 }
 
+/** Vérifie si une compétence contient RESET_SKILL_COOLDOWN ou SET_SKILL_COOLDOWN_MAX. */
+function skillHasCdManipulationEffects(skill) {
+  if (!skill) return false;
+  const inner = skill?.skill ?? skill;
+  const effects = inner?.effects ?? [];
+  return effects.some((e) => {
+    const t = String(e?.type ?? '').toUpperCase();
+    return t === 'RESET_SKILL_COOLDOWN' || t === 'SET_SKILL_COOLDOWN_MAX';
+  });
+}
+
 // Wrapper unifié pour les futurs effets de skills, sans toucher aux branches actuelles.
 function applySkillEffect(state, actor, target, effectConfig) {
   const cfg = normalizeEffectConfig(effectConfig || {});
@@ -312,6 +323,14 @@ function applySkillEffect(state, actor, target, effectConfig) {
     }
     case 'RESET_SKILL_COOLDOWN': {
       if (!target?.skill) return { applied: false, before: null, after: null, baseCooldown: 0 };
+      // Pas d'auto-reset : la compétence qui lance l'effet ne doit pas se reset elle-même
+      if (target === actor || (target?.uid && actor?.uid && target.uid === actor.uid)) {
+        return { applied: false, before: null, after: null, baseCooldown: 0, skippedSelfReset: true };
+      }
+      // Immunité : les compétences avec RESET/SET_CD ne peuvent pas être affectées par ces effets
+      if (skillHasCdManipulationEffects(target.skill)) {
+        return { applied: false, before: null, after: null, baseCooldown: 0, skippedCdImmunity: true };
+      }
       const before = Number(target.skillCd ?? 0);
       target.skillCd = 0;
       return {
@@ -323,6 +342,14 @@ function applySkillEffect(state, actor, target, effectConfig) {
     }
     case 'SET_SKILL_COOLDOWN_MAX': {
       if (!target?.skill) return { applied: false, before: null, after: null, baseCooldown: 0 };
+      // Pas d'auto-reset : la compétence qui lance l'effet ne doit pas se modifier elle-même
+      if (target === actor || (target?.uid && actor?.uid && target.uid === actor.uid)) {
+        return { applied: false, before: null, after: null, baseCooldown: 0, skippedSelfReset: true };
+      }
+      // Immunité : les compétences avec RESET/SET_CD ne peuvent pas être affectées par ces effets
+      if (skillHasCdManipulationEffects(target.skill)) {
+        return { applied: false, before: null, after: null, baseCooldown: 0, skippedCdImmunity: true };
+      }
       const before = Number(target.skillCd ?? 0);
       const baseCooldown = getUnitBaseSkillCooldown(target);
       target.skillCd = baseCooldown;
@@ -1911,6 +1938,9 @@ function buildBattleLog(state, log) {
   return result.slice(0, MAX_BATTLE_LOG_ENTRIES);
 }
 
+/** Limite de rounds avant match nul (6 unités/équipe × 2 = 12 unités, 400 rounds ≈ 33 tours/unité). */
+export const MAX_ROUNDS = 400;
+
 export function simulateBattle(teamAInput, teamBInput, config = {}) {
   const seed = config.seed ?? 1;
   const rng = createRng(seed);
@@ -2019,7 +2049,7 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     })));
   }
 
-  const maxRounds = config.maxRounds ?? 200;
+  const maxRounds = config.maxRounds ?? MAX_ROUNDS;
   const maxActions = config.maxActions ?? 1000;
   const interactive = config?.interactive === true;
   const decisions = Array.isArray(config?.decisions) ? config.decisions : [];

@@ -172,7 +172,9 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
       const unit = await getUnitByCode(code);
       if (!unit) continue;
       const pos = spec.position === 'back' ? 'back' : 'front';
-      const u = buildUnitForCombat(unit, mult, i + 1, false);
+      const unitLevel = mode === 'hard' ? (spec.hard_level ?? spec.level ?? null) : (spec.level ?? null);
+      const unitSpec = mode === 'hard' ? (spec.hard_specialization ?? null) : (spec.specialization ?? null);
+      const u = buildUnitForCombat(unit, mult, i + 1, false, unitLevel, unitSpec);
       u.position = pos;
       team.push(u);
     }
@@ -188,7 +190,9 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
       if (mod && typeof mod === 'object') mod.variantKey = variantKey;
     }
     bossModifier = mod || null;
-    const enemy = buildUnitForCombat(unit, mult, team.length + 1, true);
+    const bossLevel = mode === 'hard' ? (template?.boss_hard_level ?? template?.boss_level ?? null) : (template?.boss_level ?? null);
+    const bossSpec = mode === 'hard' ? (template?.boss_hard_specialization ?? 'A') : (template?.boss_specialization ?? 'A');
+    const enemy = buildUnitForCombat(unit, mult, team.length + 1, true, bossLevel, bossSpec);
     enemy.isBoss = true;
     team.push(enemy);
     return { team, bossModifier };
@@ -204,7 +208,9 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
     const unit = await getUnitByCode(code);
     if (!unit) continue;
     const pos = spec.position === 'back' ? 'back' : 'front';
-    const u = buildUnitForCombat(unit, mult, i + 1, false);
+    const unitLevel = mode === 'hard' ? (spec.hard_level ?? spec.level ?? null) : (spec.level ?? null);
+    const unitSpec = mode === 'hard' ? (spec.hard_specialization ?? null) : (spec.specialization ?? null);
+    const u = buildUnitForCombat(unit, mult, i + 1, false, unitLevel, unitSpec);
     u.position = pos;
     team.push(u);
   }
@@ -222,8 +228,9 @@ function parseJson(v) {
   }
 }
 
-function buildUnitForCombat(unitRow, multiplier, index, isBoss) {
-  const level = 20;
+function buildUnitForCombat(unitRow, multiplier, index, isBoss, levelOverride, specializationOverride) {
+  const level = levelOverride ?? 20;
+  const specialization = specializationOverride ?? null;
   const skillData = parseJson(unitRow.skill_data);
   const unit = {
     id: unitRow.id,
@@ -239,7 +246,7 @@ function buildUnitForCombat(unitRow, multiplier, index, isBoss) {
     base_speed: unitRow.base_speed,
     mastery: unitRow.mastery ?? 0,
     level,
-    specialization: null,
+    specialization,
     fatigue: 0,
     traits: parseJson(unitRow.traits) ?? unitRow.traits,
     skill_data: skillData,
@@ -247,7 +254,7 @@ function buildUnitForCombat(unitRow, multiplier, index, isBoss) {
     rangeType: unitRow.attack_type === 'melee' ? 'melee' : 'ranged',
     position: isBoss ? 'front' : 'front'
   };
-  const stats = computeScaledStats(unit, { level, specialization: null });
+  const stats = computeScaledStats(unit, { level, specialization });
   unit.maxHp = Math.round(stats.maxHp * multiplier);
   unit.attack = Math.round(stats.attack * multiplier);
   unit.defense = Math.round(stats.defense * multiplier);
@@ -329,7 +336,7 @@ export async function grantCampaignXp(userId, teamSlots, survivors, isBoss, mode
   let useComputedFatigue = false;
   try {
     rows = await query(
-      `SELECT id, fatigue, fatigue_last_update FROM user_units WHERE id IN (${placeholders})`,
+      `SELECT id, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
       ids
     );
     useComputedFatigue = true;
@@ -346,7 +353,8 @@ export async function grantCampaignXp(userId, teamSlots, survivors, isBoss, mode
       const fatigue = useComputedFatigue
         ? computeCurrentFatigue({
             fatigue: r.fatigue ?? 0,
-            fatigue_last_update: r.fatigue_last_update
+            fatigue_last_update: r.fatigue_last_update,
+            fatigue_last_update_ts: r.fatigue_last_update_ts
           }).fatigue
         : (r.fatigue ?? 0);
       return [r.id, fatigue];
@@ -378,7 +386,7 @@ export async function applyCampaignFatigue(userUnitIds) {
   let hasFatigueLastUpdate = false;
   try {
     rows = await query(
-      `SELECT id, fatigue, fatigue_last_update FROM user_units WHERE id IN (${placeholders})`,
+      `SELECT id, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
       userUnitIds
     );
     hasFatigueLastUpdate = true;
@@ -397,7 +405,8 @@ export async function applyCampaignFatigue(userUnitIds) {
     const { fatigue: current, minutesPassed } = hasFatigueLastUpdate
       ? computeCurrentFatigue({
           fatigue: r.fatigue ?? 0,
-          fatigue_last_update: r.fatigue_last_update
+          fatigue_last_update: r.fatigue_last_update,
+          fatigue_last_update_ts: r.fatigue_last_update_ts
         })
       : { fatigue: r.fatigue ?? 0, minutesPassed: 0 };
     const newFatigue = Math.min(100, current + FATIGUE_PER_COMBAT);

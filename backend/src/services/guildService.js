@@ -530,6 +530,51 @@ export async function updateGuildMemberRole(actorUserId, targetUserId, nextRole)
 }
 
 /**
+ * Permet au leader d'expulser un membre de la guilde.
+ */
+export async function kickGuildMember(actorUserId, targetUserId) {
+  const normalizedTargetUserId = Number(targetUserId);
+  if (!Number.isInteger(normalizedTargetUserId) || normalizedTargetUserId < 1) {
+    throw buildGuildError('INVALID_MEMBER_ID', 'Membre invalide.');
+  }
+  if (Number(actorUserId) === normalizedTargetUserId) {
+    throw buildGuildError('CANNOT_KICK_SELF', 'Vous ne pouvez pas vous expulser vous-même. Utilisez "Quitter la guilde".');
+  }
+
+  let guildId = null;
+
+  await withTransaction(async (tx) => {
+    const actorMembership = await getGuildMembership(actorUserId, tx);
+    if (!actorMembership) {
+      throw buildGuildError('NOT_IN_GUILD', "Vous n'êtes dans aucune guilde.");
+    }
+    if (actorMembership.role !== GUILD_ROLES.LEADER) {
+      throw buildGuildError('INSUFFICIENT_PERMISSIONS', 'Seul le leader peut expulser des membres.');
+    }
+    guildId = actorMembership.guild_id;
+
+    const targetRows = await tx.query(
+      `SELECT guild_id, user_id, role FROM guild_members WHERE user_id = ? LIMIT 1`,
+      [normalizedTargetUserId]
+    );
+    const targetMembership = targetRows[0] ?? null;
+    if (!targetMembership || Number(targetMembership.guild_id) !== Number(guildId)) {
+      throw buildGuildError('GUILD_MEMBER_NOT_FOUND', 'Ce membre ne fait pas partie de votre guilde.');
+    }
+    if (String(targetMembership.role) === GUILD_ROLES.LEADER) {
+      throw buildGuildError('CANNOT_KICK_LEADER', "Impossible d'expulser le leader.");
+    }
+
+    await tx.query('DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?', [guildId, normalizedTargetUserId]);
+  });
+
+  return {
+    message: 'Membre expulsé de la guilde.',
+    members: await getGuildMembers(guildId)
+  };
+}
+
+/**
  * Permet à un utilisateur de quitter sa guilde.
  * Si le leader quitte et est seul : la guilde est supprimée.
  * Si le leader quitte et a des membres : le premier officier (ou membre) devient leader.

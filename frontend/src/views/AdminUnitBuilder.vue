@@ -74,7 +74,7 @@
                   </select>
                 </label>
                 <label>Rôle
-                  <select v-model="form.role">
+                  <select v-model="form.role" @change="onRoleChange">
                     <option v-for="r in schema.roles" :key="r" :value="r">{{ r }}</option>
                   </select>
                 </label>
@@ -103,30 +103,25 @@
               </div>
             </div>
 
-            <div class="section">
+            <div v-if="showNoyauSection" class="section">
               <h3>1.b Noyau</h3>
-              <div class="form-row compact single">
-                <label class="checkbox-inline">
-                  <input v-model="form.has_noyau" type="checkbox" />
-                  <span>Cette unité possède un noyau</span>
-                </label>
-              </div>
-              <div v-if="form.has_noyau" class="form-grid">
-                <label>Stat ciblée
-                  <select v-model="form.noyau_stat">
+              <p class="unit-image-help">
+                Les unités epic, legendary et mythic ont obligatoirement un noyau.
+              </p>
+              <div class="form-grid">
+                <label class="field-required">Stat ciblée
+                  <select v-model="form.noyau_stat" required>
+                    <option value="">— Choisir —</option>
                     <option v-for="opt in noyauStatOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                   </select>
                 </label>
-                <label>Bonus %
-                  <input v-model.number="form.noyau_percent" type="number" min="1" step="1" />
+                <label class="field-required">Bonus %
+                  <input v-model.number="form.noyau_percent" type="number" min="1" step="1" required />
                 </label>
                 <label>Description
                   <input :value="generatedNoyauDescription" type="text" readonly />
                 </label>
               </div>
-              <p class="unit-image-help">
-                Le noyau reste optionnel. Quand il existe, il applique toujours un bonus de type <code>+X% sur une stat</code>.
-              </p>
             </div>
 
             <!-- Image unité (sélection depuis personnages/) -->
@@ -563,10 +558,10 @@
         <div class="actions">
           <button type="button" class="nx-btn" @click="validate" :disabled="loading">Valider</button>
           <template v-if="form.id">
-            <button type="button" class="nx-btn" :disabled="!isValid || hasInvalidSkills || hasInvalidSpecializations || loading" @click="updateUnit">Mettre à jour</button>
+            <button type="button" class="nx-btn" :disabled="!isValid || hasInvalidSkills || hasInvalidSpecializations || hasNoyauRequiredInvalid || loading" @click="updateUnit">Mettre à jour</button>
             <button type="button" class="nx-btn nx-btn-danger" :disabled="loading" @click="deleteUnit">Supprimer</button>
           </template>
-          <button v-else type="button" class="nx-btn" :disabled="!isValid || hasInvalidSkills || hasInvalidSpecializations || loading" @click="createUnit">Créer unité</button>
+          <button v-else type="button" class="nx-btn" :disabled="!isValid || hasInvalidSkills || hasInvalidSpecializations || hasNoyauRequiredInvalid || loading" @click="createUnit">Créer unité</button>
           <button type="button" class="nx-btn" @click="simulate" :disabled="loading">Simulation rapide</button>
         </div>
 
@@ -601,7 +596,7 @@
           <button
             type="button"
             class="nx-btn floating-save-btn"
-            :disabled="loading || hasInvalidSkills || hasInvalidSpecializations"
+            :disabled="loading || hasInvalidSkills || hasInvalidSpecializations || hasNoyauRequiredInvalid"
             @click="validateAndSave"
           >
             Valider + Sauvegarder
@@ -749,11 +744,43 @@ const noyauStatOptions: Array<{ value: NoyauStat; label: string }> = [
   { value: 'mastery', label: toStatFr('mastery') }
 ];
 const generatedNoyauDescription = computed(() => {
-  if (!form.value.has_noyau) return '';
+  const r = String(form.value.rarity ?? '').toLowerCase();
+  const hasNoyauByRarity = ['epic', 'legendary', 'mythic'].includes(r);
+  if (!form.value.has_noyau && !hasNoyauByRarity) return '';
   const label = noyauStatOptions.find((opt) => opt.value === form.value.noyau_stat)?.label ?? toStatFr(form.value.noyau_stat);
   const percent = Math.max(0, Number(form.value.noyau_percent) || 0);
   return `+${percent}% ${label}`;
 });
+
+/** Afficher la section noyau uniquement pour epic, legendary, mythic. */
+const showNoyauSection = computed(() =>
+  ['epic', 'legendary', 'mythic'].includes(String(form.value.rarity ?? '').toLowerCase())
+);
+
+/** Invalide si epic/legendary/mythic mais noyau incomplet. */
+const hasNoyauRequiredInvalid = computed(() => {
+  if (!showNoyauSection.value) return false;
+  const stat = (form.value.noyau_stat ?? '').toString().trim();
+  const percent = Number(form.value.noyau_percent);
+  return !stat || !(percent > 0);
+});
+
+/** Auto-remplit attack_type et archetype selon le rôle. */
+function onRoleChange() {
+  if (isLoadingUnitIntoForm.value) return;
+  const role = String(form.value.role ?? '').toLowerCase();
+  const map: Record<string, { attack_type: string; archetype: string }> = {
+    tank: { attack_type: 'melee', archetype: 'CAC_TANK' },
+    assassin: { attack_type: 'melee', archetype: 'CAC_DPS' },
+    support: { attack_type: 'ranged', archetype: 'DISTANCE' },
+    ranged: { attack_type: 'ranged', archetype: 'DISTANCE' }
+  };
+  const mapped = map[role];
+  if (mapped) {
+    form.value.attack_type = mapped.attack_type;
+    form.value.archetype = mapped.archetype;
+  }
+}
 
 const filteredUnitImageAssets = computed(() => {
   const q = unitImageSearch.value.trim().toLowerCase();
@@ -1710,7 +1737,9 @@ function buildPayload() {
 
   const specA = buildSpecPayload(form.value.specA_skill_modifier as SpecSkillModifier);
   const specB = buildSpecPayload(form.value.specB_skill_modifier as SpecSkillModifier);
-  const noyau = form.value.has_noyau
+  const rarity = String(form.value.rarity ?? '').toLowerCase();
+  const hasNoyauByRarity = ['epic', 'legendary', 'mythic'].includes(rarity);
+  const noyau = hasNoyauByRarity
     ? {
         description: generatedNoyauDescription.value,
         effects: [{

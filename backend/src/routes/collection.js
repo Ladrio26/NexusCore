@@ -78,7 +78,84 @@ async function handleCollection(request, reply) {
     ownerDisplayName = userRows[0]?.display_name ?? null;
   }
 
-  const baseSelectFull = `SELECT uu.id AS user_unit_id,
+  /** Avec fatigue_last_update pour décrément -1/min */
+  const baseSelectWithFatigue = `SELECT uu.id AS user_unit_id,
+              uu.level,
+              uu.xp,
+              uu.specialization,
+              uu.power_level,
+              uu.power_openings,
+              uu.ascension_count,
+              uu.fatigue,
+              uu.fatigue_last_update,
+              UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts,
+              uu.injury_level,
+              uu.is_injured,
+              uu.basic_targeting,
+              uu.skill_targeting,
+              u.id AS unit_id,
+              u.code,
+              u.name,
+              u.rarity,
+              u.role,
+              u.attack_type,
+              u.element,
+              u.archetype,
+              u.base_hp,
+              u.base_attack,
+              u.base_defense,
+              u.base_speed,
+              u.mastery,
+              u.image_url,
+              u.traits,
+              u.skill_data,
+              u.synergy_tag,
+              u.core_type,
+              u.specA_bonus_stat,
+              u.specB_bonus_stat
+       FROM user_units uu
+       JOIN units u ON u.id = uu.unit_id
+       WHERE uu.user_id = ?`;
+
+  /** Avec fatigue_last_update SANS basic_targeting/skill_targeting (fallback si colonnes targeting absentes) */
+  const baseSelectFatigueOnly = `SELECT uu.id AS user_unit_id,
+              uu.level,
+              uu.xp,
+              uu.specialization,
+              uu.power_level,
+              uu.power_openings,
+              uu.ascension_count,
+              uu.fatigue,
+              uu.fatigue_last_update,
+              UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts,
+              uu.injury_level,
+              uu.is_injured,
+              u.id AS unit_id,
+              u.code,
+              u.name,
+              u.rarity,
+              u.role,
+              u.attack_type,
+              u.element,
+              u.archetype,
+              u.base_hp,
+              u.base_attack,
+              u.base_defense,
+              u.base_speed,
+              u.mastery,
+              u.image_url,
+              u.traits,
+              u.skill_data,
+              u.synergy_tag,
+              u.core_type,
+              u.specA_bonus_stat,
+              u.specB_bonus_stat
+       FROM user_units uu
+       JOIN units u ON u.id = uu.unit_id
+       WHERE uu.user_id = ?`;
+
+  /** Sans fatigue_last_update (fallback si colonne fatigue_last_update absente) */
+  const baseSelectWithoutFatigue = `SELECT uu.id AS user_unit_id,
               uu.level,
               uu.xp,
               uu.specialization,
@@ -113,34 +190,39 @@ async function handleCollection(request, reply) {
        FROM user_units uu
        JOIN units u ON u.id = uu.unit_id
        WHERE uu.user_id = ?`;
+
   let rows;
   let hasFatigueLastUpdate = false;
   let hasTargeting = true;
 
-  const selectWithFatigueUpdate = baseSelectFull.replace(
-    'uu.fatigue,\n              uu.injury_level',
-    'uu.fatigue,\n              uu.fatigue_last_update,\n              uu.injury_level'
-  );
-
   try {
-    rows = await query(selectWithFatigueUpdate, [userId]);
+    rows = await query(baseSelectWithFatigue, [userId]);
     hasFatigueLastUpdate = true;
   } catch (err) {
     const isBadField = err?.code === 'ER_BAD_FIELD_ERROR';
     const msg = (err?.message || '').toString();
     if (!isBadField) throw err;
     try {
-      rows = await query(baseSelectFull, [userId]);
-      if (msg.includes('fatigue_last_update')) hasFatigueLastUpdate = false;
+      /* Fallback : fatigue sans targeting (si basic_targeting/skill_targeting absents) */
+      rows = await query(baseSelectFatigueOnly, [userId]);
+      hasFatigueLastUpdate = true;
+      hasTargeting = false;
     } catch (e2) {
       if (e2?.code !== 'ER_BAD_FIELD_ERROR' && !(e2?.message || '').includes('basic_targeting')) throw e2;
-      hasTargeting = false;
-      hasFatigueLastUpdate = false;
-      rows = await query(BASE_SELECT_MINIMAL, [userId]);
+      try {
+        rows = await query(baseSelectWithoutFatigue, [userId]);
+        if (msg.includes('fatigue_last_update')) hasFatigueLastUpdate = false;
+      } catch (e3) {
+        hasTargeting = false;
+        hasFatigueLastUpdate = false;
+        rows = await query(BASE_SELECT_MINIMAL, [userId]);
+      }
     }
   }
 
-    const parseJson = (v) => {
+  if (!Array.isArray(rows)) rows = [];
+
+  const parseJson = (v) => {
       if (v == null) return null;
       if (typeof v === 'object') return v;
       if (typeof v !== 'string') return v;
@@ -160,7 +242,8 @@ async function handleCollection(request, reply) {
       if (hasFatigueLastUpdate) {
         const computed = computeCurrentFatigue({
           fatigue: r.fatigue ?? 0,
-          fatigue_last_update: r.fatigue_last_update
+          fatigue_last_update: r.fatigue_last_update,
+          fatigue_last_update_ts: r.fatigue_last_update_ts
         });
         fatigue = computed.fatigue;
         minutesPassed = computed.minutesPassed;
@@ -170,6 +253,9 @@ async function handleCollection(request, reply) {
             [fatigue, r.user_unit_id]
           );
           logFatigueRecalculated(r.user_unit_id, r.fatigue, minutesPassed, fatigue);
+        } else if (r.fatigue_last_update == null) {
+          /* Anciennes unités : initialiser fatigue_last_update pour que le décrement -1/min fonctionne */
+          await query('UPDATE user_units SET fatigue_last_update=NOW() WHERE id=?', [r.user_unit_id]);
         }
       } else {
         fatigue = toSafeNumber(r.fatigue ?? 0);

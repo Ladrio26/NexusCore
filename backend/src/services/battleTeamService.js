@@ -207,7 +207,7 @@ export async function buildTeamFromDb(userId, slots) {
   if (ids.length === 0) return [];
 
   const placeholders = ids.map(() => '?').join(',');
-  const selectWithFatigueUpdate = `SELECT uu.id AS user_unit_id, uu.level, uu.xp, uu.specialization, uu.power_level, uu.power_openings, uu.fatigue, uu.fatigue_last_update, uu.injury_level, uu.is_injured,
+  const selectWithFatigueUpdate = `SELECT uu.id AS user_unit_id, uu.level, uu.xp, uu.specialization, uu.power_level, uu.power_openings, uu.fatigue, uu.fatigue_last_update, UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts, uu.injury_level, uu.is_injured,
     uu.basic_targeting, uu.skill_targeting,
     u.id AS unit_id, u.code, u.name, u.rarity, u.role, u.attack_type, u.element, u.archetype, u.image_url,
     u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery, u.traits, u.skill_data,
@@ -268,7 +268,8 @@ export async function buildTeamFromDb(userId, slots) {
     if (hasFatigueLastUpdate) {
       const computed = computeCurrentFatigue({
         fatigue: row.fatigue ?? 0,
-        fatigue_last_update: row.fatigue_last_update
+        fatigue_last_update: row.fatigue_last_update,
+        fatigue_last_update_ts: row.fatigue_last_update_ts
       });
       fatigue = computed.fatigue;
       if (computed.minutesPassed > 0) {
@@ -277,6 +278,9 @@ export async function buildTeamFromDb(userId, slots) {
           [fatigue, row.user_unit_id]
         );
         logFatigueRecalculated(row.user_unit_id, row.fatigue, computed.minutesPassed, fatigue);
+      } else if (row.fatigue_last_update == null) {
+        /* Anciennes unités : initialiser fatigue_last_update pour que le décrement -1/min fonctionne */
+        await query('UPDATE user_units SET fatigue_last_update=NOW() WHERE id=?', [row.user_unit_id]);
       }
     } else {
       fatigue = row.fatigue ?? 0;

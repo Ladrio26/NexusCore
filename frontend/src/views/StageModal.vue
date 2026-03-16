@@ -9,8 +9,32 @@
                 <h2 class="stage-title">{{ battleTitle }}</h2>
               </div>
               <div class="header-right">
+                <span v-if="battleResult && hasReplayMode" class="round-counter" :title="'Tour actuel / limite avant match nul'">{{ currentRound }} / {{ MAX_ROUNDS }}</span>
+                <button
+                  type="button"
+                  class="auto-mode-btn"
+                  :class="{ active: autoMode }"
+                  :title="autoMode ? 'Désactiver le mode auto' : 'Activer le mode auto'"
+                  @click="toggleAutoMode"
+                >
+                  <span class="btn-text-desktop">{{ autoMode ? '⚡ Auto' : 'Mode Auto' }}</span>
+                  <span class="btn-text-mobile">{{ autoMode ? '⚡' : 'Auto' }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="logs-toggle-btn"
+                  :class="{ active: showLogs }"
+                  :title="showLogs ? 'Masquer les logs' : 'Afficher les logs'"
+                  @click="showLogs = !showLogs"
+                >
+                  <span class="btn-text-desktop">{{ showLogs ? '📋 Logs' : 'Logs' }}</span>
+                  <span class="btn-text-mobile">{{ showLogs ? '📋' : 'Logs' }}</span>
+                </button>
                 <button type="button" class="close-btn" aria-label="Fermer" @click="closeAndNotify">✕</button>
-                <button type="button" class="legend-btn" @click="toggleLegend">Légende</button>
+                <button type="button" class="legend-btn" @click="toggleLegend">
+                  <span class="btn-text-desktop">Légende</span>
+                  <span class="btn-text-mobile">?</span>
+                </button>
               </div>
             </div>
             <div v-if="showBattleResult" class="stage-result" :class="resultClass">{{ resultText }}</div>
@@ -57,6 +81,9 @@
             <div v-else-if="showForcedAutoHint" class="manual-decision-hint">
               {{ forcedAutoHintText }}
             </div>
+            <div v-else-if="showAutoModeHint" class="manual-decision-hint manual-decision-hint--auto">
+              ⚡ Mode Auto actif — tes unités jouent seules.
+            </div>
           </template>
           <template v-else>
             <div class="modal-header stage-modal-header battle-header">
@@ -84,7 +111,7 @@
           </div>
 
           <div v-if="!hasAnyPreset" class="no-team">
-            <p>Crée une équipe dans le <router-link to="/team-builder">Team Builder</router-link> pour combattre.</p>
+            <p>Crée une équipe dans <router-link to="/team-builder">Mes Equipes</router-link> pour combattre.</p>
           </div>
 
           <div v-else class="preset-select">
@@ -163,8 +190,8 @@
               </div>
             </div>
             <div class="battle-body">
-            <div class="combat-layout">
-              <div class="battle-logs battle-logs-left log-column team-a">
+            <div class="combat-layout" :class="{ 'logs-hidden': !showLogs }">
+              <div v-if="showLogs" class="battle-logs battle-logs-left log-column team-a">
                 <div ref="logColumnARef" class="log-container" @scroll="replayLogScrollLock = true">
                   <template v-if="hasReplayMode">
                     <div v-for="(log, i) in visibleReplayLogEntries.logsA" :key="'ra-' + i" class="log-entry" :class="{ 'log-entry-current': hasReplayMode && i === visibleReplayLogEntries.logsA.length - 1 }" :style="{ color: log.color }">{{ log.text }}</div>
@@ -192,7 +219,7 @@
                 </div>
               </div>
               </div>
-              <div class="battle-logs battle-logs-right log-column team-b">
+              <div v-if="showLogs" class="battle-logs battle-logs-right log-column team-b">
                 <div ref="logColumnBRef" class="log-container" @scroll="replayLogScrollLock = true">
                   <template v-if="hasReplayMode">
                     <div v-for="(log, i) in visibleReplayLogEntries.logsB" :key="'rb-' + i" class="log-entry" :class="{ 'log-entry-current': hasReplayMode && i === visibleReplayLogEntries.logsB.length - 1 }" :style="{ color: log.color }">{{ log.text }}</div>
@@ -216,7 +243,7 @@
 import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { getHardChapterModifierLabelsFr } from '../../../core/campaignHardModifiers.js';
 // @ts-expect-error moteur JS sans types
-import { simulateBattle } from '@engine/combatEngine.js';
+import { simulateBattle, MAX_ROUNDS } from '@engine/combatEngine.js';
 import api, { getToken } from '../api';
 import Battlefield from '../components/Battlefield.vue';
 import { getBuffVisual } from '../utils/buffVisualMap';
@@ -397,9 +424,14 @@ const deadUnitIds = ref<Set<string>>(new Set());
 const logsTeamA = ref<{ text: string; color: string }[]>([]);
 const logsTeamB = ref<{ text: string; color: string }[]>([]);
 const showLegend = ref(false);
+const showLogs = ref(true);
 
 function toggleLegend() {
   showLegend.value = !showLegend.value;
+}
+
+function toggleAutoMode() {
+  autoMode.value = !autoMode.value;
 }
 
 function closeLegend() {
@@ -442,6 +474,7 @@ const manualActionChoice = ref<ManualAction | null>(null);
 const manualTargetChoice = ref<number | null>(null);
 const manualDecisionError = ref('');
 const manualSkillHover = ref(false);
+const autoMode = ref(false);
 
 let __lastAppliedSnapshot: ReplaySnapshot | null = null;
 let __lastAppliedTick: number | null = null;
@@ -455,6 +488,8 @@ const currentReplaySnapshot = computed((): ReplaySnapshot | null => {
   const i = Math.max(0, Math.min(replayFrameIndex.value, frames.length - 1));
   return frames[i]?.snapshot ?? null;
 });
+
+const currentRound = computed(() => currentReplaySnapshot.value?.turn ?? 0);
 
 function getSnapshotFlatUnits(snapshot: ReplaySnapshot | null): Array<Record<string, unknown>> {
   if (!snapshot) return [];
@@ -614,12 +649,13 @@ const showManualDecisionPanel = computed(() =>
   replayFrameIndex.value >= replayFrames.value.length - 1
 );
 
-/** Panneau visible (mais grisé) même pendant l'animation, dès qu'un contexte de décision existe. */
+/** Panneau visible (mais grisé) même pendant l'animation, dès qu'un contexte de décision existe. Masqué en Mode Auto. */
 const showDecisionPanelVisible = computed(() =>
   hasReplayMode.value &&
   !!manualDecisionContext.value &&
   !manualDecisionContext.value.isStunned &&
-  !manualDecisionContext.value.isProvoked
+  !manualDecisionContext.value.isProvoked &&
+  !autoMode.value
 );
 
 /** True pendant l'animation (frames en cours), le panneau est affiché mais désactivé. */
@@ -633,6 +669,10 @@ const showForcedAutoHint = computed(() =>
   !!manualDecisionContext.value &&
   (manualDecisionContext.value.isStunned || manualDecisionContext.value.isProvoked) &&
   replayFrameIndex.value >= replayFrames.value.length - 1
+);
+
+const showAutoModeHint = computed(() =>
+  hasReplayMode.value && autoMode.value && !!battleResult.value?.decisionRequest && replayFrameIndex.value >= replayFrames.value.length - 1
 );
 
 const forcedAutoHintText = computed(() => {
@@ -2061,6 +2101,22 @@ function submitInteractiveAction(action: ManualAction, targetCombatIndex: number
   runEngineLocally(false);
 }
 
+function performAutoDecision() {
+  const dr = battleResult.value?.decisionRequest;
+  const ctx = manualDecisionContext.value;
+  if (!dr || !ctx || ctx.isStunned || ctx.isProvoked || !hasReplayMode.value) return;
+  if (replayFrameIndex.value < replayFrames.value.length - 1) return;
+  const actionRaw = String((dr as { suggestedAction?: string })?.suggestedAction ?? 'BASIC').toUpperCase();
+  const action: ManualAction = actionRaw === 'SKILL' && ctx.skillAvailable ? 'SKILL' : 'BASIC';
+  const pool = action === 'SKILL' ? ctx.skillTargets : ctx.basicTargets;
+  const target = ctx.expectedTargetCombatIndex != null
+    ? pool.find((t) => t.combatIndex === ctx.expectedTargetCombatIndex)?.combatIndex
+    : pool[0]?.combatIndex;
+  if (target == null) return;
+  manualDecisionError.value = '';
+  submitInteractiveAction(action, target);
+}
+
 async function confirmManualDecision() {
   const ctx = manualDecisionContext.value;
   if (!ctx) return;
@@ -2140,6 +2196,23 @@ watch(manualDecisionContext, (ctx) => {
     manualActionChoice.value = 'BASIC';
   }
 });
+
+watch(
+  () => [
+    autoMode.value,
+    manualDecisionContext.value,
+    battleResult.value?.decisionRequest,
+    replayFrameIndex.value,
+    replayFrames.value.length
+  ],
+  () => {
+    if (!autoMode.value || !battleResult.value?.decisionRequest || replayFrameIndex.value < replayFrames.value.length - 1) return;
+    const ctx = manualDecisionContext.value;
+    if (!ctx || ctx.isStunned || ctx.isProvoked) return;
+    nextTick(() => performAutoDecision());
+  },
+  { flush: 'post' }
+);
 
 function triggerReplayAttackAnimations() {
   if (!hasReplayMode.value || !battlefieldRef.value) return;
@@ -3527,9 +3600,11 @@ function handleBeforeUnload() {
 .modal-header.modal-header--combat {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   margin-bottom: 10px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .modal-header--combat .header-left {
   display: flex;
@@ -3546,10 +3621,37 @@ function handleBeforeUnload() {
 }
 .modal-header--combat .header-right {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+  flex-direction: row;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+.modal-header--combat .round-counter {
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 4px 8px;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.modal-header--combat .round-counter[title]:hover {
+  color: #cbd5e1;
+}
+.round-counter {
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 4px 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  font-variant-numeric: tabular-nums;
+}
+.btn-text-mobile {
+  display: none;
+}
+.btn-text-desktop {
+  display: inline;
 }
 .modal-header--combat .close-btn {
   background: transparent;
@@ -3585,6 +3687,61 @@ function handleBeforeUnload() {
 }
 .modal-header--combat .legend-btn:hover {
   border-color: rgba(0, 255, 200, 0.4);
+  color: #a5f3fc;
+}
+.modal-header--combat .logs-toggle-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #e5e7eb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.modal-header--combat .logs-toggle-btn:hover {
+  border-color: rgba(0, 255, 200, 0.4);
+  color: #a5f3fc;
+}
+.modal-header--combat .logs-toggle-btn.active {
+  background: rgba(0, 255, 200, 0.15);
+  color: #a5f3fc;
+  border-color: rgba(0, 255, 200, 0.5);
+}
+
+/* Libellés desktop par défaut, mobile masqué */
+.modal-header--combat .btn-text-mobile {
+  display: none;
+}
+.modal-header--combat .btn-text-desktop {
+  display: inline;
+}
+.auto-mode-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #e5e7eb;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.auto-mode-btn:hover {
+  border-color: rgba(0, 255, 200, 0.4);
+  color: #a5f3fc;
+}
+.auto-mode-btn.active {
+  background: rgba(0, 255, 200, 0.2);
+  color: #a5f3fc;
+  border-color: rgba(0, 255, 200, 0.5);
+}
+.modal-header--combat .btn-text-mobile {
+  display: none;
+}
+.modal-header--combat .btn-text-desktop {
+  display: inline;
+}
+.manual-decision-hint--auto {
+  background: rgba(0, 255, 200, 0.08);
+  border-color: rgba(0, 255, 200, 0.35);
   color: #a5f3fc;
 }
 .replay-controls--inline {
@@ -3742,6 +3899,72 @@ function handleBeforeUnload() {
   }
   .modal-card.stage-modal.modal-card--combat {
     max-height: 95vh;
+  }
+}
+
+@media (max-width: 768px) {
+  .battle-overlay.modal-backdrop.modal-overlay {
+    padding: 0.5rem;
+  }
+
+  .battle-modal {
+    padding: 12px;
+  }
+
+  .modal-card.stage-modal {
+    padding: 1rem;
+    max-width: 100%;
+  }
+
+  /* Header combat : titre masqué, boutons sur une ligne, plus compacts */
+  .modal-header--combat .header-left {
+    display: none;
+  }
+  .modal-header--combat .header-right {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+  }
+  .modal-header--combat .close-btn,
+  .modal-header--combat .legend-btn,
+  .modal-header--combat .logs-toggle-btn,
+  .modal-header--combat .auto-mode-btn {
+    min-height: 28px;
+    min-width: 28px;
+    padding: 4px 6px;
+    font-size: 10px;
+  }
+  .modal-header--combat .close-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 0.85rem;
+  }
+
+  .manual-action-btn,
+  .manual-target-btn,
+  .manual-confirm-btn {
+    min-height: 44px;
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+
+  .manual-decision-panel {
+    margin: 8px 10px;
+    padding: 12px;
+  }
+
+  .btn-fight {
+    min-height: 48px;
+    padding: 14px 20px;
+    font-size: 1rem;
+  }
+
+  .preset-option {
+    padding: 12px 16px;
+    min-height: 44px;
   }
 }
 
@@ -3975,6 +4198,30 @@ function handleBeforeUnload() {
   color: #cbd5e1;
   font-size: 12px;
 }
+.manual-decision-hint--auto {
+  background: rgba(0, 255, 200, 0.12);
+  border-color: rgba(0, 255, 200, 0.35);
+  color: #a5f3fc;
+}
+.auto-mode-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(30, 41, 59, 0.9);
+  color: #94a3b8;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-right: 6px;
+}
+.auto-mode-btn:hover {
+  border-color: rgba(0, 255, 200, 0.4);
+  color: #a5f3fc;
+}
+.auto-mode-btn.active {
+  background: rgba(0, 255, 200, 0.2);
+  color: #a5f3fc;
+  border-color: rgba(0, 255, 200, 0.5);
+}
 .replay-speed-btn {
   padding: 4px 10px;
   font-size: 12px;
@@ -3988,6 +4235,30 @@ function handleBeforeUnload() {
   background: rgba(0, 255, 200, 0.2);
   color: #a5f3fc;
   border-color: rgba(0, 255, 200, 0.5);
+}
+.auto-mode-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(30, 41, 59, 0.9);
+  color: #94a3b8;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+.auto-mode-btn:hover {
+  border-color: rgba(255, 200, 0, 0.5);
+  color: #fde047;
+}
+.auto-mode-btn.active {
+  background: rgba(255, 200, 0, 0.15);
+  color: #fde047;
+  border-color: rgba(255, 200, 0, 0.5);
+}
+.manual-decision-hint--auto {
+  border-color: rgba(255, 200, 0, 0.4);
+  background: rgba(255, 200, 0, 0.08);
+  color: #fde047;
 }
 .replay-timeline {
   margin-top: 8px;
@@ -4189,11 +4460,15 @@ function handleBeforeUnload() {
   width: 100%;
   min-height: 0;
   overflow: hidden;
+  gap: 0;
+  align-items: stretch;
 }
 
 .battle-logs {
   width: 280px;
   min-width: 280px;
+  flex: 1 1 280px;
+  max-width: 380px;
   overflow-y: auto;
   height: 100%;
 }
@@ -4201,10 +4476,66 @@ function handleBeforeUnload() {
 .battle-logs-left,
 .battle-logs-right {
   width: 280px;
+  min-width: 280px;
+  flex: 1 1 280px;
+  max-width: 380px;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/* Mobile: terrain en priorité, logs compacts en dessous */
+@media (max-width: 768px) {
+  .combat-layout {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .battle-arena {
+    order: -1;
+    flex: 1 1 auto;
+    min-height: min(65vh, 380px);
+    padding: 12px 8px;
+  }
+
+  .combat-visual {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .battlefield-wrapper {
+    margin-top: 4px;
+    flex: 1;
+    min-width: 0;
+    max-width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+
+  .battlefield {
+    padding: 8px;
+    margin: 0.25rem 0;
+    max-width: 100%;
+  }
+
+  .battle-logs,
+  .battle-logs-left,
+  .battle-logs-right {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    max-height: 110px;
+  }
+
+  .log-column {
+    padding: 8px;
+    font-size: 11px;
+  }
 }
 
 .battle-logs-left .log-container,
@@ -4225,7 +4556,7 @@ function handleBeforeUnload() {
 }
 
 .log-column {
-  padding: 15px;
+  padding: 12px;
   font-size: 13px;
   background: #0b1220;
 }
@@ -4249,7 +4580,7 @@ function handleBeforeUnload() {
   align-items: center;
   overflow: visible;
   min-width: 0;
-  padding: 20px 0;
+  padding: 0;
   position: relative;
 }
 

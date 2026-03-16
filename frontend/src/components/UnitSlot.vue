@@ -70,6 +70,7 @@ function shortType(type: string): string {
 <style scoped>
 .unit-slot {
   width: 130px;
+  max-width: 100%;
   padding: 0.4rem;
   border-radius: 0.6rem;
   background: rgba(15, 23, 42, 0.9);

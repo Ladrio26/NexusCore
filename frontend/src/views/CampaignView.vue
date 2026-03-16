@@ -424,6 +424,22 @@ onMounted(async () => {
   }
 }
 
+@media (max-width: 768px) {
+  .campaign {
+    padding: 1rem 0;
+  }
+  .campaign-header h1 {
+    font-size: 1.25rem;
+  }
+  .chapter-tabs {
+    gap: 0.4rem;
+  }
+  .map-wrap {
+    padding: 1rem;
+    min-height: 280px;
+  }
+}
+
 .map-wrap {
   position: relative;
   width: min(100%, 980px);

@@ -3,8 +3,8 @@
     <h1 class="sanctuaire-title nx-title">Sanctuaire d'Invocation</h1>
 
     <div class="currency-bar">
-      <div>💰 Crédits : <strong>{{ wallet.credits }}</strong></div>
       <div>🔷 Cores : <strong>{{ wallet.cores }}</strong></div>
+      <div>💰 Crédits : <strong>{{ wallet.credits }}</strong></div>
       <div>🧩 Fragments : <strong>{{ wallet.fragments }}</strong></div>
       <div>✨ Essence : <strong>{{ wallet.ascension_essence }}</strong></div>
     </div>
@@ -2008,6 +2008,16 @@ onUnmounted(() => {
 @media (max-width: 900px) {
   .multi-reveal-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sanctuaire-container {
+    padding: 1rem;
+  }
+  .multi-reveal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
   }
 }
 

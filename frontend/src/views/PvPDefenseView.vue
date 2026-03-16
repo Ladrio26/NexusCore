@@ -17,8 +17,8 @@
 
       <div v-if="presets.length === 0" class="no-presets">
         <p>Vous n'avez aucun preset d'équipe.</p>
-        <p>Créez-en un dans le <router-link to="/team-builder">Team Builder</router-link>, puis revenez ici pour le définir comme défense PvP.</p>
-        <router-link to="/team-builder" class="nx-btn">Aller au Team Builder</router-link>
+        <p>Créez-en un dans <router-link to="/team-builder">Mes Equipes</router-link>, puis revenez ici pour le définir comme défense PvP.</p>
+        <router-link to="/team-builder" class="nx-btn">Aller à Mes Equipes</router-link>
       </div>
 
       <template v-else>
@@ -84,7 +84,7 @@
       </template>
 
       <div class="page-footer">
-        <router-link to="/team-builder" class="link-secondary">Créer ou modifier un preset dans le Team Builder</router-link>
+        <router-link to="/team-builder" class="link-secondary">Créer ou modifier un preset dans Mes Equipes</router-link>
       </div>
     </div>
   </section>
