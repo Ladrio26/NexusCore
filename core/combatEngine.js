@@ -1,6 +1,18 @@
 import { initializeAtb, advanceAtb, pickNextActor } from './atb.js';
 import { chooseTarget, resolveTargets, hasProvoke, selectTarget } from './targeting.js';
-import { onUnitActionEnd, getStatModifiers, getEffectiveCombatStats, applyHeal, applyShield, getShieldTotal, consumeShieldBuffs, applyEffect, applyStatus, EffectType } from './effects.js';
+import {
+  onUnitActionEnd,
+  decrementRegenAndDotDurationsAfterProc,
+  getStatModifiers,
+  getEffectiveCombatStats,
+  applyHeal,
+  applyShield,
+  getShieldTotal,
+  consumeShieldBuffs,
+  applyEffect,
+  applyStatus,
+  EffectType
+} from './effects.js';
 import { BUFF_FIXED_VALUES } from './buffFixedValues.js';
 import { getPowerStatMultiplier } from './unitPower.js';
 import {
@@ -12,6 +24,7 @@ import {
   onSkillUsedSynergies
 } from './synergies.js';
 import { BattleEventType, createBattleLogEntry } from './battleEvents.js';
+import { getSkillTooltipPlainText } from './skillDescriptionTooltip.js';
 
 // PRNG déterministe (mulberry32)
 function createRng(seed) {
@@ -37,12 +50,15 @@ function clampFatigue(value) {
 // === Utilitaires génériques pour les effets ===
 
 function rollChance(state, chance) {
-  if (chance == null) return true;
-  if (chance >= 1) return true;
-  if (chance <= 0) return false;
+  if (chance == null || chance === '') return true;
+  let c = Number(chance);
+  if (!Number.isFinite(c)) return true;
+  if (c > 1) c = c / 100;
+  if (c >= 1) return true;
+  if (c <= 0) return false;
   const rng = state?.rng || Math.random;
   const r = typeof rng === 'function' ? rng() : Math.random();
-  return r < chance;
+  return r < c;
 }
 
 function targetHasStatus(target, statusKey) {
@@ -74,7 +90,15 @@ function getLifestealPercent(unit) {
   return Math.min(1, Math.max(0, pct));
 }
 
+/** Passif permanent : immunise aux débuffs et aux effets hostiles type STRIP, réduction d’ATB, max CD, vol de stat, etc. */
+function hasPermanentNegativeEffectImmunity(target) {
+  return !!target?.permanentDebuffImmunity;
+}
+
 function onBeforeApplyDebuff(target, effect) {
+  if (hasPermanentNegativeEffectImmunity(target)) {
+    return { blocked: true };
+  }
   if (targetHasStatus(target, EffectType.IMMUNITY)) {
     return { blocked: true };
   }
@@ -89,6 +113,9 @@ function isDebuffBuffType(buffType) {
 }
 
 function onBeforeReduceAtb(target) {
+  if (hasPermanentNegativeEffectImmunity(target)) {
+    return { blocked: true };
+  }
   if (targetHasStatus(target, EffectType.IMMUNITY)) {
     return { blocked: true };
   }
@@ -185,7 +212,7 @@ function normalizeDecimal(v) {
 /** Applique la normalisation virgule → point sur les champs numériques d'un effet (données DB ou API). */
 function normalizeEffectConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') return cfg || {};
-  const keys = ['value', 'percent', 'chance', 'percentMaxHp', 'percentMaxHpCaster', 'percentHp', 'mult', 'count', 'missingHpScaling'];
+  const keys = ['value', 'percent', 'chance', 'percentMaxHp', 'percentMaxHpCaster', 'percentHp', 'mult', 'count', 'missingHpScaling', 'percentPerRemoved', 'valuePerRemoved'];
   const out = { ...cfg };
   for (const k of keys) {
     if (out[k] !== undefined && out[k] !== null) {
@@ -232,8 +259,13 @@ function getFrenchStatLabel(stat) {
   }
 }
 
-function getUnitBaseSkillCooldown(unit) {
-  const baseCd = Number(unit?.skill?.cd_actions);
+function getUnitBaseSkillCooldown(unit, skillRef = null) {
+  if (skillRef && typeof skillRef === 'object') {
+    const baseCd = Number(skillRef.cd_actions);
+    return Number.isFinite(baseCd) && baseCd >= 0 ? baseCd : 0;
+  }
+  const inner = unit?.skill?.skill ?? unit?.skill;
+  const baseCd = Number(inner?.cd_actions);
   return Number.isFinite(baseCd) && baseCd >= 0 ? baseCd : 0;
 }
 
@@ -244,8 +276,61 @@ function skillHasCdManipulationEffects(skill) {
   const effects = inner?.effects ?? [];
   return effects.some((e) => {
     const t = String(e?.type ?? '').toUpperCase();
-    return t === 'RESET_SKILL_COOLDOWN' || t === 'SET_SKILL_COOLDOWN_MAX';
+    return t === 'RESET_SKILL_COOLDOWN' || t === 'SET_SKILL_COOLDOWN_MAX' || t === 'CD_UP' || t === 'CD_DOWN';
   });
+}
+
+/** Immunité manipulation CD : si une des compétences actives (slots) contient RESET/SET/CD_UP/CD_DOWN. */
+function unitHasSkillCdManipulationImmunity(unit) {
+  if (skillHasCdManipulationEffects(unit?.skill)) return true;
+  if (Array.isArray(unit?.activeSkillSlots)) {
+    for (const slot of unit.activeSkillSlots) {
+      if (skillHasCdManipulationEffects({ skill: slot?.skill })) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Construit les slots de compétences actives (CD indépendants, priorité croissante : plus petit = lancé en premier si plusieurs prêtes).
+ */
+function buildActiveSkillSlotsFromRaw(activeSkills) {
+  if (!Array.isArray(activeSkills) || activeSkills.length === 0) return [];
+  const slots = activeSkills.map((raw, i) => {
+    const sk = ensureSkillEffects(normalizeSkill(raw));
+    const priority = Number(raw.priority ?? raw.skillPriority ?? i + 1);
+    const skillKey = raw.id != null ? String(raw.id) : `active-${i}`;
+    return {
+      skill: sk,
+      skillCd: 0,
+      priority: Number.isFinite(priority) ? priority : i + 1,
+      skillKey
+    };
+  });
+  slots.sort((a, b) => a.priority - b.priority);
+  return slots;
+}
+
+/** Met à jour actor.skill / actor.skillCd pour l’UI & code legacy (1re compétence par priorité). */
+function syncActorSkillMirror(actor) {
+  if (!Array.isArray(actor.activeSkillSlots) || actor.activeSkillSlots.length === 0) return;
+  const sorted = actor.activeSkillSlots.slice().sort((a, b) => a.priority - b.priority);
+  const first = sorted[0];
+  actor.skill = { skill: first.skill };
+  actor.skillCd = Number.isFinite(Number(first.skillCd)) ? first.skillCd : 0;
+}
+
+function decrementSkillCooldownsOnBasic(actor) {
+  if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
+    for (const slot of actor.activeSkillSlots) {
+      if (slot.skillCd > 0) slot.skillCd -= 1;
+    }
+    syncActorSkillMirror(actor);
+    return;
+  }
+  if (actor.skillCd > 0) {
+    actor.skillCd -= 1;
+  }
 }
 
 // Wrapper unifié pour les futurs effets de skills, sans toucher aux branches actuelles.
@@ -254,7 +339,13 @@ function applySkillEffect(state, actor, target, effectConfig) {
   if (!actor.alive) return { applied: false };
   if (cfg.type !== 'RESURRECT' && !target.alive) return { applied: false };
 
-  if (cfg.chance !== undefined) {
+  const useHostileAcc = shouldApplyHostileNegativeAccuracy(actor, target, cfg);
+  if (useHostileAcc) {
+    const pHit = computeHostileNegativeHitChance(actor, target, cfg.chance);
+    if (!rollChance(state, pHit)) {
+      return { applied: false, missedByChance: true, missedByAccuracy: true, hitChance: pHit };
+    }
+  } else if (cfg.chance !== undefined) {
     if (!rollChance(state, cfg.chance)) {
       return { applied: false, missedByChance: true };
     }
@@ -278,6 +369,9 @@ function applySkillEffect(state, actor, target, effectConfig) {
       return { applied: true };
     }
     case 'STRIP': {
+      if (hasPermanentNegativeEffectImmunity(target)) {
+        return { applied: false, removed: 0, removedBuffs: [], immune: true };
+      }
       const stripResult = applyStrip(state, target, cfg.count || 1);
       return {
         applied: stripResult.removed > 0,
@@ -322,14 +416,32 @@ function applySkillEffect(state, actor, target, effectConfig) {
       return { applied: target.atb !== before, atbBefore: before, atbAfter: target.atb };
     }
     case 'RESET_SKILL_COOLDOWN': {
-      if (!target?.skill) return { applied: false, before: null, after: null, baseCooldown: 0 };
+      const hasSkills =
+        !!target?.skill || (Array.isArray(target?.activeSkillSlots) && target.activeSkillSlots.length > 0);
+      if (!hasSkills) return { applied: false, before: null, after: null, baseCooldown: 0 };
       // Pas d'auto-reset : la compétence qui lance l'effet ne doit pas se reset elle-même
       if (target === actor || (target?.uid && actor?.uid && target.uid === actor.uid)) {
         return { applied: false, before: null, after: null, baseCooldown: 0, skippedSelfReset: true };
       }
       // Immunité : les compétences avec RESET/SET_CD ne peuvent pas être affectées par ces effets
-      if (skillHasCdManipulationEffects(target.skill)) {
+      if (unitHasSkillCdManipulationImmunity(target)) {
         return { applied: false, before: null, after: null, baseCooldown: 0, skippedCdImmunity: true };
+      }
+      if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+        const before = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+        let applied = false;
+        for (const slot of target.activeSkillSlots) {
+          if (Number(slot.skillCd ?? 0) > 0) applied = true;
+          slot.skillCd = 0;
+        }
+        syncActorSkillMirror(target);
+        return {
+          applied,
+          before,
+          after: target.activeSkillSlots.map((s) => s.skillCd),
+          baseCooldown: getUnitBaseSkillCooldown(target),
+          multiSlot: true
+        };
       }
       const before = Number(target.skillCd ?? 0);
       target.skillCd = 0;
@@ -341,14 +453,37 @@ function applySkillEffect(state, actor, target, effectConfig) {
       };
     }
     case 'SET_SKILL_COOLDOWN_MAX': {
-      if (!target?.skill) return { applied: false, before: null, after: null, baseCooldown: 0 };
+      const hasSkills =
+        !!target?.skill || (Array.isArray(target?.activeSkillSlots) && target.activeSkillSlots.length > 0);
+      if (!hasSkills) return { applied: false, before: null, after: null, baseCooldown: 0 };
       // Pas d'auto-reset : la compétence qui lance l'effet ne doit pas se modifier elle-même
       if (target === actor || (target?.uid && actor?.uid && target.uid === actor.uid)) {
         return { applied: false, before: null, after: null, baseCooldown: 0, skippedSelfReset: true };
       }
       // Immunité : les compétences avec RESET/SET_CD ne peuvent pas être affectées par ces effets
-      if (skillHasCdManipulationEffects(target.skill)) {
+      if (unitHasSkillCdManipulationImmunity(target)) {
         return { applied: false, before: null, after: null, baseCooldown: 0, skippedCdImmunity: true };
+      }
+      if (hasPermanentNegativeEffectImmunity(target)) {
+        return { applied: false, before: null, after: null, baseCooldown: 0, immune: true };
+      }
+      if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+        const before = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+        let anyChange = false;
+        for (const slot of target.activeSkillSlots) {
+          const maxCd = getUnitBaseSkillCooldown(target, slot.skill);
+          const prev = Number(slot.skillCd ?? 0);
+          slot.skillCd = maxCd;
+          if (prev !== slot.skillCd) anyChange = true;
+        }
+        syncActorSkillMirror(target);
+        return {
+          applied: anyChange,
+          before,
+          after: target.activeSkillSlots.map((s) => s.skillCd),
+          baseCooldown: getUnitBaseSkillCooldown(target),
+          multiSlot: true
+        };
       }
       const before = Number(target.skillCd ?? 0);
       const baseCooldown = getUnitBaseSkillCooldown(target);
@@ -360,12 +495,123 @@ function applySkillEffect(state, actor, target, effectConfig) {
         baseCooldown
       };
     }
+    /** Augmente le CD actuel de la cible de X « tours » (actions). Hostile : immunité débuff / CD manipulation. */
+    case 'CD_UP': {
+      const hasSkills =
+        !!target?.skill || (Array.isArray(target?.activeSkillSlots) && target.activeSkillSlots.length > 0);
+      if (!hasSkills) return { applied: false, before: null, after: null, delta: 0 };
+      if (target === actor || (target?.uid && actor?.uid && target.uid === actor.uid)) {
+        return { applied: false, before: null, after: null, delta: 0, skippedSelfReset: true };
+      }
+      if (unitHasSkillCdManipulationImmunity(target)) {
+        return { applied: false, before: null, after: null, delta: 0, skippedCdImmunity: true };
+      }
+      if (hasPermanentNegativeEffectImmunity(target)) {
+        return { applied: false, before: null, after: null, delta: 0, immune: true };
+      }
+      const delta = Math.max(0, Math.floor(Number(cfg.value) || 0));
+      if (delta <= 0) {
+        if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+          const cur = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+          return { applied: false, before: cur, after: cur, delta: 0, multiSlot: true };
+        }
+        const cur = Number(target.skillCd ?? 0);
+        return { applied: false, before: cur, after: cur, delta: 0 };
+      }
+      if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+        const before = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+        for (const slot of target.activeSkillSlots) {
+          slot.skillCd = Number(slot.skillCd ?? 0) + delta;
+        }
+        syncActorSkillMirror(target);
+        return { applied: true, before, after: target.activeSkillSlots.map((s) => s.skillCd), delta, multiSlot: true };
+      }
+      const before = Number(target.skillCd ?? 0);
+      target.skillCd = before + delta;
+      return { applied: true, before, after: target.skillCd, delta };
+    }
+    /** Réduit le CD actuel de la cible de X (minimum 0). Non bloqué par l’immunité débuff. */
+    case 'CD_DOWN': {
+      const hasSkills =
+        !!target?.skill || (Array.isArray(target?.activeSkillSlots) && target.activeSkillSlots.length > 0);
+      if (!hasSkills) return { applied: false, before: null, after: null, delta: 0 };
+      if (unitHasSkillCdManipulationImmunity(target)) {
+        return { applied: false, before: null, after: null, delta: 0, skippedCdImmunity: true };
+      }
+      const delta = Math.max(0, Math.floor(Number(cfg.value) || 0));
+      if (delta <= 0) {
+        if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+          const cur = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+          return { applied: false, before: cur, after: cur, delta: 0, multiSlot: true };
+        }
+        const cur = Number(target.skillCd ?? 0);
+        return { applied: false, before: cur, after: cur, delta: 0 };
+      }
+      if (Array.isArray(target.activeSkillSlots) && target.activeSkillSlots.length > 0) {
+        const before = target.activeSkillSlots.map((s) => Number(s.skillCd ?? 0));
+        let anyChange = false;
+        for (const slot of target.activeSkillSlots) {
+          const prev = Number(slot.skillCd ?? 0);
+          slot.skillCd = Math.max(0, prev - delta);
+          if (prev !== slot.skillCd) anyChange = true;
+        }
+        syncActorSkillMirror(target);
+        return {
+          applied: anyChange,
+          before,
+          after: target.activeSkillSlots.map((s) => s.skillCd),
+          delta,
+          multiSlot: true
+        };
+      }
+      const before = Number(target.skillCd ?? 0);
+      target.skillCd = Math.max(0, before - delta);
+      return { applied: before !== target.skillCd, before, after: target.skillCd, delta };
+    }
     case 'APPLY_BUFF': {
       const buffType = (cfg.buffType || cfg.buff || cfg.type || '').toString().toUpperCase();
       const asDebuff = isDebuffBuffType(buffType);
       if (asDebuff) {
         const pre = onBeforeApplyDebuff(target, { ...cfg, debuffType: buffType });
         if (pre.blocked) return { applied: false, immune: true };
+      }
+      if (buffType === 'DOT' && asDebuff) {
+        const fixedValue = BUFF_FIXED_VALUES[buffType];
+        const value = fixedValue != null ? fixedValue : (cfg.value ?? 0);
+        if (fixedValue != null && (cfg.value != null || cfg.percentMaxHp != null || cfg.percentMaxHpCaster != null)) {
+          if (typeof console !== 'undefined' && console.warn) console.warn('APPLY_BUFF: value personnalisé ignoré pour', buffType, ', valeur fixe utilisée');
+        }
+        const duration = cfg.remainingActions ?? cfg.duration ?? 1;
+        const extraStacks = Math.max(0, Math.floor(Number(cfg._dotExtraStacks) || 0));
+        const totalStacks = 1 + extraStacks;
+        for (let s = 0; s < totalStacks; s++) {
+          applyStatus(target, {
+            type: buffType,
+            key: cfg.key,
+            value,
+            remainingActions: duration,
+            isDebuff: true,
+            meta: { ...(cfg.meta || {}), appliedBy: actor?.uid },
+            chance: cfg.chance
+          }, actor?.uid);
+        }
+        return { applied: true, buffType, remainingActions: duration, dotStacks: totalStacks };
+      }
+      if (buffType === 'ANTI_BUFF' && asDebuff) {
+        const fixedValue = BUFF_FIXED_VALUES[buffType];
+        const value = fixedValue != null ? fixedValue : (cfg.value ?? 0);
+        let duration = cfg.remainingActions ?? cfg.duration ?? 1;
+        duration += Math.max(0, Math.floor(Number(cfg._durationBonusFromScale) || 0));
+        applyStatus(target, {
+          type: buffType,
+          key: cfg.key,
+          value,
+          remainingActions: duration,
+          isDebuff: true,
+          meta: { ...(cfg.meta || {}), appliedBy: actor?.uid },
+          chance: cfg.chance
+        }, actor?.uid);
+        return { applied: true, buffType, remainingActions: duration };
       }
       if (buffType === 'SHIELD') {
         let pct = 0, maxHp = 0;
@@ -419,6 +665,9 @@ function applySkillEffect(state, actor, target, effectConfig) {
       return { applied: true, buffType, remainingActions: cfg.remainingActions ?? 1 };
     }
     case 'STEAL_STAT': {
+      if (hasPermanentNegativeEffectImmunity(target)) {
+        return { applied: false, stat: null, amount: 0, blockedByDebuffImmunity: true };
+      }
       const stat = normalizeStealableStat(cfg.stat);
       const pct = normalizeRatio(cfg.percent);
       const duration = cfg.remainingActions ?? cfg.duration ?? 1;
@@ -483,7 +732,8 @@ function applySkillEffect(state, actor, target, effectConfig) {
       let raw = 0;
 
       if (cfg.mult != null || (targetMaxHpRatio <= 0 && casterMaxHpRatio <= 0)) {
-        const atk = actorStats.attack * attackMult * (1 + actorStats.mastery / 1000);
+        // Maîtrise : précision / résistance aux débuffs hostiles uniquement (plus de scaling dégâts ici).
+        const atk = actorStats.attack * attackMult;
         const def = targetStats.defense;
         raw += (atk * atk) / (atk + def + 1);
       }
@@ -497,10 +747,11 @@ function applySkillEffect(state, actor, target, effectConfig) {
         raw *= 1 + getMissingHpRatio(actor) * missingHpScaling;
       }
       if (target.damageTakenMul != null) raw *= target.damageTakenMul;
-      let damage = Math.max(0, Math.round(raw));
-      // EXECUTIONERS 2/4 : bonus dégâts sur cibles affaiblies (comme pour l'attaque de base)
+      const chainFlat = Math.max(0, Math.round(Number(cfg._flatDamageBonus) || 0));
+      let damage = Math.max(0, Math.round(raw) + chainFlat);
+      // EXECUTIONERS 2/4 : bonus dégâts sur cibles affaiblies (uniquement si l'attaquant est bourreau)
       const execLevel = actor.executionerLevel || 0;
-      if (execLevel >= 2 && target.alive && (target.maxHp ?? 0) > 0) {
+      if (execLevel >= 2 && actor.traits?.includes('EXECUTIONERS') && target.alive && (target.maxHp ?? 0) > 0) {
         const hpRatio = target.hp / target.maxHp;
         if (hpRatio < 0.5) {
           damage = Math.round(damage * 1.1);
@@ -528,7 +779,7 @@ function applySkillEffect(state, actor, target, effectConfig) {
 
 /**
  * Calcule les stats de combat scalées selon level et spécialisation.
- * unit: base_hp, base_attack, base_defense, base_speed, mastery (ou maxHp, attack, defense, speed)
+ * unit: base_hp, base_attack, base_defense, base_speed, mastery (précision/résistance aux effets hostiles négatifs)
  * userUnit: level, specialization (optionnel)
  */
 const BONUS_STAT_MAP = {
@@ -540,22 +791,42 @@ const BONUS_STAT_MAP = {
   mastery: 'mastery'
 };
 
+/** Évite PV/stats ×10+ si un niveau corrompu arrive (ex. 450 → scale ≈ 10). */
+const MAX_LEVEL_FOR_SCALING = 100;
+
+/**
+ * Lit uniquement les stats de base (base_*) pour le scaling.
+ * Ne jamais utiliser maxHp / attack / … déjà scalés : sinon double application au reload JSON
+ * (base_hp omis → maxHp pris comme « base » → PV multipliés une 2e fois).
+ */
+function readBaseForScale(unit) {
+  const hp = Number(unit.base_hp);
+  const atk = Number(unit.base_attack);
+  const def = Number(unit.base_defense);
+  const spd = Number(unit.base_speed);
+  const mas = Number(unit.mastery);
+  return {
+    baseHp: Number.isFinite(hp) && hp > 0 ? hp : 1000,
+    baseAttack: Number.isFinite(atk) && atk >= 0 ? atk : 100,
+    baseDefense: Number.isFinite(def) && def >= 0 ? def : 100,
+    baseSpeed: Number.isFinite(spd) && spd >= 0 ? spd : 100,
+    baseMastery: Number.isFinite(mas) && mas >= 0 ? mas : 0
+  };
+}
+
 export function computeScaledStats(unit, userUnit) {
-  const level = userUnit?.level ?? unit?.level ?? 1;
+  const rawLevel = Number(userUnit?.level ?? unit?.level ?? 1);
+  const level = Math.max(1, Math.min(MAX_LEVEL_FOR_SCALING, Number.isFinite(rawLevel) ? Math.floor(rawLevel) : 1));
   const specialization = userUnit?.specialization ?? unit?.specialization ?? null;
   const powerLevel = userUnit?.power_level ?? unit?.power_level ?? 1;
   const spec = specialization != null && String(specialization).trim() !== '' ? String(specialization).toUpperCase() : null;
 
-  let scale = 1 + (level * 0.02);
+  let scale = 1 + level * 0.02;
   if (spec) {
     scale *= 1.25;
   }
 
-  const baseHp = unit.base_hp ?? unit.maxHp ?? 1000;
-  const baseAttack = unit.base_attack ?? unit.attack ?? 100;
-  const baseDefense = unit.base_defense ?? unit.defense ?? 100;
-  const baseSpeed = unit.base_speed ?? unit.speed ?? 100;
-  const baseMastery = unit.mastery ?? 0;
+  const { baseHp, baseAttack, baseDefense, baseSpeed, baseMastery } = readBaseForScale(unit);
 
   let maxHp = Math.round(baseHp * scale);
   let attack = Math.round(baseAttack * scale);
@@ -641,16 +912,86 @@ function isBattleFinished(units) {
 }
 
 function elementRelation(attacker, target) {
-  const a = attacker.element;
-  const t = target.element;
+  const a = String(attacker?.element || '').toLowerCase();
+  const t = String(target?.element || '').toLowerCase();
   if (!a || !t) return 'neutral';
+  // Cycle classique : Plante > Eau > Feu > Plante
   if (a === 'water' && t === 'fire') return 'adv';
   if (a === 'fire' && t === 'plant') return 'adv';
   if (a === 'plant' && t === 'water') return 'adv';
   if (a === 'water' && t === 'plant') return 'dis';
   if (a === 'fire' && t === 'water') return 'dis';
   if (a === 'plant' && t === 'fire') return 'dis';
+  // Lumière et Ténèbre : forts l'un contre l'autre (neutres vs feu/eau/plante)
+  if ((a === 'light' || a === 'lumiere') && (t === 'dark' || t === 'tenebres' || t === 'tenebre')) return 'adv';
+  if ((a === 'dark' || a === 'tenebres' || a === 'tenebre') && (t === 'light' || t === 'lumiere')) return 'adv';
   return 'neutral';
+}
+
+// --- Précision / résistance (Maîtrise) pour débuffs & effets hostiles négatifs ---
+
+/** Précision de base (0–1) : neutre 65 %, avantage 80 %, désavantage 50 %. */
+function baseHostileNegativeAccuracyFromElement(attacker, target) {
+  const rel = elementRelation(attacker, target);
+  if (rel === 'adv') return 0.8;
+  if (rel === 'dis') return 0.5;
+  return 0.65;
+}
+
+/**
+ * Modificateur en points de pourcentage (plancher –35, plafond +35) :
+ * +1 % par tranche de 10 Maîtrise en faveur du lanceur vs la cible (stats effectives de combat).
+ */
+function getMasteryPrecisionBonusPercent(actor, target) {
+  const actorStats = getEffectiveCombatStats(actor);
+  const targetStats = getEffectiveCombatStats(target);
+  const a = Number(actorStats?.mastery ?? actor?.mastery ?? 0) || 0;
+  const b = Number(targetStats?.mastery ?? target?.mastery ?? 0) || 0;
+  const steps = Math.trunc((a - b) / 10);
+  return Math.max(-35, Math.min(35, steps));
+}
+
+function normalizeChanceToFraction(raw) {
+  if (raw == null || raw === '') return 1;
+  let c = Number(raw);
+  if (!Number.isFinite(c)) return 1;
+  if (c > 1) c = c / 100;
+  return Math.max(0, Math.min(1, c));
+}
+
+/**
+ * Probabilité finale d'application (0–1) : (base élément + bonus Maîtrise en points) × chance du skill si présente.
+ */
+function computeHostileNegativeHitChance(actor, target, skillChanceRaw) {
+  let p = baseHostileNegativeAccuracyFromElement(actor, target);
+  p += getMasteryPrecisionBonusPercent(actor, target) / 100;
+  p = Math.max(0, Math.min(1, p));
+  const skillFrac = normalizeChanceToFraction(skillChanceRaw);
+  return p * skillFrac;
+}
+
+function isHostileNegativeEffectConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return false;
+  const t = String(cfg.type || '').toUpperCase();
+  if (t === 'APPLY_DEBUFF') return true;
+  if (t === 'STRIP') return true;
+  if (t === 'REDUCE_ATB') return true;
+  if (t === 'STEAL_STAT') return true;
+  if (t === 'SET_SKILL_COOLDOWN_MAX') return true;
+  if (t === 'CD_UP') return true;
+  if (t === 'APPLY_BUFF') {
+    const buffType = (cfg.buffType || cfg.buff || '').toString();
+    return isDebuffBuffType(buffType);
+  }
+  return false;
+}
+
+/** Effet négatif sur une cible ennemie (hors équipe du lanceur) : tirage précision / résistance par cible. */
+function shouldApplyHostileNegativeAccuracy(actor, target, cfg) {
+  if (!actor?.alive || !target?.alive) return false;
+  if (actor.side == null || target.side == null) return false;
+  if (actor.side === target.side) return false;
+  return isHostileNegativeEffectConfig(cfg);
 }
 
 function normalizeSkill(raw) {
@@ -690,15 +1031,24 @@ function getSkillsFromSkillData(rawSkill) {
 }
 
 /**
- * Une unité utilise son skill dès qu'il est disponible.
- * Exceptions : pas de skill, silence, ou cooldown > 0.
+ * Une unité peut lancer une compétence active si au moins un slot est prêt (CD 0).
+ * Exceptions : pas de skill, silence.
  * (La provocation est gérée au call site : shouldUseSkill(actor) && !hasProvoke(actor).)
  */
 function shouldUseSkill(actor) {
-  if (!actor?.skill) return false;
   if (targetHasStatus(actor, EffectType.SILENCE)) return false;
+  if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
+    return actor.activeSkillSlots.some((s) => s.skill && (s.skillCd === 0 || s.skillCd == null));
+  }
+  if (!actor?.skill) return false;
   const cd = actor.skillCd;
   return cd === 0 || cd == null;
+}
+
+/** Texte de tooltip compétence(s) pour l’UI manuelle (multi-compétences si applicable). */
+function getMainSkillDescriptionFromUnit(actor) {
+  const raw = actor?.skill_data || actor?.skillData || actor?.skill;
+  return getSkillTooltipPlainText(raw) || '';
 }
 
 function getAliveEnemies(state, actor) {
@@ -709,40 +1059,129 @@ function getAliveAllies(state, actor) {
   return state.units.filter((u) => u.side === actor.side && u.alive);
 }
 
-function getBasicTargetCandidates(state, actor) {
-  const enemies = getAliveEnemies(state, actor);
-  if (!enemies.length) return [];
-  const isDistance = String(actor.rangeType ?? actor.attack_type ?? actor.position ?? '').toUpperCase().includes('DISTANCE')
-    || String(actor.position ?? '').toLowerCase() === 'back';
-  if (isDistance) return enemies;
-  const front = enemies.filter((u) => String(u.position ?? '').toLowerCase() === 'front');
-  return front.length > 0 ? front : enemies;
+function getDeadAllies(state, actor) {
+  return state.units.filter((u) => u.side === actor.side && !u.alive);
 }
 
-function getSkillTargetCandidates(state, actor) {
-  if (!actor?.skill || !shouldUseSkill(actor)) return [];
-  const skillContainer = actor.skill;
-  let skill = skillContainer?.skill ?? skillContainer;
+/** Priorité des cibles pour le ciblage manuel : du plus prioritaire au moins. */
+const SKILL_TARGET_PRIORITY = [
+  'ALLY_DEAD_SINGLE',
+  'ENEMY_SINGLE',
+  'ALLY_SINGLE',
+  'TEAM_ENEMY',
+  'TEAM_ALLY',
+  'LOWEST_HP_ALLY',
+  'SELF'
+];
+
+/**
+ * @param {object|null} skillOverride - compétence explicite (multi-slots). Si null, utilise actor.skill.
+ * @param {{ skipCdCheck?: boolean }} opts - si skipCdCheck, ne vérifie pas shouldUseSkill (sélection de slot déjà faite).
+ */
+function getSkillTargetCandidates(state, actor, skillOverride = null, opts = {}) {
+  const skipCdCheck = opts.skipCdCheck === true;
+  if (!skipCdCheck) {
+    if (!actor?.skill || !shouldUseSkill(actor)) return [];
+  } else if (!skillOverride && !actor?.skill) {
+    return [];
+  }
+  let skill = skillOverride;
+  if (!skill) {
+    const skillContainer = actor.skill;
+    skill = skillContainer?.skill ?? skillContainer;
+  }
   if (!skill) return [];
   skill = ensureSkillEffects(skill);
   const effects = Array.isArray(skill.effects) ? skill.effects : [];
   if (effects.length === 0) return [];
-  const hasDamage = effects.some((e) => String(e?.type ?? '').toUpperCase() === 'DAMAGE');
-  const hasTeamAlly = effects.some((e) => String(e?.target ?? '').toUpperCase() === 'TEAM_ALLY');
-  const hasTeamEnemy = effects.some((e) => String(e?.target ?? '').toUpperCase() === 'TEAM_ENEMY');
-  const hasSingleEnemyDamage = effects.some((e) => {
-    if (String(e?.type ?? '').toUpperCase() !== 'DAMAGE') return false;
-    const t = String(e?.target ?? '').toUpperCase();
-    return t !== 'TEAM_ENEMY' && t !== 'TEAM_ALLY';
-  });
-  if (!hasDamage) {
-    return [...getAliveEnemies(state, actor), ...getAliveAllies(state, actor)];
+
+  const effectTargets = effects.map((e) => {
+    const raw = String(e?.target ?? '').toUpperCase().trim();
+    if (raw.length > 0) return raw;
+    const effType = String(e?.type ?? '').toUpperCase();
+    if (effType === 'DAMAGE' || effType === 'APPLY_DEBUFF') return 'ENEMY_SINGLE';
+    return '';
+  }).filter((t) => t.length > 0);
+  const preferredTarget = SKILL_TARGET_PRIORITY.find((p) => effectTargets.includes(p));
+
+  const enemies = getAliveEnemies(state, actor);
+  const allies = getAliveAllies(state, actor);
+  const deadAllies = getDeadAllies(state, actor);
+
+  if (preferredTarget === 'ALLY_DEAD_SINGLE') {
+    return deadAllies;
   }
-  if (hasTeamAlly) return getAliveAllies(state, actor);
-  if (hasTeamEnemy) return getAliveEnemies(state, actor);
-  if (hasSingleEnemyDamage) return getBasicTargetCandidates(state, actor);
-  return getAliveEnemies(state, actor);
+  if (preferredTarget === 'ENEMY_SINGLE') {
+    const enemies = getAliveEnemies(state, actor);
+    if (!enemies.length) return [];
+    const isDistance = String(actor.rangeType ?? actor.attack_type ?? actor.position ?? '').toUpperCase().includes('DISTANCE')
+      || String(actor.position ?? '').toLowerCase() === 'back';
+    if (isDistance) return enemies;
+    const front = enemies.filter((u) => String(u.position ?? '').toLowerCase() === 'front');
+    return front.length > 0 ? front : enemies;
+  }
+  if (preferredTarget === 'ALLY_SINGLE') {
+    return allies;
+  }
+  if (preferredTarget === 'TEAM_ENEMY') {
+    return enemies;
+  }
+  if (preferredTarget === 'TEAM_ALLY') {
+    return allies;
+  }
+  if (preferredTarget === 'LOWEST_HP_ALLY') {
+    return allies;
+  }
+  if (preferredTarget === 'SELF') {
+    return actor.alive ? [actor] : [];
+  }
+
+  return [...enemies, ...allies];
 }
+
+/**
+ * IA : slot activable (CD 0) avec la plus petite `priority` qui a au moins une cible valide.
+ * Si plusieurs compétences sont prêtes, la priorité numérique décide (1 avant 2, etc.).
+ */
+function selectSkillSlotForAi(actor, state) {
+  if (targetHasStatus(actor, EffectType.SILENCE)) return null;
+  const slots =
+    Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0
+      ? actor.activeSkillSlots.slice().sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+      : null;
+  if (!slots) {
+    if (!actor?.skill) return null;
+    const cd = actor.skillCd;
+    if (cd > 0 && cd != null) return null;
+    const sk = ensureSkillEffects(normalizeSkill(actor.skill?.skill ?? actor.skill));
+    const cands = getSkillTargetCandidates(state, actor, sk, { skipCdCheck: true });
+    if (cands.length === 0) return null;
+    return { skill: sk, legacy: true };
+  }
+  const ready = slots.filter((s) => s.skill && (s.skillCd === 0 || s.skillCd == null));
+  for (const slot of ready) {
+    const sk = ensureSkillEffects(normalizeSkill(slot.skill));
+    const cands = getSkillTargetCandidates(state, actor, sk, { skipCdCheck: true });
+    if (cands.length > 0) return { ...slot, skill: sk, legacy: false };
+  }
+  return null;
+}
+
+/** Mode interactif : `skillKey` / `skillSlotKey` optionnel dans la décision, sinon même logique que l’IA. */
+function pickSkillSlotForInteractive(actor, state, decision) {
+  if (!Array.isArray(actor.activeSkillSlots) || actor.activeSkillSlots.length === 0) return null;
+  const key = decision?.skillKey ?? decision?.skillSlotKey ?? null;
+  if (key) {
+    const slot = actor.activeSkillSlots.find((s) => s.skillKey === key);
+    if (slot && (slot.skillCd === 0 || slot.skillCd == null)) {
+      const sk = ensureSkillEffects(normalizeSkill(slot.skill));
+      const cands = getSkillTargetCandidates(state, actor, sk, { skipCdCheck: true });
+      if (cands.length > 0) return { ...slot, skill: sk, legacy: false };
+    }
+  }
+  return selectSkillSlotForAi(actor, state);
+}
+
 
 /**
  * Trouve l'unité qui porte un buff DEFEND protégeant originalTarget (la plus récente si plusieurs).
@@ -792,6 +1231,8 @@ function setUnitHp(unit, newHp, state) {
     if (!unit.alive) return { died: false };
     unit.alive = false;
     unit.atb = 0;
+    unit.buffs = [];
+    unit.debuffs = [];
     return { died: true };
   }
   if (!wasAlive) {
@@ -844,12 +1285,9 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
     actualTarget = defender;
   }
 
-  let dmg = baseFinalDamage;
+  const dmg = baseFinalDamage;
   const mod = state.bossModifier;
   const isBossTarget = state.bossUid != null && actualTarget.uid === state.bossUid;
-  if (isBossTarget && mod?.damageReductionPct != null) {
-    dmg = Math.max(0, Math.round(dmg * (1 - Number(mod.damageReductionPct))));
-  }
   const shieldBefore = getShieldTotal(actualTarget);
   const remainingDamage = consumeShieldBuffs(actualTarget, dmg);
   const shieldAfter = getShieldTotal(actualTarget);
@@ -860,29 +1298,19 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
   const hpBefore = actualTarget.hp;
   const hpDamage = Math.min(actualTarget.hp, remainingDamage);
   const hpResult = setUnitHp(actualTarget, actualTarget.hp - hpDamage, state);
-  const justDied = hpResult?.died === true;
+  let justDied = hpResult?.died === true;
 
   let selfResurrected = false;
   if (!actualTarget.alive && state.logEvent) {
     handlePassiveTrigger(state, actualTarget, 'ON_DEATH', { source: actor }, (ev) => state.logEvent(state, ev));
     selfResurrected = actualTarget.alive;
   }
-
-  if (isBossTarget && actualTarget.alive && mod?.atbOnHit?.amount != null) {
-    actualTarget.atb = Math.min(100, (actualTarget.atb ?? 0) + Number(mod.atbOnHit.amount));
-  }
-  if (isBossTarget && mod?.phase2 && !state.bossPhase2 && actualTarget.alive) {
-    const triggerHpPct = Number(mod.phase2.triggerHpPct);
-    if (triggerHpPct != null && actualTarget.maxHp > 0 && (actualTarget.hp / actualTarget.maxHp) * 100 <= triggerHpPct) {
-      state.bossPhase2 = true;
-      if (mod.phase2.resetATB) actualTarget.atb = 0;
-      if (mod.phase2.attackBoostPct != null) {
-        actualTarget.attack = Math.round(actualTarget.attack * (1 + Number(mod.phase2.attackBoostPct)));
-      }
-      if (mod.phase2.newSkill) actualTarget.skill = mod.phase2.newSkill;
-      if (state.logEvent) {
-        state.logEvent(state, { type: 'BOSS_TRIGGER', subType: 'phase2', unit: actualTarget.combatIndex, triggerHpPct });
-      }
+  // Boss ch10 : résurrection unique à 100% HP quand il meurt la première fois (normal + hard)
+  if (!actualTarget.alive && isBossTarget && mod?.resurrectOnce && !state.bossResurrected) {
+    state.bossResurrected = true;
+    if (resurrectUnit(state, actualTarget, 1)) {
+      selfResurrected = true;
+      justDied = false;
     }
   }
   const result = {
@@ -892,7 +1320,7 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
     shieldAfter,
     effectiveDamage: hpDamage,
     selfResurrected,
-    died: justDied,
+    died: selfResurrected ? false : justDied,
     koSourceId: actualTarget.combatIndex,
     koSourceName: actualTarget.name ?? String(actualTarget.combatIndex)
   };
@@ -903,9 +1331,18 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
     handlePassiveTrigger(state, actualTarget, 'ON_RECEIVE_DAMAGE', { source: actor, target: actor, damage: result.effectiveDamage }, logPassive);
     handlePassiveTrigger(state, actor, 'ON_HIT', { target: actualTarget, damage: result.effectiveDamage }, logPassive);
     handlePassiveTrigger(state, actor, 'ON_DEAL_DAMAGE', { target: actualTarget, damage: result.effectiveDamage }, logPassive);
+    for (const u of state.units) {
+      if (!u.alive || u.side !== actualTarget.side || u.uid === actualTarget.uid) continue;
+      handlePassiveTrigger(state, u, 'ON_ALLY_RECEIVE_DAMAGE', {
+        source: actor,
+        target: actualTarget,
+        damage: result.effectiveDamage
+      }, logPassive);
+    }
   }
   if (justDied) {
     handlePassiveTrigger(state, actor, 'ON_KILL', { target: actualTarget }, logPassive);
+    fireKoObserverPassives(state, actualTarget, actor, logPassive);
   }
   // Vampirisme : regain en HP d'une partie des dégâts infligés (buff LIFESTEAL ou unit.lifestealPercent ex. BERSERKERS)
   if (result.effectiveDamage > 0 && actor?.alive) {
@@ -1035,14 +1472,13 @@ function performBasicAction(state, actor, arg2, arg3, arg4, arg5, options = {}) 
     logEventFn(state, {
       type: 'unit_ko',
       sourceId: damageResult.koSourceId ?? target.combatIndex,
-      sourceName: damageResult.koSourceName ?? target.name
+      sourceName: damageResult.koSourceName ?? target.name,
+      targetId: target.combatIndex
     });
   }
 
   // Lifesteal (buff LIFESTEAL ou BERSERKERS) est appliqué dans applyDamageToTarget pour basic et skills
-  if (actor.skillCd > 0) {
-    actor.skillCd -= 1;
-  }
+  decrementSkillCooldownsOnBasic(actor);
 
   if (damageResult.died && !damageResult.selfResurrected) {
     onKillSynergies(state, actor, target, (e) => logEvent(state, e));
@@ -1085,6 +1521,43 @@ function tickStatuses(state, actor, logEventFn) {
   }
 }
 
+/**
+ * Après proc REGEN + DOT au début du tour : décrémente uniquement les durées REGEN / DOT.
+ * (Les autres buffs/debuffs continuent de tick à la fin de l’action via tickStatuses.)
+ */
+function tickRegenAndDotAfterProc(state, actor, logEventFn) {
+  const buffsBefore = (actor.buffs || [])
+    .filter((b) => (b.type || b.key || '').toUpperCase() === 'REGEN')
+    .map((b) => ({ type: b.type || b.key, remaining: b.remainingActions }));
+  const debuffsBefore = (actor.debuffs || [])
+    .filter((d) => (d.type || d.key || '').toUpperCase() === 'DOT')
+    .map((d) => ({ type: d.type || d.key, remaining: d.remainingActions }));
+  decrementRegenAndDotDurationsAfterProc(actor);
+  const actorId = actor.combatIndex;
+  for (const b of actor.buffs || []) {
+    if ((b.type || b.key || '').toUpperCase() !== 'REGEN') continue;
+    const t = b.type || b.key;
+    logEventFn({ type: 'buff_tick', sourceId: actorId, meta: { buffType: t, remainingActions: b.remainingActions } });
+  }
+  for (const prev of buffsBefore) {
+    const stillThere = (actor.buffs || []).some((b) => (b.type || b.key) === prev.type);
+    if (!stillThere) {
+      logEventFn({ type: 'buff_remove', sourceId: actorId, meta: { buffType: prev.type } });
+    }
+  }
+  for (const d of actor.debuffs || []) {
+    if ((d.type || d.key || '').toUpperCase() !== 'DOT') continue;
+    const t = d.type || d.key;
+    logEventFn({ type: 'debuff_tick', sourceId: actorId, meta: { debuffType: t, remainingActions: d.remainingActions } });
+  }
+  for (const prev of debuffsBefore) {
+    const stillThere = (actor.debuffs || []).some((d) => (d.type || d.key) === prev.type);
+    if (!stillThere) {
+      logEventFn({ type: 'debuff_remove', sourceId: actorId, meta: { debuffType: prev.type } });
+    }
+  }
+}
+
 function decrementPassiveCooldowns(unit) {
   if (!unit?.passiveCooldowns || typeof unit.passiveCooldowns !== 'object') return;
   for (const key of Object.keys(unit.passiveCooldowns)) {
@@ -1101,8 +1574,55 @@ const SUPPORTED_PASSIVE_TRIGGERS = [
   'ON_ACTION_START',
   'ON_ACTION_END',
   'ON_RECEIVE_DAMAGE',
-  'ON_DEAL_DAMAGE'
+  'ON_DEAL_DAMAGE',
+  'ON_COMBAT_START',
+  'ON_ENEMY_KO',
+  'ON_ALLY_KO',
+  'ON_ALLY_RECEIVE_DAMAGE',
+  'ON_ENEMY_TURN_START',
+  /** Déclenché en plus du trigger courant à chaque appel handlePassiveTrigger (sauf si l’événement est déjà ALWAYS). */
+  'ALWAYS'
 ];
+
+/**
+ * Passifs permanents (pas de proc) : flags sur l'unité de combat.
+ * passiveKind: DEBUFF_IMMUNITY — immunise aux débuffs, STRIP, REDUCE_ATB, SET_SKILL_COOLDOWN_MAX, CD_UP,
+ * vol de stats (STEAL_STAT côté cible), etc. (pas aux dégâts / soins / CLEANSE alliée ni CD_DOWN).
+ */
+function extractPermanentPassiveTraits(rawList) {
+  const flags = { debuffImmunity: false };
+  if (!Array.isArray(rawList)) return flags;
+  for (const p of rawList) {
+    if (!p || typeof p !== 'object') continue;
+    const kind = String(p.passiveKind ?? p.kind ?? '').toUpperCase().trim();
+    if (kind === 'DEBUFF_IMMUNITY' || p.permanentDebuffImmunity === true || p.immuneToAllDebuffs === true) {
+      flags.debuffImmunity = true;
+    }
+  }
+  return flags;
+}
+
+/**
+ * Déclenche les passifs ON_COMBAT_START pour toutes les unités vivantes,
+ * dans l'ordre de la vitesse effective décroissante (en cas d'égalité : orderIndex).
+ * Appelé après init ATB et effets runtime de début de combat (synergies / artefacts).
+ */
+function applyCombatStartPassives(state, logEventFn) {
+  if (!state?.units?.length) return;
+  const log = typeof logEventFn === 'function' ? logEventFn : () => {};
+  const actors = state.units.filter(
+    (u) => u.alive && (u.passives || []).some((p) => String(p?.trigger || '').toUpperCase() === 'ON_COMBAT_START')
+  );
+  actors.sort((a, b) => {
+    const sa = getEffectiveCombatStats(a).speed;
+    const sb = getEffectiveCombatStats(b).speed;
+    if (sb !== sa) return sb - sa;
+    return (a.orderIndex ?? 0) - (b.orderIndex ?? 0);
+  });
+  for (const actor of actors) {
+    handlePassiveTrigger(state, actor, 'ON_COMBAT_START', { state }, log);
+  }
+}
 
 /**
  * Normalise un tableau de passifs (legacy ou nouveau format) vers { trigger, effects, cooldown }.
@@ -1141,12 +1661,29 @@ function normalizePassives(rawList) {
 }
 
 /**
- * Résout la cible pour un effet de passif selon effect.target (SELF, TARGET, TEAM_ALLY, TEAM_ENEMY).
- * Ne plus utiliser context.target par défaut pour tous les effets.
+ * Résout la cible pour un effet de passif selon effect.target (SELF, TARGET, TEAM_ALLY, TEAM_ENEMY, ENEMY_SINGLE).
+ * ENEMY_SINGLE est résolu contextuellement :
+ *   - ON_ATTACK → l'ennemi attaqué (context.target)
+ *   - ON_RECEIVE_DAMAGE → l'ennemi qui a infligé les dégâts (context.source)
+ *   - ON_ENEMY_KO → l'ennemi mis KO (context.victim)
+ *   - ON_ALLY_KO → le tueur (context.killer)
+ *   - ON_ALLY_RECEIVE_DAMAGE → l'attaquant ayant blessé l'allié (context.source)
+ *   - ON_ENEMY_TURN_START → l'ennemi dont le tour commence (context.turnActor)
+ *   - ALLY_SINGLE peut aussi être contextuel selon le trigger.
  */
 function resolvePassiveEffectTargets(state, actor, effect, context) {
   const targetKey = (effect?.target ?? '').toString().toUpperCase().trim();
   const units = state?.units ?? [];
+  const triggerType = (context?.triggerType ?? '').toString().toUpperCase();
+
+  if (targetKey === 'TARGET' && triggerType === 'ON_ALLY_KO' && context?.victim) {
+    const v = context.victim;
+    return v ? [v] : [];
+  }
+  if (targetKey === 'TARGET' && triggerType === 'ON_ENEMY_KO' && context?.victim) {
+    const v = context.victim;
+    return v ? [v] : [];
+  }
 
   if (targetKey === 'SELF') {
     // RESURRECT sur SELF (ex. passif SELF_RESURRECT) : la cible est l'acteur même s'il est mort.
@@ -1157,6 +1694,43 @@ function resolvePassiveEffectTargets(state, actor, effect, context) {
     const t = context.target;
     const arr = Array.isArray(t) ? t : [t];
     return arr.filter((u) => u && u.alive);
+  }
+  if (targetKey === 'ENEMY_SINGLE') {
+    // ON_ATTACK, ON_HIT, ON_DEAL_DAMAGE, ON_KILL : cibler l'ennemi attaqué/touché/tué (context.target)
+    if (['ON_ATTACK', 'ON_HIT', 'ON_DEAL_DAMAGE', 'ON_KILL'].includes(triggerType) && context?.target) {
+      const t = context.target;
+      const u = Array.isArray(t) ? t[0] : t;
+      if (u && u.alive && u.side !== actor.side) return [u];
+    }
+    // ON_RECEIVE_DAMAGE : cibler l'ennemi qui a infligé les dégâts (context.source)
+    if (triggerType === 'ON_RECEIVE_DAMAGE' && context?.source) {
+      const u = context.source;
+      if (u && u.alive && u.side !== actor.side) return [u];
+    }
+    if (triggerType === 'ON_ENEMY_KO' && context?.victim) {
+      const v = context.victim;
+      if (v && v.side !== actor.side) return [v];
+    }
+    if (triggerType === 'ON_ALLY_KO' && context?.killer) {
+      const k = context.killer;
+      if (k && k.alive && k.side !== actor.side) return [k];
+    }
+    if (triggerType === 'ON_ALLY_RECEIVE_DAMAGE' && context?.source) {
+      const u = context.source;
+      if (u && u.alive && u.side !== actor.side) return [u];
+    }
+    if (triggerType === 'ON_ENEMY_TURN_START' && context?.turnActor) {
+      const u = context.turnActor;
+      if (u && u.alive && u.side !== actor.side) return [u];
+    }
+    // Autres triggers : fallback sur resolveTargets
+  }
+  if (targetKey === 'ALLY_SINGLE') {
+    if (triggerType === 'ON_ALLY_RECEIVE_DAMAGE' && context?.target) {
+      const t = context.target;
+      const u = Array.isArray(t) ? t[0] : t;
+      if (u && u.alive && u.side === actor.side && u.uid !== actor.uid) return [u];
+    }
   }
   if (targetKey === 'TEAM_ALLY') {
     return units.filter((u) => u.side === actor.side && u.alive);
@@ -1200,7 +1774,9 @@ const EFFECT_PHRASE_FR = {
   ANTI_SHIELD: { phrase: "inflige l'anti-bouclier à", withDuration: true },
   ANTI_BUFF: { phrase: "inflige l'anti-buff à", withDuration: true },
   DOT: { phrase: 'inflige des dégâts sur la durée à', withDuration: true },
-  ATB_DOWN: { phrase: "réduit l'ATB de", withDuration: true }
+  ATB_DOWN: { phrase: "réduit l'ATB de", withDuration: true },
+  CD_UP: { phrase: 'retarde le temps de recharge de', withDuration: false },
+  CD_DOWN: { phrase: 'réduit le temps de recharge de', withDuration: false }
 };
 
 function logEffectApplication(state, actor, effect, targetUnit, logEventFn) {
@@ -1221,6 +1797,12 @@ function logEffectApplication(state, actor, effect, targetUnit, logEventFn) {
     } else if (effectType === 'SET_SKILL_COOLDOWN_MAX') {
       const baseCooldown = getUnitBaseSkillCooldown(targetUnit);
       message = `${actorName} remet le temps de recharge de ${targetName} a ${baseCooldown}.`;
+    } else if (effectType === 'CD_UP') {
+      const d = effect?.value ?? 0;
+      message = `${actorName} retarde le temps de recharge de ${targetName} de ${d} tour(s).`;
+    } else if (effectType === 'CD_DOWN') {
+      const d = effect?.value ?? 0;
+      message = `${actorName} réduit le temps de recharge de ${targetName} de ${d} tour(s).`;
     } else if (isSelf && (effectType === 'IMMUNITY' || effectType === 'ATK_UP' || effectType === 'DEF_UP' || effectType === 'SPEED' || effectType === 'SPEED_UP' || effectType === 'SPD_UP')) {
       const stat = effectType === 'ATK_UP' ? "l'attaque" : effectType === 'DEF_UP' ? 'la défense' : 'la vitesse';
       const pct = valuePct ?? (effectType === 'SPEED' || effectType === 'SPEED_UP' || effectType === 'SPD_UP' ? 30 : 50);
@@ -1255,37 +1837,95 @@ function logEffectApplication(state, actor, effect, targetUnit, logEventFn) {
 }
 
 /**
+ * Passifs « témoins » quand une unité meurt (alliés : ON_ALLY_KO, ennemis du défunt : ON_ENEMY_KO).
+ * @param {object|null} killer - Attaquant ayant porté le coup final ; peut être null (ex. DOT sans source).
+ */
+function fireKoObserverPassives(state, victim, killer, logEventFn) {
+  if (!state || !victim) return;
+  const log = typeof logEventFn === 'function' ? logEventFn : () => {};
+  const ctx = { victim, killer: killer ?? null, source: killer ?? null };
+  for (const u of state.units) {
+    if (!u.alive || u.uid === victim.uid) continue;
+    if (u.side === victim.side) {
+      handlePassiveTrigger(state, u, 'ON_ALLY_KO', ctx, log);
+    } else {
+      handlePassiveTrigger(state, u, 'ON_ENEMY_KO', ctx, log);
+    }
+  }
+}
+
+/**
  * Applique les passifs d'une unité pour un trigger donné. Tout passe par applySkillEffect.
+ * Plusieurs effets dans le passif : même ordre d’exécution et chaînage (scaleFromEffectIndex, etc.) que pour une compétence active.
  * La cible est résolue par effet (SELF → actor, TARGET → context.target, etc.).
  * context : { target?, source?, state } selon le trigger.
  */
 function handlePassiveTrigger(state, actor, triggerType, context, logEventFn) {
   if (!state || !actor || !triggerType) return;
   const passives = Array.isArray(actor.passives) ? actor.passives : [];
-  const list = passives.filter((p) => p && String(p.trigger || '').toUpperCase() === String(triggerType).toUpperCase());
+  const triggerUpper = String(triggerType).toUpperCase();
+  const matchExact = passives.filter((p) => p && String(p.trigger || '').toUpperCase() === triggerUpper);
+  const matchAlways =
+    triggerUpper === 'ALWAYS'
+      ? []
+      : passives.filter((p) => p && String(p.trigger || '').toUpperCase() === 'ALWAYS');
+  const list = triggerUpper === 'ALWAYS' ? matchExact : [...matchAlways, ...matchExact];
   const log = typeof logEventFn === 'function' ? logEventFn : () => {};
 
   for (let idx = 0; idx < list.length; idx++) {
     const passive = list[idx];
-    const cdKey = `passive_${triggerType}_${idx}`;
+    const pTrig = String(passive.trigger || '').toUpperCase() || triggerUpper;
+    const cdKey = `passive_${pTrig}_${idx}`;
     const cd = actor.passiveCooldowns?.[cdKey];
     if (cd !== undefined && cd !== null && Number(cd) > 0) continue;
 
-    for (const effect of passive.effects || []) {
-      const targets = resolvePassiveEffectTargets(state, actor, effect, context);
-      for (const target of targets) {
-        if (!target) continue;
-        const res = applySkillEffect(state, actor, target, effect);
-        if (res?.applied) logEffectApplication(state, actor, effect, target, logEventFn);
+    const effects = passive.effects || [];
+    if (effects.length === 0) continue;
+
+    const fullContext = { ...context, triggerType };
+    const effectTargetsList = effects.map((eff) => ({
+      effect: eff,
+      targets: resolvePassiveEffectTargets(state, actor, eff, fullContext)
+    }));
+    const allTargetsSet = new Set();
+    effectTargetsList.forEach(({ targets }) => {
+      for (const t of targets) {
+        if (t) allTargetsSet.add(t);
+      }
+    });
+    const allTargetsOrdered = [...allTargetsSet];
+    const resultsPerEffect = effects.map(() => []);
+
+    for (const target of allTargetsOrdered) {
+      if (!target) continue;
+      for (let i = 0; i < effects.length; i++) {
+        const { effect: eff, targets } = effectTargetsList[i];
+        if (!targets.includes(target)) continue;
+        if (!target.alive && eff.type !== 'RESURRECT') continue;
+
+        const { effToApply, chainMeta } = resolveChainedEffectForTarget(eff, resultsPerEffect, i, target, actor);
+        const res = applySkillEffect(state, actor, target, effToApply);
+        if (res?.applied) logEffectApplication(state, actor, effToApply, target, log);
+
+        resultsPerEffect[i].push({
+          targetUid: target.uid,
+          targetCombatIndex: target.combatIndex,
+          targetName: target.name,
+          targetSide: target.side,
+          ...(chainMeta || {}),
+          ...res
+        });
+
         const payload = {
           type: 'passive',
-          passiveType: triggerType,
+          passiveType: triggerUpper,
+          passiveTrigger: pTrig,
           actor: actor.combatIndex,
           target: target.combatIndex,
-          effect: effect?.type,
+          effect: eff?.type,
           applied: res?.applied
         };
-        if (effect?.type === 'RESURRECT' && res?.applied && target.hp != null) payload.hpAfter = target.hp;
+        if (eff?.type === 'RESURRECT' && res?.applied && target.hp != null) payload.hpAfter = target.hp;
         log(payload);
       }
     }
@@ -1313,6 +1953,225 @@ function resurrectUnit(state, unit, percentHP = 0.3) {
  * Unifie toutes les compétences vers skill.effects.
  * Convertit les types legacy (DAMAGE_SINGLE, SHIELD_SELF, APPLY_DEBUFF, etc.) en effet(s) synthétique(s).
  */
+/**
+ * Métrique lue sur le résultat d’un effet précédent (même liste d’effets : active ou passif, même cible).
+ * - removedCount : champ `removed` (débuffs retirés par CLEANSE, buffs retirés par STRIP).
+ */
+function getScaledMetricFromPriorResult(prior, metric) {
+  if (!prior) return 0;
+  const m = (metric || 'removedCount').toString();
+  if (m === 'removedCount') {
+    return Math.max(0, Math.floor(Number(prior.removed ?? 0) || 0));
+  }
+  if (m === 'effectiveDamage') {
+    return Math.max(0, Number(prior.effectiveDamage ?? prior.damage ?? 0) || 0);
+  }
+  return Math.max(0, Math.floor(Number(prior.removed ?? 0) || 0));
+}
+
+/** Lit `scaleMetric` sur l’effet à l’index `scaleFromEffectIndex` pour la même cible (skill ou passif multi-effets). */
+function getChainScaleN(eff, resultsPerEffect, effectIndex, targetUid) {
+  const scaleIdxRaw = eff.scaleFromEffectIndex;
+  if (scaleIdxRaw == null || scaleIdxRaw === '') return 0;
+  const idx = Number(scaleIdxRaw);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= effectIndex) return 0;
+  const row = resultsPerEffect[idx];
+  const prior = Array.isArray(row) ? row.find((r) => r.targetUid === targetUid) : null;
+  return getScaledMetricFromPriorResult(prior, eff.scaleMetric);
+}
+
+function stripChainScalingFields(eff) {
+  if (!eff || typeof eff !== 'object') return eff;
+  const out = { ...eff };
+  delete out.scaleFromEffectIndex;
+  delete out.scaleMetric;
+  delete out.percentPerRemoved;
+  delete out.valuePerRemoved;
+  return out;
+}
+
+/** SHIELD / HEAL / REGEN : montant de base (flat ou % PV). */
+function computeHealShieldRegenBaseAmount(cfg, target, actor) {
+  const flatRaw = cfg.value ?? 0;
+  const flat = Number(flatRaw) || 0;
+  let pct = cfg.percentMaxHp ?? cfg.percent ?? 0;
+  let maxHp = target.maxHp ?? 0;
+  if (cfg.percentMaxHpCaster != null) {
+    pct = cfg.percentMaxHpCaster;
+    maxHp = actor?.maxHp ?? 0;
+  }
+  if (flat > 0) return Math.max(0, flat);
+  return Math.max(0, Math.round(maxHp * (pct > 1 ? pct / 100 : pct)));
+}
+
+/**
+ * ATB_UP et REDUCE_ATB : % barre = percent (base) + percentPerRemoved × métrique (effet précédent, même cible).
+ */
+function resolveAtbBarDeltaPercentForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
+  let basePct = eff.percent ?? eff.value ?? 0;
+  if (basePct > 1) basePct = basePct / 100;
+  basePct = Math.max(0, Math.min(1, Number(basePct) || 0));
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, targetUid);
+  let per = Number(eff.percentPerRemoved ?? 0);
+  if (per > 1) per = per / 100;
+  per = Math.max(0, Number(per) || 0);
+  const total = Math.min(1, basePct + per * n);
+  const merged = stripChainScalingFields({ ...eff, percent: total });
+  merged.percent = total;
+  return { merged, effectivePercent: total, scaledCount: n };
+}
+
+function resolveAtbUpEffectForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
+  return resolveAtbBarDeltaPercentForTarget(eff, resultsPerEffect, effectIndex, targetUid);
+}
+
+function resolveReduceAtbEffectForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
+  return resolveAtbBarDeltaPercentForTarget(eff, resultsPerEffect, effectIndex, targetUid);
+}
+
+function resolveHealEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor) {
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, target.uid);
+  const vpr = Math.max(0, Number(eff.valuePerRemoved) || 0);
+  const bonus = Math.round(vpr * n);
+  const stripped = stripChainScalingFields({ ...eff });
+  const cfg = normalizeEffectConfig(stripped);
+  const baseAmt = computeHealShieldRegenBaseAmount(cfg, target, actor);
+  const total = Math.max(0, baseAmt + bonus);
+  const merged = {
+    ...stripped,
+    value: total,
+    percentMaxHp: undefined,
+    percent: undefined,
+    percentMaxHpCaster: undefined
+  };
+  return { merged, scaledCount: n };
+}
+
+/** DAMAGE : dégâts de base + valuePerRemoved × métrique (ex. buffs retirés par STRIP). */
+function resolveDamageEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor) {
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, target.uid);
+  const vpr = Math.max(0, Number(eff.valuePerRemoved) || 0);
+  const bonus = Math.round(vpr * n);
+  const merged = stripChainScalingFields({ ...eff });
+  if (bonus > 0) merged._flatDamageBonus = bonus;
+  return { merged, scaledCount: n };
+}
+
+function resolveShieldOrRegenEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor) {
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, target.uid);
+  const vpr = Math.max(0, Number(eff.valuePerRemoved) || 0);
+  const bonus = Math.round(vpr * n);
+  const stripped = stripChainScalingFields({ ...eff });
+  const cfg = normalizeEffectConfig(stripped);
+  const buffType = (cfg.buffType || '').toString().toUpperCase();
+  let baseAmt = 0;
+  if (buffType === 'SHIELD') {
+    let pct = 0;
+    let maxHp = 0;
+    if (cfg.percentMaxHp != null) { pct = cfg.percentMaxHp; maxHp = target.maxHp ?? 0; }
+    else if (cfg.percentMaxHpCaster != null) { pct = cfg.percentMaxHpCaster; maxHp = actor?.maxHp ?? 0; }
+    else if (cfg.percent != null) { pct = cfg.percent; maxHp = target.maxHp ?? 0; }
+    const flat = (cfg.value != null && Number(cfg.value) > 0) ? Number(cfg.value) : 0;
+    baseAmt = flat > 0 ? flat : Math.max(0, Math.round(maxHp * (pct > 1 ? pct / 100 : pct)));
+  } else {
+    baseAmt = computeHealShieldRegenBaseAmount(cfg, target, actor);
+  }
+  const total = Math.max(0, baseAmt + bonus);
+  const merged = {
+    ...stripped,
+    value: total,
+    percentMaxHp: undefined,
+    percent: undefined,
+    percentMaxHpCaster: undefined
+  };
+  return { merged, scaledCount: n };
+}
+
+/** DOT : 1 stack + floor(valuePerRemoved × n) stacks bonus (même durée/valeur). */
+function resolveDotBuffEffectForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, targetUid);
+  const vpr = Math.max(0, Number(eff.valuePerRemoved) || 0);
+  const extra = Math.floor(vpr * n);
+  const merged = stripChainScalingFields({ ...eff });
+  if (extra > 0) merged._dotExtraStacks = extra;
+  return { merged, scaledCount: n };
+}
+
+/** ANTI_BUFF : durée += floor(valuePerRemoved × n). */
+function resolveAntiBuffEffectForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
+  const n = getChainScaleN(eff, resultsPerEffect, effectIndex, targetUid);
+  const vpr = Math.max(0, Number(eff.valuePerRemoved) || 0);
+  const extra = Math.floor(vpr * n);
+  const merged = stripChainScalingFields({ ...eff });
+  if (extra > 0) merged._durationBonusFromScale = extra;
+  return { merged, scaledCount: n };
+}
+
+/**
+ * Effet chaîné : même logique pour compétence active (performSkillAction) et passif multi-effets (handlePassiveTrigger).
+ * `resultsPerEffect` accumule les résultats des effets précédents pour la même cible.
+ */
+function resolveChainedEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor) {
+  let effToApply = eff;
+  let chainMeta = null;
+  if (eff.type === 'ATB_UP') {
+    const resolved = resolveAtbUpEffectForTarget(eff, resultsPerEffect, effectIndex, target.uid);
+    effToApply = resolved.merged;
+    chainMeta = {
+      effectivePercent: resolved.effectivePercent,
+      scaledCount: resolved.scaledCount,
+      scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+    };
+  } else if (eff.type === 'REDUCE_ATB') {
+    const resolved = resolveReduceAtbEffectForTarget(eff, resultsPerEffect, effectIndex, target.uid);
+    effToApply = resolved.merged;
+    chainMeta = {
+      effectivePercent: resolved.effectivePercent,
+      scaledCount: resolved.scaledCount,
+      scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+    };
+  } else if (eff.type === 'HEAL') {
+    const resolved = resolveHealEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor);
+    effToApply = resolved.merged;
+    chainMeta = {
+      scaledCount: resolved.scaledCount,
+      scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+    };
+  } else if (eff.type === 'DAMAGE') {
+    const resolved = resolveDamageEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor);
+    effToApply = resolved.merged;
+    chainMeta = {
+      scaledCount: resolved.scaledCount,
+      scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+    };
+  } else if (eff.type === 'APPLY_BUFF') {
+    const bt = (eff.buffType ?? '').toString().toUpperCase();
+    if (bt === 'SHIELD' || bt === 'REGEN') {
+      const resolved = resolveShieldOrRegenEffectForTarget(eff, resultsPerEffect, effectIndex, target, actor);
+      effToApply = resolved.merged;
+      chainMeta = {
+        scaledCount: resolved.scaledCount,
+        scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+      };
+    } else if (bt === 'DOT') {
+      const resolved = resolveDotBuffEffectForTarget(eff, resultsPerEffect, effectIndex, target.uid);
+      effToApply = resolved.merged;
+      chainMeta = {
+        scaledCount: resolved.scaledCount,
+        scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+      };
+    } else if (bt === 'ANTI_BUFF') {
+      const resolved = resolveAntiBuffEffectForTarget(eff, resultsPerEffect, effectIndex, target.uid);
+      effToApply = resolved.merged;
+      chainMeta = {
+        scaledCount: resolved.scaledCount,
+        scaleFromEffectIndex: eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '' ? Number(eff.scaleFromEffectIndex) : null
+      };
+    }
+  }
+  return { effToApply, chainMeta };
+}
+
 function ensureSkillEffects(skill) {
   if (Array.isArray(skill.effects) && skill.effects.length > 0) return skill;
   const type = String(skill.type || '').toUpperCase().trim();
@@ -1366,13 +2225,27 @@ function ensureSkillEffects(skill) {
   return skill;
 }
 
-function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTarget = null) {
-  const skillContainer = actor.skill;
-  let skill = skillContainer?.skill ?? skillContainer;
+function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTarget = null, skillSlot = null) {
+  let skill;
+  if (skillSlot && skillSlot.skill) {
+    skill = skillSlot.skill;
+  } else {
+    const skillContainer = actor.skill;
+    skill = skillContainer?.skill ?? skillContainer;
+  }
   if (!skill) return false;
   if (!actor.alive) return false;
 
   skill = ensureSkillEffects(skill);
+
+  if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
+    if (!skillSlot || skillSlot.legacy === true) {
+      const match = actor.activeSkillSlots.find((s) => s.skill === skill);
+      if (match) {
+        skillSlot = { ...match, skill, legacy: false };
+      }
+    }
+  }
 
   let event = null;
 
@@ -1390,16 +2263,18 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
       if (targetKey === 'SELF') {
         targets = [actor];
         if (!lockedSingleTarget) lockedSingleTarget = actor;
-      } else if (lockedSingleTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE')) {
+      } else if (lockedSingleTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE' || targetKey === 'ALLY_DEAD_SINGLE')) {
         const isAlly = lockedSingleTarget.side === actor.side;
-        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly)) {
+        const isDeadAlly = isAlly && !lockedSingleTarget.alive;
+        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly) || (targetKey === 'ALLY_DEAD_SINGLE' && isDeadAlly)) {
           targets = [lockedSingleTarget];
         } else {
           targets = resolveTargets(state, actor, cfg);
         }
-      } else if (forcedTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE')) {
+      } else if (forcedTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE' || targetKey === 'ALLY_DEAD_SINGLE')) {
         const isAlly = forcedTarget.side === actor.side;
-        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly)) {
+        const isDeadAlly = isAlly && !forcedTarget.alive;
+        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly) || (targetKey === 'ALLY_DEAD_SINGLE' && isDeadAlly)) {
           targets = [forcedTarget];
         } else {
           targets = resolveTargets(state, actor, cfg);
@@ -1424,8 +2299,16 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
         const { effect: eff, targets } = effectTargetsList[i];
         if (!targets.includes(target)) continue;
         if (!target.alive && eff.type !== 'RESURRECT') continue;
-        const res = applySkillEffect(state, actor, target, eff);
-        resultsPerEffect[i].push({ targetUid: target.uid, targetCombatIndex: target.combatIndex, targetName: target.name, targetSide: target.side, ...res });
+        const { effToApply, chainMeta } = resolveChainedEffectForTarget(eff, resultsPerEffect, i, target, actor);
+        const res = applySkillEffect(state, actor, target, effToApply);
+        resultsPerEffect[i].push({
+          targetUid: target.uid,
+          targetCombatIndex: target.combatIndex,
+          targetName: target.name,
+          targetSide: target.side,
+          ...(chainMeta || {}),
+          ...res
+        });
       }
       if (!allTargetUids.includes(target.uid)) allTargetUids.push(target.uid);
     }
@@ -1459,8 +2342,9 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
         if (r.died && !r.selfResurrected) {
           const koEv = {
             type: 'unit_ko',
-            sourceId: r.koSourceId ?? r.targetCombatIndex,
-            sourceName: r.koSourceName ?? r.targetName
+            sourceId: r.koSourceId ?? actor.combatIndex,
+            sourceName: r.koSourceName ?? actor.name,
+            targetId: r.targetCombatIndex
           };
           koEv.index = state.events.length;
           state.events.push(koEv);
@@ -1473,6 +2357,7 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
       actionType: 'SKILL',
       skillType: skill.type || 'GENERIC',
       skillName: skill.name ?? null,
+      skillSlotKey: skillSlot?.skillKey ?? null,
       round,
       actor: actor.combatIndex,
       actorSide: actor.side,
@@ -1485,9 +2370,19 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
     };
     logEventFn(state, event);
 
-    actor.skillCd = skill.cd_actions ?? 1;
-    // BERSERKERS 6 : prochaine attaque de base aura +50 % dégâts
-    if (actor.berserkerHasSkillBonus === false && (state.synergies?.[actor.side]?.BERSERKERS ?? 0) >= 6) {
+    const cdVal = skill.cd_actions ?? 1;
+    if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0 && skillSlot && skillSlot.legacy !== true) {
+      const slot = actor.activeSkillSlots.find((s) => s.skillKey === skillSlot.skillKey) ?? skillSlot;
+      slot.skillCd = cdVal;
+      syncActorSkillMirror(actor);
+    } else {
+      actor.skillCd = cdVal;
+      if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
+        syncActorSkillMirror(actor);
+      }
+    }
+    // BERSERKERS 6 : prochaine attaque de base aura +50 % dégâts (uniquement pour les berserkers)
+    if (actor.berserkerHasSkillBonus === false && actor.traits?.includes('BERSERKERS') && (state.synergies?.[actor.side]?.BERSERKERS ?? 0) >= 6) {
       actor.berserkerHasSkillBonus = true;
     }
     onSkillUsedSynergies(state, actor, (e) => logEvent(state, e));
@@ -1512,15 +2407,15 @@ function computeBasicDamage(state, actor, target, rng) {
 
   let raw = (atk * atk) / (atk + def + 1);
 
-  // BERSERKERS 6 : premier coup après compétence (flag à gérer côté système de skills)
-  if (actor.berserkerHasSkillBonus) {
+  // BERSERKERS 6 : premier coup après compétence (uniquement pour les berserkers)
+  if (actor.berserkerHasSkillBonus && actor.traits?.includes('BERSERKERS')) {
     raw *= 1.5;
     actor.berserkerHasSkillBonus = false;
   }
 
-  // EXECUTIONERS 2/4 : bonus en fonction des PV restants de la cible
+  // EXECUTIONERS 2/4 : bonus en fonction des PV restants de la cible (uniquement pour les bourreaux)
   const execLevel = actor.executionerLevel || 0;
-  if (execLevel >= 2) {
+  if (execLevel >= 2 && actor.traits?.includes('EXECUTIONERS')) {
     const hpRatio = target.hp / target.maxHp;
     if (hpRatio < 0.5) {
       raw *= 1.1;
@@ -1588,8 +2483,15 @@ function makeReplaySnapshot(state) {
     defense: u.defense,
     speed: u.speed,
     level: u.level,
-    hasSkill: !!u.skill,
+    hasSkill: !!u.skill || (Array.isArray(u.activeSkillSlots) && u.activeSkillSlots.length > 0),
     skillCd: Number.isFinite(Number(u.skillCd)) ? Number(u.skillCd) : 0,
+    activeSkillSlots: Array.isArray(u.activeSkillSlots)
+      ? u.activeSkillSlots.map((s) => ({
+          skillKey: s.skillKey,
+          skillCd: Number.isFinite(Number(s.skillCd)) ? Number(s.skillCd) : 0,
+          name: s.skill?.name ?? null
+        }))
+      : null,
     buffs: (u.buffs || []).map((b) => ({
       type: b.type ?? b.key,
       value: b.value ?? null,
@@ -1630,7 +2532,7 @@ const MAX_BATTLE_LOG_ENTRIES = 500;
 
 function mapElement(el) {
   if (!el) return null;
-  const ELEMENT_TO_FR = { water: 'eau', fire: 'feu', plant: 'plante' };
+  const ELEMENT_TO_FR = { water: 'eau', fire: 'feu', plant: 'plante', light: 'lumière', lumiere: 'lumière', dark: 'ténèbres', tenebres: 'ténèbres', tenebre: 'ténèbres' };
   return ELEMENT_TO_FR[String(el).toLowerCase()] || null;
 }
 
@@ -1681,9 +2583,9 @@ function buildBattleLog(state, log) {
     }
 
     if (ev.type === 'unit_ko' || ev.type === 'ko') {
-      const targetId = ev.sourceId ?? ev.targetId ?? null;
-      const targetName = ev.sourceName ?? ev.targetName ?? (targetId != null ? getNameByIndex(targetId) : null);
-      push(createBattleLogEntry(turn, BattleEventType.DEATH, null, null, targetId, targetName, null, {}));
+      const victimId = ev.targetId ?? ev.sourceId ?? ev.target ?? null;
+      const victimName = ev.targetName ?? ev.sourceName ?? (victimId != null ? getNameByIndex(victimId) : null);
+      push(createBattleLogEntry(turn, BattleEventType.DEATH, null, null, victimId, victimName, null, {}));
       continue;
     }
 
@@ -1809,6 +2711,24 @@ function buildBattleLog(state, log) {
                 before: r.before ?? null,
                 after: r.after ?? null,
                 baseCooldown: r.baseCooldown ?? null
+              }));
+            } else if (effType === 'CD_UP' && r.applied) {
+              const d = r.delta ?? cfg?.value ?? 0;
+              push(createBattleLogEntry(turn, BattleEventType.EFFECT_APPLY, sourceId, sourceName, targetId, targetName, r.after ?? null, {
+                message: `${sourceName} retarde le temps de recharge de ${targetName} de ${d} tour(s).`,
+                effectType: 'CD_UP',
+                before: r.before ?? null,
+                after: r.after ?? null,
+                delta: d
+              }));
+            } else if (effType === 'CD_DOWN' && r.applied) {
+              const d = r.delta ?? cfg?.value ?? 0;
+              push(createBattleLogEntry(turn, BattleEventType.EFFECT_APPLY, sourceId, sourceName, targetId, targetName, r.after ?? null, {
+                message: `${sourceName} réduit le temps de recharge de ${targetName} de ${d} tour(s).`,
+                effectType: 'CD_DOWN',
+                before: r.before ?? null,
+                after: r.after ?? null,
+                delta: d
               }));
             } else if (effType === 'STEAL_STAT' && r.applied) {
               push(createBattleLogEntry(turn, BattleEventType.EFFECT_APPLY, sourceId, sourceName, targetId, targetName, null, {
@@ -1956,10 +2876,20 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     const rawSkill = u.skill || u.skillData || u.skill_data;
     const { activeSkills, passiveSkills: rawPassiveSkills } = getSkillsFromSkillData(rawSkill);
     const passives = normalizePassives(rawPassiveSkills);
-    const mainSkillRaw = activeSkills.length > 0 ? activeSkills[0] : null;
-    const skill = mainSkillRaw
-      ? ensureSkillEffects(normalizeSkill(mainSkillRaw))
-      : (Array.isArray(rawSkill?.skills) ? null : normalizeSkill(rawSkill));
+    const permanentTraits = extractPermanentPassiveTraits(rawPassiveSkills);
+    const activeSkillSlots = buildActiveSkillSlotsFromRaw(activeSkills);
+
+    let skill = null;
+    let skillCd = 0;
+    if (activeSkillSlots.length > 0) {
+      skill = { skill: activeSkillSlots[0].skill };
+      skillCd = 0;
+    } else {
+      skill = Array.isArray(rawSkill?.skills) ? null : normalizeSkill(rawSkill);
+      if (skill) skill = ensureSkillEffects(skill);
+      skillCd = 0;
+    }
+
     const hp = u.maxHp ?? 0;
     const alive = hp > 0;
     return {
@@ -1975,9 +2905,11 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
       mastery: u.mastery ?? 0,
       damageTakenMul: 1,
       skill,
-      skillCd: 0,
+      skillCd,
+      activeSkillSlots: activeSkillSlots.length > 0 ? activeSkillSlots : null,
       passives,
-      passiveCooldowns: {}
+      passiveCooldowns: {},
+      permanentDebuffImmunity: !!permanentTraits.debuffImmunity
     };
   });
 
@@ -2006,7 +2938,7 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     bossModifier: config.bossModifier || null,
     bossUid: null,
     bossPhase2: false,
-    counters: { bossActions: 0 },
+    bossResurrected: false,
     logEvent,
     lastResurrectedUnit: null,
     setUnitHp: (unit, newHp) => setUnitHp(unit, newHp, state),
@@ -2015,7 +2947,12 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     activeUnitId: null
   };
   if (state.bossModifier) {
-    const bossUnit = state.units.find((u) => u.side === 'B' && u.isBoss);
+    let bossUnit = state.units.find((u) => u.side === 'B' && u.isBoss);
+    if (!bossUnit && state.bossModifier?.resurrectOnce) {
+      // Fallback : dernière unité B (le boss est toujours en dernière position pour les stages boss)
+      const bUnits = state.units.filter((u) => u.side === 'B');
+      bossUnit = bUnits.length > 0 ? bUnits[bUnits.length - 1] : null;
+    }
     state.bossUid = bossUnit ? bossUnit.uid : (state.units.find((u) => u.side === 'B')?.uid ?? null);
   }
   for (const u of state.units) {
@@ -2036,6 +2973,8 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
   });
 
   applyStartOfBattleRuntimeEffects(state, (e) => logEvent(state, e));
+
+  applyCombatStartPassives(state, (ev) => logEvent(state, ev));
 
   // Debug: vérifier HP initiaux (détecter boost maxHp anormal ex. CAC +20%)
   if (typeof console !== 'undefined' && console.log) {
@@ -2134,15 +3073,7 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
       state.currentRound = rounds;
       state.activeUnitId = actor.uid;
 
-      // STUN : l'unité passe son tour, ATB remis à 0, la durée du debuff décrémente.
-      if (targetHasStatus(actor, EffectType.STUN)) {
-        if (state.logEvent) state.logEvent(state, { type: 'skip_stun', actorId: actor.combatIndex });
-        actor.atb = 0;
-        tickStatuses(state, actor, (e) => logEvent(state, e));
-        onUnitActionEndSynergies(state, actor, (e) => logEvent(state, e));
-        break;
-      }
-
+      // REGEN et DOT proc au début du tour (y compris étourdi) ; leur durée (remainingActions) diminue juste après ce proc, pas en fin d’action.
       const regenStacks = (actor.buffs || []).filter((b) => (b.type || b.key || '').toUpperCase() === 'REGEN');
       if (regenStacks.length > 0 && actor.alive) {
         const totalRegen = regenStacks.reduce((sum, buff) => sum + Math.max(0, Number(buff.value) || 0), 0);
@@ -2175,10 +3106,50 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
           if (state.logEvent) {
             state.logEvent(state, { type: 'dot_damage', actorId: actor.combatIndex, damage: dotDamage, stacks: dotStacks, hpBefore, hpAfter: actor.hp });
           }
-          if (hpResult?.died === true && state.logEvent) {
-            state.logEvent(state, { type: 'unit_ko', sourceId: actor.combatIndex, sourceName: actor.name });
+          if (hpResult?.died === true) {
+            const logDot = (ev) => state.logEvent && state.logEvent(state, ev);
+            fireKoObserverPassives(state, actor, null, logDot);
+            if (state.logEvent) {
+              state.activeUnitId = null; // Ne pas afficher une unité morte comme "active" dans le replay
+              state.logEvent(state, { type: 'unit_ko', sourceId: actor.combatIndex, sourceName: actor.name });
+            }
           }
         }
+      }
+
+      if (actor.alive) {
+        tickRegenAndDotAfterProc(state, actor, (e) => logEvent(state, e));
+      }
+
+      // Si l'unité est morte (DOT ou autre effet au début du tour), passer son tour sans tenter d'agir
+      if (!actor.alive) {
+        actor.atb = 0;
+        state.activeUnitId = null;
+        if (state.logEvent) {
+          state.logEvent(state, { type: 'skip_dead', actorId: actor.combatIndex });
+        }
+        continue;
+      }
+
+      // Passifs « quand un ennemi commence son tour » : pour chaque unité adverse à actor.
+      const logEnemyTurn = (ev) => logEvent(state, ev);
+      for (const u of state.units) {
+        if (!u.alive || u.side === actor.side) continue;
+        handlePassiveTrigger(state, u, 'ON_ENEMY_TURN_START', { turnActor: actor, target: actor }, logEnemyTurn);
+      }
+
+      // STUN : l'unité ne choisit pas d'action mais ON_ACTION_START / ON_ACTION_END et cooldowns passifs
+      // s'exécutent comme après une action normale ; puis tick des durées des autres buff/debuff (REGEN/DOT déjà tick après proc début de tour).
+      if (targetHasStatus(actor, EffectType.STUN)) {
+        if (state.logEvent) state.logEvent(state, { type: 'skip_stun', actorId: actor.combatIndex });
+        onUnitActionStartSynergies(state, actor, (e) => logEvent(state, e));
+        handlePassiveTrigger(state, actor, 'ON_ACTION_START', {}, (ev) => logEvent(state, ev));
+        actor.atb = 0;
+        handlePassiveTrigger(state, actor, 'ON_ACTION_END', {}, (ev) => logEvent(state, ev));
+        decrementPassiveCooldowns(actor);
+        tickStatuses(state, actor, (e) => logEvent(state, e));
+        onUnitActionEndSynergies(state, actor, (e) => logEvent(state, e));
+        break;
       }
 
       onUnitActionStartSynergies(state, actor, (e) => logEvent(state, e));
@@ -2197,11 +3168,23 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
 
       // Avec PROVOKE : pas de skill, uniquement attaque de base (ciblée sur le lanceur) ; les passifs restent actifs.
       let forcedTarget = null;
+      let selectedSkillSlot = null;
       let usedSkill = shouldUseSkill(actor) && !hasProvoke(actor);
       if (interactive && actor.side === 'A' && !targetHasStatus(actor, EffectType.STUN) && !hasProvoke(actor)) {
-        const basicCandidates = getBasicTargetCandidates(state, actor);
-        const skillCandidates = getSkillTargetCandidates(state, actor);
+        const basicEnemies = getAliveEnemies(state, actor);
+        const basicCandidates = (() => {
+          if (!basicEnemies.length) return [];
+          const isDist = String(actor.rangeType ?? actor.attack_type ?? actor.position ?? '').toUpperCase().includes('DISTANCE')
+            || String(actor.position ?? '').toLowerCase() === 'back';
+          if (isDist) return basicEnemies;
+          const front = basicEnemies.filter((u) => String(u.position ?? '').toLowerCase() === 'front');
+          return front.length > 0 ? front : basicEnemies;
+        })();
         const skillAvailable = shouldUseSkill(actor);
+        const previewSlot = selectSkillSlotForAi(actor, state);
+        const skillCandidates = previewSlot
+          ? getSkillTargetCandidates(state, actor, previewSlot.skill, { skipCdCheck: true })
+          : getSkillTargetCandidates(state, actor);
         const currentDecision = decisions[decisionCursor];
         if (!currentDecision) {
           log.summary = {
@@ -2215,23 +3198,63 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
           };
           log.battleLog = buildBattleLog(state, log);
           log.replay = { seed, frames: replayFrames };
+          const hasSkillTargets = skillCandidates.length > 0;
+          const effectiveSuggested = skillAvailable && hasSkillTargets ? 'SKILL' : 'BASIC';
+          const mainSkillDescription = getMainSkillDescriptionFromUnit(actor);
+          const skillSlotsPayload =
+            Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0
+              ? actor.activeSkillSlots.map((s) => {
+                  const sk = ensureSkillEffects(normalizeSkill(s.skill));
+                  const slotTargets = getSkillTargetCandidates(state, actor, sk, { skipCdCheck: true }).map((u) => ({
+                    combatIndex: u.combatIndex,
+                    name: u.name
+                  }));
+                  const description =
+                    typeof s.skill?.description === 'string' && s.skill.description.trim()
+                      ? s.skill.description.trim()
+                      : '';
+                  const pr = Number(s.priority ?? 999);
+                  return {
+                    skillKey: s.skillKey,
+                    name: s.skill?.name ?? null,
+                    priority: Number.isFinite(pr) ? pr : 999,
+                    skillCd: Number(s.skillCd ?? 0),
+                    ready: s.skillCd === 0 || s.skillCd == null,
+                    skillTargets: slotTargets,
+                    description
+                  };
+                })
+              : null;
           log.decisionRequest = {
             actorCombatIndex: actor.combatIndex,
             actorName: actor.name,
             skillAvailable,
             skillCd: Number(actor.skillCd ?? 0),
+            skillSlots: skillSlotsPayload,
+            mainSkillDescription: mainSkillDescription || undefined,
             basicTargets: basicCandidates.map((u) => ({ combatIndex: u.combatIndex, name: u.name })),
             skillTargets: skillCandidates.map((u) => ({ combatIndex: u.combatIndex, name: u.name })),
-            suggestedAction: usedSkill ? 'SKILL' : 'BASIC'
+            suggestedAction: effectiveSuggested
           };
           return log;
         }
         const requestedAction = String(currentDecision.action || '').toUpperCase() === 'SKILL' ? 'SKILL' : 'BASIC';
         usedSkill = requestedAction === 'SKILL' && skillAvailable;
+        if (usedSkill && Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
+          selectedSkillSlot = pickSkillSlotForInteractive(actor, state, currentDecision);
+          usedSkill = selectedSkillSlot != null;
+        }
         const targetCombatIndex = Number(currentDecision.targetCombatIndex);
-        const pool = usedSkill ? skillCandidates : basicCandidates;
+        const pool = usedSkill
+          ? selectedSkillSlot
+            ? getSkillTargetCandidates(state, actor, selectedSkillSlot.skill, { skipCdCheck: true })
+            : skillCandidates
+          : basicCandidates;
         forcedTarget = pool.find((u) => u.combatIndex === targetCombatIndex) || null;
         decisionCursor += 1;
+      } else if (usedSkill) {
+        selectedSkillSlot = selectSkillSlotForAi(actor, state);
+        usedSkill = selectedSkillSlot != null;
       }
       if (actor.name === 'Atlas des Profondeurs') {
         console.log('ATLAS DECISION', {
@@ -2245,7 +3268,7 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
         console.log('CD STATE:', actor.skillCd);
       }
       if (usedSkill) {
-        const result = performSkillAction(state, actor, rounds, atbBefore, logEvent, forcedTarget);
+        const result = performSkillAction(state, actor, rounds, atbBefore, logEvent, forcedTarget, selectedSkillSlot);
         if (!result) {
           // fallback basic si pas de skill applicable
           if (forcedTarget) performBasicAction(state, actor, forcedTarget, { round: rounds, atbBefore });
@@ -2262,34 +3285,16 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
         continue;
       }
 
-      if (state.bossUid && actor.uid === state.bossUid) {
-        state.counters.bossActions = (state.counters.bossActions || 0) + 1;
-        const mod = state.bossModifier;
-        const n = state.counters.bossActions;
-        if (mod?.shieldEveryNActions?.n != null) {
-          const period = Number(mod.shieldEveryNActions.n);
-          if (period > 0 && n % period === 0) {
-            const bossUnit = state.units.find((u) => u.uid === state.bossUid);
-            if (bossUnit) {
-              const pct = Number(mod.shieldEveryNActions.pctMaxHp ?? 0.2);
-              const shieldVal = Math.round((bossUnit.maxHp || 1) * pct);
-              const res = applyShield(bossUnit, shieldVal, 1, null);
-              logEvent(state, { type: 'BOSS_TRIGGER', subType: 'shieldEveryNActions', unit: bossUnit.combatIndex, value: res?.applied ?? shieldVal });
-            }
+      // Boss ch10 hard : après résurrection, applique DOT 1 tour à tous les ennemis à chaque action
+      const mod = state.bossModifier;
+      if (state.bossUid && actor.uid === state.bossUid && mod?.resurrectThenDot && state.bossResurrected) {
+        for (const u of state.units) {
+          if (u.side === 'A' && u.alive) {
+            applyEffect(u, { type: EffectType.DOT, value: 0, remainingActions: 1, isDebuff: true, sourceId: actor?.uid });
           }
         }
-        if (mod?.silenceEveryNActions?.n != null) {
-          const period = Number(mod.silenceEveryNActions.n);
-          const duration = Number(mod.silenceEveryNActions.duration ?? 2);
-          if (period > 0 && n % period === 0) {
-            for (const u of state.units) {
-              if (u.side === 'A') {
-                applyEffect(u, { type: EffectType.SILENCE, value: 0, remainingActions: duration, isDebuff: true });
-              }
-            }
-            const bossForLog = state.units.find((u) => u.uid === state.bossUid);
-            if (bossForLog) logEvent(state, { type: 'BOSS_TRIGGER', subType: 'silenceEveryNActions', unit: bossForLog.combatIndex, duration });
-          }
+        if (state.logEvent) {
+          state.logEvent(state, { type: 'BOSS_TRIGGER', subType: 'resurrectThenDot', unit: actor.combatIndex, duration: 1 });
         }
       }
 

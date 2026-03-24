@@ -278,7 +278,7 @@ function computeRewards(mode, chapter, stage, isBoss) {
  */
 async function loadUnitPool() {
   const rows = await query(
-    "SELECT code, rarity, role, attack_type, element, archetype FROM units WHERE element IN ('water','fire','plant') AND code NOT LIKE 'BOSS_CH%'"
+    "SELECT code, rarity, role, attack_type, element, archetype FROM units WHERE element IN ('water','fire','plant') AND COALESCE(is_boss, 0) = 0 AND code NOT LIKE 'BOSS_CH%'"
   );
   return rows.map((r) => {
     const roleCategory = toRoleCategory(r.role);

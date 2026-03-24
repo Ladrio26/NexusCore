@@ -128,6 +128,21 @@ export function toRoleFr(key: string | undefined | null): string {
   return ROLE_FR[k] ?? ROLE_FR[String(key).toLowerCase()] ?? key;
 }
 
+/** Rôle affiché en combat (Tank, DPS, Soutien, Assassin) à partir de role ou archetype. */
+export function combatRoleLabel(role?: string | null, archetype?: string | null): string {
+  const r = (role ?? '').toString().toLowerCase();
+  const arch = (archetype ?? '').toString().toUpperCase();
+  if (['tank', 'assassin', 'support', 'soutien', 'dps'].includes(r)) return toRoleFr(role);
+  if (arch === 'CAC_TANK') return 'Tank';
+  if (arch === 'CAC_DPS') return 'Assassin';
+  if (arch.includes('SUPPORT')) return 'Soutien';
+  if (arch.includes('DISTANCE') || arch.includes('DPS')) return 'DPS';
+  if (r === 'ranged') return 'DPS';
+  if (r === 'melee') return 'Mêlée';
+  const fr = toRoleFr(role);
+  return fr === '—' ? '' : fr;
+}
+
 /** Archétype : CAC_TANK, DISTANCE_*… → FR */
 export function toArchetypeFr(key: string | undefined | null): string {
   if (!key) return '—';
@@ -184,4 +199,23 @@ export function toTraitFr(key: string | undefined | null): string {
   if (!key) return '—';
   const k = normKey(key);
   return TRAIT_FR[k] ?? key;
+}
+
+/** Mapping FR (minuscule, normalisé) → clé API pour la recherche par trait */
+export const TRAIT_FR_TO_KEY: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const [key, fr] of Object.entries(TRAIT_FR)) {
+    const norm = String(fr).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+    map[norm] = key;
+    map[String(fr).toLowerCase()] = key;
+  }
+  return map;
+})();
+
+/** Résout une chaîne de recherche (ex. "gardien") en clé de trait (ex. "GUARDIANS") si elle correspond. */
+export function resolveTraitFromSearch(search: string): string | null {
+  const q = search.toLowerCase().trim();
+  if (!q) return null;
+  const norm = q.normalize('NFD').replace(/\p{M}/gu, '');
+  return TRAIT_FR_TO_KEY[norm] ?? TRAIT_FR_TO_KEY[q] ?? null;
 }

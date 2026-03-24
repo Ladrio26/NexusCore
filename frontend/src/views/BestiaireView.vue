@@ -25,6 +25,13 @@
             {{ r.label }}
           </label>
         </div>
+        <div class="filter-group">
+          <span class="filter-label">Traits</span>
+          <label v-for="t in traitOptions" :key="t.id" class="filter-check">
+            <input type="checkbox" v-model="filterTraits[t.id]" />
+            {{ t.label }}
+          </label>
+        </div>
         <div class="filter-group sort-group">
           <span class="filter-label">Trier par</span>
           <select v-model="sortBy" class="sort-select">
@@ -166,7 +173,7 @@ import {
   toTraitFr,
   STAT_FR
 } from '../utils/i18nFr';
-import { normalizeSkillDescription } from '../utils/skillDescription';
+import { normalizeSkillDescription, getBestiaryMultiSkillDescriptions } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
 import {
   TOOLTIP_TYPE,
@@ -210,7 +217,9 @@ const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic
 const ELEMENT_COLUMNS = [
   { id: 'water', label: 'Eau' },
   { id: 'fire', label: 'Feu' },
-  { id: 'plant', label: 'Plante' }
+  { id: 'plant', label: 'Plante' },
+  { id: 'light', label: 'Lumière' },
+  { id: 'dark', label: 'Ténèbres' }
 ];
 
 const loading = ref(true);
@@ -219,13 +228,16 @@ const ownedUnitIds = ref<Set<number>>(new Set());
 const detailUnit = ref<Unit | null>(null);
 
 const filterElements = ref<Record<string, boolean>>({
-  water: true, fire: true, plant: true, neutral: true
+  water: true, fire: true, plant: true, light: true, dark: true, neutral: true
 });
 const filterAttackTypes = ref<Record<string, boolean>>({
   melee: true, ranged: true
 });
 const filterRarities = ref<Record<string, boolean>>({
   common: true, uncommon: true, rare: true, epic: true, legendary: true, mythic: true
+});
+const filterTraits = ref<Record<string, boolean>>({
+  GUARDIANS: false, DRUIDS: false, ARCANISTS: false, EXECUTIONERS: false, BERSERKERS: false, TACTICIANS: false
 });
 const sortBy = ref<string>('');
 const sortOrder = ref<'asc' | 'desc'>('desc');
@@ -234,6 +246,8 @@ const elementOptions = [
   { id: 'water', label: 'Eau' },
   { id: 'fire', label: 'Feu' },
   { id: 'plant', label: 'Plante' },
+  { id: 'light', label: 'Lumière' },
+  { id: 'dark', label: 'Ténèbres' },
   { id: 'neutral', label: 'Neutre' }
 ];
 const attackTypeOptions = [
@@ -247,6 +261,14 @@ const rarityOptions = [
   { id: 'epic', label: 'Épique' },
   { id: 'legendary', label: 'Légendaire' },
   { id: 'mythic', label: 'Mythique' }
+];
+const traitOptions = [
+  { id: 'GUARDIANS', label: 'Gardien' },
+  { id: 'DRUIDS', label: 'Druide' },
+  { id: 'ARCANISTS', label: 'Arcaniste' },
+  { id: 'EXECUTIONERS', label: 'Bourreau' },
+  { id: 'BERSERKERS', label: 'Berserker' },
+  { id: 'TACTICIANS', label: 'Tacticien' }
 ];
 
 function isOwned(unitId: number): boolean {
@@ -373,6 +395,11 @@ function getDescriptionFromSkillData(skillData: Unit['skill_data']): { skill?: s
 const descriptionSkill = computed(() => {
   const u = detailUnit.value;
   if (!u) return '—';
+  const sd = u.skill_data;
+  if (sd && typeof sd === 'object') {
+    const multi = getBestiaryMultiSkillDescriptions(sd as Record<string, unknown>);
+    if (multi.trim()) return multi.trim();
+  }
   const desc = getDescriptionFromSkillData(u.skill_data ?? null);
   const text = desc?.skill;
   return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : buildSkillDescription(u.skill_data ?? null) || '—';
@@ -430,17 +457,28 @@ const specAPassiveText = computed(() => formatPassive(detailUnit.value?.specA_pa
 const specBPassiveText = computed(() => formatPassive(detailUnit.value?.specB_passive));
 const detailUnitImageUrl = computed(() => getUnitImageUrl(detailUnit.value) ?? null);
 
+function parseUnitTraits(traits: Unit['traits']): string[] {
+  if (!traits) return [];
+  if (Array.isArray(traits)) return traits.map((t) => String(t).toUpperCase());
+  return [String(traits).toUpperCase()];
+}
+
 const filteredUnits = computed(() => {
   const u = units.value;
   const fe = filterElements.value;
   const fa = filterAttackTypes.value;
   const fr = filterRarities.value;
+  const ft = filterTraits.value;
+  const selectedTraits = Object.entries(ft).filter(([, v]) => v).map(([k]) => k);
   return u.filter((unit) => {
     const el = (unit.element || 'neutral').toLowerCase();
     const at = (unit.attack_type || 'melee').toLowerCase();
     const atKey = at === 'magic' ? 'ranged' : at; // magie → Distance
     const ra = (unit.rarity || 'common').toLowerCase();
-    return fe[el] && fa[atKey] && fr[ra];
+    if (!fe[el] || !fa[atKey] || !fr[ra]) return false;
+    if (selectedTraits.length === 0) return true;
+    const unitTraits = parseUnitTraits(unit.traits);
+    return selectedTraits.some((t) => unitTraits.includes(t));
   });
 });
 
@@ -503,11 +541,11 @@ onMounted(async () => {
 
 <style scoped>
 .bestiaire {
-  max-width: 1400px;
-  margin: 0 auto;
+  max-width: 100%;
+  margin: 0 2px;
   background: #0f172a;
-  padding: 1.5rem;
-  border-radius: 12px;
+  padding: 0.3rem;
+  border-radius: 10px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -519,9 +557,9 @@ onMounted(async () => {
 .filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem 1.5rem;
-  padding: 0.75rem 0;
-  margin-bottom: 1rem;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem 0;
+  margin-bottom: 0.5rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.3);
 }
 
@@ -569,8 +607,8 @@ onMounted(async () => {
 
 .columns {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.35rem;
 }
 
 .column {
@@ -597,7 +635,7 @@ onMounted(async () => {
 .bestiary-units {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
+  gap: 8px;
   align-items: stretch;
 }
 
@@ -605,9 +643,9 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.35rem;
-  padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
+  gap: 0.25rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.4rem;
   border: 2px solid rgba(0, 0, 0, 0.2);
   color: #e5e7eb;
   text-align: left;
@@ -618,9 +656,9 @@ onMounted(async () => {
 .unit-card.bestiary-card {
   position: relative;
   overflow: hidden;
-  height: 92px;
-  border-radius: 12px;
-  padding: 10px 12px;
+  height: 82px;
+  border-radius: 10px;
+  padding: 6px 10px;
   line-height: 1.15;
   display: flex;
   flex-direction: column;
@@ -671,8 +709,8 @@ onMounted(async () => {
 }
 
 .bestiary-card .pill {
-  font-size: 0.72rem;
-  padding: 3px 8px;
+  font-size: 0.65rem;
+  padding: 2px 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -683,11 +721,11 @@ onMounted(async () => {
 }
 
 .bestiary-card .rarity-badge {
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   font-weight: 700;
   text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
   flex-shrink: 0;
 }
 
@@ -746,12 +784,12 @@ onMounted(async () => {
 
 .card-name {
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   line-height: 1.2;
 }
 
 .bestiary-card .card-name {
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 800;
   margin: 0;
   min-width: 0;
@@ -763,7 +801,7 @@ onMounted(async () => {
 .card-attack,
 .card-traits,
 .card-rarity {
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.85);
 }
 
@@ -822,6 +860,7 @@ onMounted(async () => {
   font-size: 0.9rem;
   line-height: 1.4;
   color: #cbd5e1;
+  white-space: pre-line;
 }
 
 .unit-spec-section {
@@ -921,13 +960,28 @@ onMounted(async () => {
   }
 }
 
+@media (max-width: 1200px) {
+  .columns {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 @media (max-width: 768px) {
   .bestiaire {
-    padding: 1rem;
+    padding: 0.5rem;
+  }
+  .columns {
+    grid-template-columns: repeat(2, 1fr);
   }
   .bestiaire-grid {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+}
+
+@media (max-width: 500px) {
+  .columns {
+    grid-template-columns: 1fr;
   }
 }
 </style>

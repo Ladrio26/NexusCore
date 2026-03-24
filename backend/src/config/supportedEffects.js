@@ -14,17 +14,24 @@ export const BUFF_FIXED_LABELS = {
 };
 
 export const SUPPORTED_EFFECTS = {
+  /**
+   * Dégâts directs + bonus flat lié à un effet précédent (ex. STRIP → valuePerRemoved × buffs retirés).
+   * scaleMetric : removedCount (défaut), effectiveDamage.
+   */
   DAMAGE: {
-    requiredOneOf: ['mult', 'percentMaxHp', 'percentMaxHpCaster'],
-    optional: ['target', 'count', 'missingHpScaling']
+    requiredOneOf: ['mult', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'],
+    optional: ['target', 'count', 'missingHpScaling', 'scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric']
   },
+  /**
+   * Soin + bonus flat par unité de métrique (ex. CLEANSE → valuePerRemoved × débuffs retirés).
+   */
   HEAL: {
-    requiredOneOf: ['value', 'percentMaxHp', 'percentMaxHpCaster'],
-    optional: ['target']
+    requiredOneOf: ['value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'],
+    optional: ['target', 'scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric']
   },
   APPLY_BUFF: {
     required: ['buffType', 'remainingActions'],
-    optional: ['target', 'value', 'percentMaxHp', 'percentMaxHpCaster']
+    optional: ['target', 'value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric']
   },
   APPLY_DEBUFF: {
     required: ['debuffType', 'remainingActions'],
@@ -32,28 +39,47 @@ export const SUPPORTED_EFFECTS = {
   },
   STRIP: {
     required: ['count'],
-    optional: ['target']
+    optional: ['target', 'chance']
   },
   CLEANSE: {
     optional: ['target', 'count']
   },
+  /**
+   * Réduit la barre ATB (équivalent « ATB down » instantané côté jauge). Chaînage comme ATB_UP.
+   * Exemple : STRIP puis REDUCE_ATB avec percent 0, scaleFromEffectIndex 0, percentPerRemoved 0.05.
+   */
   REDUCE_ATB: {
-    required: ['percent'],
-    optional: ['target']
+    optional: ['target', 'chance', 'percent', 'scaleFromEffectIndex', 'percentPerRemoved', 'scaleMetric']
   },
+  /**
+   * Barre d’action : % fixe via `percent` et/ou partie dynamique liée à un effet précédent dans la même compétence.
+   * - `scaleFromEffectIndex` : index 0-based d’un effet placé **avant** dans `effects` (ex. 0 = premier effet).
+   * - `percentPerRemoved` : % d’ATB ajouté ou retiré **par unité** du compteur `removed` (CLEANSE = débuffs retirés, STRIP = buffs retirés).
+   * - `scaleMetric` : `removedCount` (défaut), `effectiveDamage`.
+   * Exemple : CLEANSE count 2 + ATB_UP target TEAM_ALLY avec percent 0, scaleFromEffectIndex 0, percentPerRemoved 0.05.
+   */
   ATB_UP: {
-    required: ['percent'],
-    optional: ['target']
+    optional: ['target', 'chance', 'percent', 'scaleFromEffectIndex', 'percentPerRemoved', 'scaleMetric']
   },
   RESET_SKILL_COOLDOWN: {
-    optional: ['target']
+    optional: ['target', 'chance']
   },
   SET_SKILL_COOLDOWN_MAX: {
-    optional: ['target']
+    optional: ['target', 'chance']
   },
   STEAL_STAT: {
     required: ['stat', 'percent', 'remainingActions'],
-    optional: ['target']
+    optional: ['target', 'chance']
+  },
+  /** Augmente le cooldown courant de la cible de `value` tours (actions). Probabilité via `chance` (0–1 ou %). */
+  CD_UP: {
+    required: ['value'],
+    optional: ['target', 'chance']
+  },
+  /** Diminue le cooldown courant de la cible de `value` tours (plancher 0). */
+  CD_DOWN: {
+    required: ['value'],
+    optional: ['target', 'chance']
   },
   RESURRECT: {
     requiredOneOf: ['percentHp', 'flatHp'],
@@ -83,5 +109,26 @@ export const SUPPORTED_TRIGGERS = [
   'ON_ACTION_START',
   'ON_ACTION_END',
   'ON_RECEIVE_DAMAGE',
-  'ON_DEAL_DAMAGE'
+  'ON_DEAL_DAMAGE',
+  /** Début du combat : avant tout tour ; ordre d'exécution = vitesse effective décroissante. */
+  'ON_COMBAT_START',
+  /** Un ennemi de l’acteur est mis KO (témoins : alliés du défunt). */
+  'ON_ENEMY_KO',
+  /** Un allié de l’acteur est mis KO. */
+  'ON_ALLY_KO',
+  /** Un autre allié (pas soi) subit des dégâts ; contexte : source = attaquant, target = blessé. */
+  'ON_ALLY_RECEIVE_DAMAGE',
+  /** Un ennemi commence son tour (ATB) ; déclenché pour chaque unité adverse avant ON_ACTION_START de cet ennemi. */
+  'ON_ENEMY_TURN_START',
+  /**
+   * S’exécute à chaque déclenchement de passif (en plus des passifs du trigger courant).
+   * Utile pour des effets qui doivent suivre toute l’action / tous les événements.
+   */
+  'ALWAYS'
 ];
+
+/**
+ * Passif sans déclencheur : permanent sur le terrain (pas d'effet à lister).
+ * - DEBUFF_IMMUNITY : immunise aux débuffs, STRIP, réduction d’ATB, SET_SKILL_COOLDOWN_MAX, CD_UP, vol de stat, etc.
+ */
+export const PASSIVE_KINDS_PERMANENT = ['DEBUFF_IMMUNITY'];

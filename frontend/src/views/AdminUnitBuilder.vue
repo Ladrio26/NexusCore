@@ -42,7 +42,7 @@
                 @click="loadUnitIntoForm(u)"
               >
                 <span class="unit-row-name">{{ u.name }}</span>
-                <span class="unit-row-meta">{{ u.rarity }}</span>
+                <span class="unit-row-meta">{{ u.rarity }}<template v-if="u.is_boss"> · Boss</template></span>
                 <span class="unit-row-extra">—</span>
               </button>
             </div>
@@ -64,7 +64,7 @@
               <div class="unit-info-grid">
                 <label>Nom <input v-model="form.name" type="text" /></label>
                 <label>Rareté
-                  <select v-model="form.rarity">
+                  <select v-model="form.rarity" @change="onRarityChangeForBaseStats">
                     <option v-for="r in schema.rarities" :key="r" :value="r">{{ r }}</option>
                   </select>
                 </label>
@@ -74,7 +74,7 @@
                   </select>
                 </label>
                 <label>Rôle
-                  <select v-model="form.role" @change="onRoleChange">
+                  <select v-model="form.role" @change="onRoleSelectChange">
                     <option v-for="r in schema.roles" :key="r" :value="r">{{ r }}</option>
                   </select>
                 </label>
@@ -92,8 +92,12 @@
                 <label>Base ATK <input v-model.number="form.base_attack" type="number" min="0" /></label>
                 <label>Base DEF <input v-model.number="form.base_defense" type="number" min="0" /></label>
                 <label>Base SPEED <input v-model.number="form.base_speed" type="number" min="0" /></label>
-                <label>Mastery <input v-model.number="form.mastery" type="number" min="0" /></label>
+                <label>{{ toStatFr('mastery') }} <input v-model.number="form.mastery" type="number" min="0" /></label>
               </div>
+              <p class="unit-image-help base-stats-autofill-hint">
+                Stats de base (HP, ATK, DEF, vitesse, maîtrise) : préremplies au niveau 1 dès que la
+                <strong>rareté</strong> et le <strong>rôle</strong> sont choisis (tableau de référence).
+              </p>
               <div class="unit-info-traits">
                 <label>Traits (multi)
                   <select v-model="form.traits" multiple size="2">
@@ -101,6 +105,10 @@
                   </select>
                 </label>
               </div>
+              <label class="unit-boss-flag">
+                <input v-model="form.is_boss" type="checkbox" />
+                <span><strong>Unité boss</strong> — réservée campagne / donjons : pas au sanctuaire, pas dans le bestiaire, pas dans les tirages (portails, portail de guilde, PvP PNJ).</span>
+              </label>
             </div>
 
             <div v-if="showNoyauSection" class="section">
@@ -177,13 +185,18 @@
                   <textarea v-model="form.description.skill" rows="1" placeholder="Ex: Inflige des dégâts."></textarea>
                 </label>
               </div>
-              <button type="button" class="nx-btn" @click="addSkill">Ajouter une compétence</button>
+              <div class="skill-add-row">
+                <button type="button" class="nx-btn" @click="addSkill">Ajouter une compétence</button>
+                <button type="button" class="nx-btn nx-btn-secondary" title="Passif permanent DEBUFF_IMMUNITY (immunité débuffs, STRIP, −ATB, etc.)" @click="addDebuffImmunityPassive">
+                  + Passif immunisation débuffs
+                </button>
+              </div>
               <div v-for="(sk, skIdx) in form.skills" :key="'sk-' + (sk.id || skIdx)" class="skill-card" :class="{ 'skill-targeted-by-spec': skillIdsTargetedBySpecs.has((sk.id ?? '').toString().trim()) }">
                 <div v-if="skillIdsTargetedBySpecs.has((sk.id ?? '').toString().trim())" class="spec-target-warning">⚠ Spé utilise cet ID.</div>
                 <div class="skill-card-header">
                   <span class="skill-card-id">ID {{ (sk.id ?? '').toString().slice(0, 12) }}</span>
                   <span class="skill-card-type">
-                    <select v-model="sk.type">
+                    <select v-model="sk.type" @change="onFormSkillTypeChange(sk)">
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="PASSIVE">PASSIVE</option>
                     </select>
@@ -194,17 +207,53 @@
                 </div>
                 <div class="skill-card-body">
                   <template v-if="sk.type === 'PASSIVE'">
-                    <label>Trigger
-                      <select v-model="sk.trigger">
-                        <option value="">—</option>
-                        <option v-for="t in passiveTriggerOptions" :key="t" :value="t">{{ t }}</option>
+                    <label>Type de passif
+                      <select
+                        :value="isPermanentPassiveSkill(sk) ? 'immunity' : 'triggered'"
+                        @change="onPassiveModeChange(sk, ($event.target as HTMLSelectElement).value)"
+                      >
+                        <option value="triggered">Déclenché (trigger + effets)</option>
+                        <option value="immunity">Permanent — DEBUFF_IMMUNITY (immunité débuffs / effets négatifs)</option>
                       </select>
                     </label>
+                    <p v-if="isPermanentPassiveSkill(sk)" class="unit-image-help passive-permanent-hint">
+                      <strong>DEBUFF_IMMUNITY</strong> : pas de trigger ni d’effets ici — le moteur immunise contre débuffs,
+                      STRIP, réduction d’ATB, plafond CD, vol de stats, etc. (pas les dégâts/soins bruts).
+                    </p>
+                    <template v-if="!isPermanentPassiveSkill(sk)">
+                      <label>Trigger
+                        <select v-model="sk.trigger">
+                          <option value="">—</option>
+                          <option v-for="t in passiveTriggerOptions" :key="t" :value="t">{{ t }}</option>
+                        </select>
+                      </label>
+                    </template>
+                    <template v-else>
+                      <label>Kind permanent
+                        <select v-model="sk.passiveKind">
+                          <option v-for="k in passivePermanentKindOptions" :key="k" :value="k">{{ k }}</option>
+                        </select>
+                      </label>
+                    </template>
                   </template>
-                  <label v-if="sk.type === 'ACTIVE'" class="skill-desc">Description <input v-model="sk.description" type="text" placeholder="Optionnel" /></label>
+                  <label v-if="sk.type === 'ACTIVE' || sk.type === 'PASSIVE'" class="skill-desc">
+                    Description
+                    <input
+                      v-model="sk.description"
+                      type="text"
+                      placeholder="Optionnel — affichée dans le bestiaire / la collection (surtout si plusieurs compétences)"
+                    />
+                  </label>
                 </div>
-                <button type="button" class="nx-btn nx-btn-small" @click="addSkillEffect(skIdx)">+ Effet</button>
-                <div class="effects-grid">
+                <button
+                  v-if="!(sk.type === 'PASSIVE' && isPermanentPassiveSkill(sk))"
+                  type="button"
+                  class="nx-btn nx-btn-small"
+                  @click="addSkillEffect(skIdx)"
+                >
+                  + Effet
+                </button>
+                <div v-if="!(sk.type === 'PASSIVE' && isPermanentPassiveSkill(sk))" class="effects-grid">
                   <div v-for="(eff, effIdx) in sk.effects" :key="'sk-' + skIdx + '-e-' + effIdx" class="effect-block effect-block-spec">
               <div class="effect-header">
                 <span>Effet {{ effIdx + 1 }}</span>
@@ -240,12 +289,39 @@
                       <option value=""></option>
                       <option v-for="d in schema.DEBUFF_TYPES" :key="d" :value="d">{{ d }}</option>
                     </select>
+                    <select v-else-if="key === 'scaleMetric'" v-model="eff.scaleMetric">
+                      <option value="">removedCount (défaut)</option>
+                      <option value="removedCount">removedCount — CLEANSE / STRIP (champ removed)</option>
+                      <option value="effectiveDamage">effectiveDamage — dégâts de l’effet référencé</option>
+                    </select>
                     <input v-else-if="isNumberField(key)" v-model.number="eff[key]" type="number" step="any" :placeholder="fieldPlaceholder(key, eff)" />
                     <input v-else v-model="eff[key]" type="text" />
                   </label>
                 </template>
                 <p v-if="eff.type === 'APPLY_BUFF' && buffFixedLabel(eff.buffType)" class="effect-fixed-value-msg">{{ buffFixedLabel(eff.buffType) }}</p>
                 <p v-if="eff.type === 'APPLY_DEBUFF' && debuffFixedLabel(eff.debuffType)" class="effect-fixed-value-msg">{{ debuffFixedLabel(eff.debuffType) }}</p>
+                <p v-if="['ATB_UP', 'REDUCE_ATB'].includes(String(eff.type ?? '').toUpperCase())" class="effect-fixed-value-msg">
+                  <strong>Barre ATB liée :</strong> <code>ATB_UP</code> ou <code>REDUCE_ATB</code> avec <code>percent</code> fixe et/ou
+                  <code>scaleFromEffectIndex</code> + <code>percentPerRemoved</code> (même logique).
+                  <code>removedCount</code> = débuffs retirés (CLEANSE) ou buffs retirés (STRIP) sur la <strong>même cible</strong>.
+                  Fonctionne aussi sur un <strong>passif</strong> qui a <strong>plusieurs effets</strong> dans l’ordre (indices = cet ordre).
+                  Ex. STRIP puis <code>REDUCE_ATB</code> pour rogner l’ATB selon les buffs stripés.
+                </p>
+                <p v-if="String(eff.type ?? '').toUpperCase() === 'HEAL'" class="effect-fixed-value-msg">
+                  <strong>Soin lié :</strong> après un CLEANSE, <code>valuePerRemoved</code> × nombre de débuffs retirés (même cible) s’ajoute au soin
+                  (flat PV). <code>scaleFromEffectIndex</code> pointe vers l’effet CLEANSE.
+                </p>
+                <p v-if="String(eff.type ?? '').toUpperCase() === 'DAMAGE'" class="effect-fixed-value-msg">
+                  <strong>Dégâts liés :</strong> après un STRIP, <code>valuePerRemoved</code> × buffs retirés = dégâts plats bonus (même cible).
+                </p>
+                <p
+                  v-if="String(eff.type ?? '').toUpperCase() === 'APPLY_BUFF' && ['SHIELD', 'REGEN', 'DOT', 'ANTI_BUFF'].includes(String(eff.buffType ?? '').toUpperCase())"
+                  class="effect-fixed-value-msg"
+                >
+                  <strong>Bonus lié CLEANSE / STRIP :</strong> SHIELD &amp; REGEN : +<code>valuePerRemoved</code> × métrique au bouclier / soin par tour.
+                  DOT : +<code>valuePerRemoved</code> × STRIP = stacks supplémentaires. ANTI_BUFF : bonus de <code>remainingActions</code> (tours) × strip.
+                  Pour les bonus CLEANSE, garder <code>scaleMetric</code> = <code>removedCount</code> (défaut).
+                </p>
               </template>
                   </div>
                 </div>
@@ -263,6 +339,14 @@
                   <span>{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.type }}</span>
                 </div>
                 <template v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.type === 'PASSIVE'">
+                  <div
+                    v-if="(finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.passiveKind ?? '').toString().trim()"
+                    class="preview-row"
+                  >
+                    <span class="preview-label">passiveKind</span>
+                    <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('passiveKind') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.passiveKind }}</span>
+                    <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('passiveKind')" class="badge-spec">(modifié par spécialisation)</span>
+                  </div>
                   <div class="preview-row">
                     <span class="preview-label">Trigger</span>
                     <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('trigger') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.trigger ?? '—' }}</span>
@@ -330,7 +414,7 @@
           <span class="section-badge section-badge-a">Spécialisation A</span>
           <h4>Spec A — Modification de compétence</h4>
           <div v-if="form.specA_skill_modifier.targetSkillId && !form.skills.some(s => (s.id ?? '').toString().trim() === form.specA_skill_modifier.targetSkillId.trim())" class="errors spec-validation-msg">⚠ Cette spécialisation cible une compétence inexistante.</div>
-          <div v-if="(form.specA_skill_modifier.modify?.effects?.length || typeof form.specA_skill_modifier.modify?.cd_actions === 'number' || typeof form.specA_skill_modifier.modify?.cooldown === 'number' || (form.specA_skill_modifier.modify?.trigger ?? '').trim()) && !form.specA_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
+          <div v-if="(form.specA_skill_modifier.modify?.effects?.length || typeof form.specA_skill_modifier.modify?.cd_actions === 'number' || typeof form.specA_skill_modifier.modify?.cooldown === 'number' || (form.specA_skill_modifier.modify?.trigger ?? '').trim() || (form.specA_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specA_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
           <label>Compétence ciblée
             <select v-model="form.specA_skill_modifier.targetSkillId">
               <option value="">—</option>
@@ -350,6 +434,12 @@
               </label>
             </div>
             <div v-else>
+              <label>Modifier passiveKind (permanent)
+                <select v-model="form.specA_skill_modifier.modify.passiveKind">
+                  <option value="">— (inchangé)</option>
+                  <option v-for="k in passivePermanentKindOptions" :key="'A-pk-' + k" :value="k">{{ k }}</option>
+                </select>
+              </label>
               <label>Modifier trigger
                 <select v-model="form.specA_skill_modifier.modify.trigger">
                   <option value=""></option>
@@ -403,12 +493,26 @@
                     <option value=""></option>
                     <option v-for="d in schema.DEBUFF_TYPES" :key="d" :value="d">{{ d }}</option>
                   </select>
+                  <select v-else-if="key === 'scaleMetric'" v-model="eff.scaleMetric">
+                    <option value="">removedCount (défaut)</option>
+                    <option value="removedCount">removedCount — CLEANSE / STRIP</option>
+                    <option value="effectiveDamage">effectiveDamage — dégâts effet réf.</option>
+                  </select>
                   <input v-else-if="isNumberField(key)" v-model.number="eff[key]" type="number" step="any" :placeholder="fieldPlaceholder(key, eff)" />
                   <input v-else v-model="eff[key]" type="text" />
                 </label>
               </template>
               <p v-if="eff.type === 'APPLY_BUFF' && buffFixedLabel(eff.buffType)" class="effect-fixed-value-msg">{{ buffFixedLabel(eff.buffType) }}</p>
               <p v-if="eff.type === 'APPLY_DEBUFF' && debuffFixedLabel(eff.debuffType)" class="effect-fixed-value-msg">{{ debuffFixedLabel(eff.debuffType) }}</p>
+              <p v-if="['ATB_UP', 'REDUCE_ATB', 'HEAL', 'DAMAGE'].includes(String(eff.type ?? '').toUpperCase())" class="effect-fixed-value-msg">
+                Chaînage : indices = ordre dans <strong>cette liste spé</strong>. Même schéma que la compétence de base (CLEANSE → soin/buffs ATB ; STRIP → dégâts/REDUCE_ATB/DOT…).
+              </p>
+              <p
+                v-if="String(eff.type ?? '').toUpperCase() === 'APPLY_BUFF' && ['SHIELD', 'REGEN', 'DOT', 'ANTI_BUFF'].includes(String(eff.buffType ?? '').toUpperCase())"
+                class="effect-fixed-value-msg"
+              >
+                Buffs débuffs chaînés : indices = cette liste spé.
+              </p>
             </template>
           </div>
         </div>
@@ -416,7 +520,7 @@
           <span class="section-badge section-badge-b">Spécialisation B</span>
           <h4>Spec B — Modification de compétence</h4>
           <div v-if="form.specB_skill_modifier.targetSkillId && !form.skills.some(s => (s.id ?? '').toString().trim() === form.specB_skill_modifier.targetSkillId.trim())" class="errors spec-validation-msg">⚠ Cette spécialisation cible une compétence inexistante.</div>
-          <div v-if="(form.specB_skill_modifier.modify?.effects?.length || typeof form.specB_skill_modifier.modify?.cd_actions === 'number' || typeof form.specB_skill_modifier.modify?.cooldown === 'number' || (form.specB_skill_modifier.modify?.trigger ?? '').trim()) && !form.specB_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
+          <div v-if="(form.specB_skill_modifier.modify?.effects?.length || typeof form.specB_skill_modifier.modify?.cd_actions === 'number' || typeof form.specB_skill_modifier.modify?.cooldown === 'number' || (form.specB_skill_modifier.modify?.trigger ?? '').trim() || (form.specB_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specB_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
           <label>Compétence ciblée
             <select v-model="form.specB_skill_modifier.targetSkillId">
               <option value="">—</option>
@@ -436,6 +540,12 @@
               </label>
             </div>
             <div v-else>
+              <label>Modifier passiveKind (permanent)
+                <select v-model="form.specB_skill_modifier.modify.passiveKind">
+                  <option value="">— (inchangé)</option>
+                  <option v-for="k in passivePermanentKindOptions" :key="'B-pk-' + k" :value="k">{{ k }}</option>
+                </select>
+              </label>
               <label>Modifier trigger
                 <select v-model="form.specB_skill_modifier.modify.trigger">
                   <option value=""></option>
@@ -489,59 +599,29 @@
                     <option value=""></option>
                     <option v-for="d in schema.DEBUFF_TYPES" :key="d" :value="d">{{ d }}</option>
                   </select>
+                  <select v-else-if="key === 'scaleMetric'" v-model="eff.scaleMetric">
+                    <option value="">removedCount (défaut)</option>
+                    <option value="removedCount">removedCount — CLEANSE / STRIP</option>
+                    <option value="effectiveDamage">effectiveDamage — dégâts effet réf.</option>
+                  </select>
                   <input v-else-if="isNumberField(key)" v-model.number="eff[key]" type="number" step="any" :placeholder="fieldPlaceholder(key, eff)" />
                   <input v-else v-model="eff[key]" type="text" />
                 </label>
               </template>
               <p v-if="eff.type === 'APPLY_BUFF' && buffFixedLabel(eff.buffType)" class="effect-fixed-value-msg">{{ buffFixedLabel(eff.buffType) }}</p>
               <p v-if="eff.type === 'APPLY_DEBUFF' && debuffFixedLabel(eff.debuffType)" class="effect-fixed-value-msg">{{ debuffFixedLabel(eff.debuffType) }}</p>
+              <p v-if="['ATB_UP', 'REDUCE_ATB', 'HEAL', 'DAMAGE'].includes(String(eff.type ?? '').toUpperCase())" class="effect-fixed-value-msg">
+                Chaînage : indices = ordre dans <strong>cette liste spé</strong>.
+              </p>
+              <p
+                v-if="String(eff.type ?? '').toUpperCase() === 'APPLY_BUFF' && ['SHIELD', 'REGEN', 'DOT', 'ANTI_BUFF'].includes(String(eff.buffType ?? '').toUpperCase())"
+                class="effect-fixed-value-msg"
+              >
+                Buffs débuffs chaînés : indices = cette liste spé.
+              </p>
             </template>
           </div>
         </div>
-                <!-- PREVIEW FINAL SKILL -->
-                <div v-if="sk?.id && finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final" class="preview-final-skill">
-              <h5>PREVIEW FINAL SKILL</h5>
-              <div class="preview-final-grid">
-                <div class="preview-row">
-                  <span class="preview-label">ID</span>
-                  <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('id') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.id }}</span>
-                  <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('id')" class="badge-spec">(modifié par spécialisation)</span>
-                </div>
-                <div class="preview-row">
-                  <span class="preview-label">Type</span>
-                  <span>{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.type }}</span>
-                </div>
-                <template v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.type === 'PASSIVE'">
-                  <div class="preview-row">
-                    <span class="preview-label">Trigger</span>
-                    <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('trigger') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.trigger ?? '—' }}</span>
-                    <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('trigger')" class="badge-spec">(modifié par spécialisation)</span>
-                  </div>
-                  <div class="preview-row">
-                    <span class="preview-label">Cooldown</span>
-                    <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('cooldown') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.cooldown ?? 0 }}</span>
-                    <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('cooldown')" class="badge-spec">(modifié par spécialisation)</span>
-                  </div>
-                </template>
-                <template v-else>
-                  <div class="preview-row">
-                    <span class="preview-label">cd_actions</span>
-                    <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('cd_actions') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.cd_actions ?? 0 }}</span>
-                    <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('cd_actions')" class="badge-spec">(modifié par spécialisation)</span>
-                  </div>
-                </template>
-                <div class="preview-row preview-row-effects">
-                  <span class="preview-label">Effets</span>
-                  <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('effects') }">
-                    {{ (finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.effects ?? []).length }} effet(s)
-                  </span>
-                  <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('effects')" class="badge-spec">(modifié par spécialisation)</span>
-                </div>
-                <ul v-if="(finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.effects ?? []).length" class="preview-effects-list">
-                  <li v-for="(e, i) in finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.effects" :key="i">{{ e.type ?? '?' }}</li>
-                </ul>
-              </div>
-            </div>
             </div>
             </div>
 
@@ -614,6 +694,24 @@ import { normalizeSkillDescription } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
 import { toTraitFr, toStatFr } from '../utils/i18nFr';
 
+/** Doit rester aligné avec `SUPPORTED_TRIGGERS` (backend) : fusionné au schéma API pour que l’UI affiche tout même si le serveur renvoie encore une liste ancienne. */
+const CANONICAL_PASSIVE_TRIGGERS: string[] = [
+  'ON_ATTACK',
+  'ON_HIT',
+  'ON_DEATH',
+  'ON_KILL',
+  'ON_ACTION_START',
+  'ON_ACTION_END',
+  'ON_RECEIVE_DAMAGE',
+  'ON_DEAL_DAMAGE',
+  'ON_COMBAT_START',
+  'ON_ENEMY_KO',
+  'ON_ALLY_KO',
+  'ON_ALLY_RECEIVE_DAMAGE',
+  'ON_ENEMY_TURN_START',
+  'ALWAYS'
+];
+
 const schema = ref<Record<string, any> | null>(null);
 const loading = ref(false);
 const loadingUnits = ref(false);
@@ -636,7 +734,17 @@ const isLoadingUnitIntoForm = ref(false);
 const showFloatingActionBar = ref(false);
 
 type ActiveSkill = { id: string; type: 'ACTIVE'; cd_actions: number; description?: string; effects: Record<string, any>[] };
-type PassiveSkill = { id: string; type: 'PASSIVE'; trigger: string; cooldown?: number; effects: Record<string, any>[] };
+type PassiveSkill = {
+  id: string;
+  type: 'PASSIVE';
+  trigger: string;
+  /** Texte affiché (bestiaire / collection) quand plusieurs compétences — comme pour l’ACTIVE. */
+  description?: string;
+  /** Passif permanent : immunisation (débuffs, STRIP, −ATB, max CD, vol stat). Pas de trigger ni effets requis. */
+  passiveKind?: string;
+  cooldown?: number;
+  effects: Record<string, any>[];
+};
 type FormSkill = ActiveSkill | PassiveSkill;
 
 type SpecSkillModifier = {
@@ -646,6 +754,7 @@ type SpecSkillModifier = {
     cd_actions?: number;
     trigger?: string;
     cooldown?: number;
+    passiveKind?: string;
   };
 };
 
@@ -669,9 +778,10 @@ function fillSpecModifyFromSkill(spec: 'A' | 'B') {
   const skill = skills.find((s) => (s?.id ?? '').toString().trim() === targetId);
   if (!skill) return;
   const modify = {
-    cooldown: skill.cooldown ?? undefined,
-    trigger: (skill as any).trigger ?? undefined,
-    cd_actions: (skill as any).cd_actions ?? undefined,
+    cooldown: skill.type === 'PASSIVE' ? ((skill as { cooldown?: number }).cooldown ?? undefined) : undefined,
+    trigger: skill.type === 'PASSIVE' ? ((skill as { trigger?: string }).trigger ?? undefined) : undefined,
+    passiveKind: skill.type === 'PASSIVE' ? ((skill as { passiveKind?: string }).passiveKind ?? undefined) : undefined,
+    cd_actions: skill.type === 'ACTIVE' ? ((skill as { cd_actions?: number }).cd_actions ?? undefined) : undefined,
     effects: deepClone(skill.effects) ?? []
   };
   if (spec === 'A') {
@@ -681,6 +791,20 @@ function fillSpecModifyFromSkill(spec: 'A' | 'B') {
     form.value.specB_skill_modifier = { ...form.value.specB_skill_modifier, modify: { ...modify } };
     specB_prefilledFromBase.value = true;
   }
+}
+
+/** Kind permanent reconnu (schéma API ou repli). */
+function isPermanentPassiveKindString(pk: string): boolean {
+  const u = String(pk ?? '').trim().toUpperCase();
+  if (!u) return false;
+  const fromSchema = schema.value?.PASSIVE_KINDS_PERMANENT as string[] | undefined;
+  const list = fromSchema && fromSchema.length > 0 ? fromSchema.map((x) => String(x).toUpperCase()) : ['DEBUFF_IMMUNITY'];
+  return list.includes(u);
+}
+
+function isPermanentPassiveSkill(s: FormSkill | Record<string, any> | null | undefined): boolean {
+  if (!s || s.type !== 'PASSIVE') return false;
+  return isPermanentPassiveKindString(String((s as PassiveSkill).passiveKind ?? ''));
 }
 
 /** Applique un modificateur de spé sur une copie de skill. Ne modifie jamais l'original. */
@@ -697,12 +821,57 @@ function applySpecModifierFrontend(
   if (typeof modify.cd_actions === 'number' && clone.type === 'ACTIVE') clone.cd_actions = modify.cd_actions;
   if (typeof modify.trigger === 'string') clone.trigger = modify.trigger.trim();
   if (typeof modify.cooldown === 'number') clone.cooldown = modify.cooldown;
+  if (typeof modify.passiveKind === 'string') {
+    const pk = modify.passiveKind.trim();
+    if (pk) (clone as { passiveKind?: string }).passiveKind = pk;
+    else delete (clone as { passiveKind?: string }).passiveKind;
+  }
   if (Array.isArray(modify.effects)) clone.effects = modify.effects;
+  if (clone.type === 'PASSIVE' && isPermanentPassiveKindString(String((clone as { passiveKind?: string }).passiveKind ?? ''))) {
+    delete clone.trigger;
+    clone.effects = [];
+  }
   return clone;
 }
 
 function generateSkillId(): string {
   return `skill_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Bascule passif : déclenché vs passif permanent (schéma). */
+function onPassiveModeChange(sk: FormSkill, mode: string) {
+  if (sk.type !== 'PASSIVE') return;
+  const p = sk as PassiveSkill;
+  if (mode === 'immunity') {
+    const fromSchema = schema.value?.PASSIVE_KINDS_PERMANENT as string[] | undefined;
+    p.passiveKind = (fromSchema && fromSchema.length > 0 ? fromSchema[0] : null) || 'DEBUFF_IMMUNITY';
+    p.trigger = '';
+    p.effects = [];
+  } else {
+    delete (p as { passiveKind?: string }).passiveKind;
+    if (p.trigger === undefined) p.trigger = '';
+    if (!Array.isArray(p.effects)) p.effects = [];
+  }
+}
+
+/** Quand on change ACTIVE ↔ PASSIVE sur une ligne compétence. */
+function onFormSkillTypeChange(sk: FormSkill) {
+  if (sk.type === 'PASSIVE') {
+    const p = sk as PassiveSkill;
+    if (p.trigger === undefined) p.trigger = '';
+    if (p.cooldown === undefined) p.cooldown = 0;
+    delete (p as { cd_actions?: number }).cd_actions;
+    if (p.description === undefined) p.description = '';
+    if (!Array.isArray(p.effects)) p.effects = [];
+  } else {
+    const a = sk as ActiveSkill;
+    if (a.cd_actions === undefined) a.cd_actions = 3;
+    delete (a as { trigger?: string }).trigger;
+    delete (a as { cooldown?: number }).cooldown;
+    delete (a as { passiveKind?: string }).passiveKind;
+    if (!Array.isArray(a.effects)) a.effects = [];
+    if (a.description === undefined) a.description = '';
+  }
 }
 
 function getDefaultForm() {
@@ -717,7 +886,7 @@ function getDefaultForm() {
     archetype: 'CAC_TANK',
     base_hp: 1000,
     base_attack: 80,
-    base_defense: 80,
+    base_defense: 90,
     base_speed: 90,
     mastery: 0,
     has_noyau: false,
@@ -730,7 +899,9 @@ function getDefaultForm() {
     specB_bonus_stat: '',
     specA_skill_modifier: { targetSkillId: '', modify: { effects: [] as Record<string, any>[] } } as SpecSkillModifier,
     specB_skill_modifier: { targetSkillId: '', modify: { effects: [] as Record<string, any>[] } } as SpecSkillModifier,
-    image_url: null as string | null
+    image_url: null as string | null,
+    /** Boss : réservé campagne / donjons — pas sanctuaire, bestiaire, tirages. */
+    is_boss: false
   };
 }
 
@@ -765,6 +936,67 @@ const hasNoyauRequiredInvalid = computed(() => {
   return !stat || !(percent > 0);
 });
 
+/** Stats niveau 1 par rôle + rareté (tableau référence Nexus Core). Clé rôle = valeur formulaire (ranged = DPS). */
+type BaseStatRow = { hp: number; atk: number; def: number; speed: number; mastery: number };
+const BASE_STATS_LEVEL1: Record<string, Record<string, BaseStatRow>> = {
+  support: {
+    common: { hp: 900, atk: 100, def: 70, speed: 100, mastery: 0 },
+    uncommon: { hp: 950, atk: 114, def: 75, speed: 103, mastery: 0 },
+    rare: { hp: 1000, atk: 128, def: 80, speed: 106, mastery: 20 },
+    epic: { hp: 1050, atk: 142, def: 90, speed: 109, mastery: 50 },
+    legendary: { hp: 1150, atk: 156, def: 95, speed: 112, mastery: 100 },
+    mythic: { hp: 1250, atk: 170, def: 100, speed: 115, mastery: 150 }
+  },
+  tank: {
+    common: { hp: 1000, atk: 80, def: 90, speed: 90, mastery: 0 },
+    uncommon: { hp: 1100, atk: 94, def: 98, speed: 92, mastery: 0 },
+    rare: { hp: 1200, atk: 108, def: 106, speed: 94, mastery: 20 },
+    epic: { hp: 1300, atk: 122, def: 114, speed: 96, mastery: 50 },
+    legendary: { hp: 1400, atk: 136, def: 122, speed: 98, mastery: 100 },
+    mythic: { hp: 1500, atk: 150, def: 130, speed: 100, mastery: 150 }
+  },
+  /** Rôle « ranged » dans l’admin = DPS du tableau. */
+  ranged: {
+    common: { hp: 750, atk: 110, def: 60, speed: 100, mastery: 0 },
+    uncommon: { hp: 800, atk: 125, def: 66, speed: 102, mastery: 0 },
+    rare: { hp: 850, atk: 140, def: 72, speed: 104, mastery: 20 },
+    epic: { hp: 900, atk: 155, def: 78, speed: 106, mastery: 50 },
+    legendary: { hp: 1000, atk: 170, def: 84, speed: 108, mastery: 100 },
+    mythic: { hp: 1100, atk: 190, def: 90, speed: 110, mastery: 150 }
+  },
+  assassin: {
+    common: { hp: 900, atk: 120, def: 70, speed: 95, mastery: 0 },
+    uncommon: { hp: 950, atk: 136, def: 76, speed: 97, mastery: 0 },
+    rare: { hp: 1000, atk: 152, def: 82, speed: 99, mastery: 20 },
+    epic: { hp: 1050, atk: 168, def: 88, speed: 101, mastery: 50 },
+    legendary: { hp: 1150, atk: 184, def: 94, speed: 103, mastery: 100 },
+    mythic: { hp: 1250, atk: 200, def: 100, speed: 105, mastery: 150 }
+  }
+};
+
+function normalizeRoleKeyForBaseStats(role: string): keyof typeof BASE_STATS_LEVEL1 | null {
+  const r = String(role ?? '').toLowerCase().trim();
+  if (r === 'frontline') return 'tank';
+  if (r === 'backline') return 'support';
+  if (r in BASE_STATS_LEVEL1) return r as keyof typeof BASE_STATS_LEVEL1;
+  return null;
+}
+
+/** Préremplit HP / ATK / DEF / vitesse / maîtrise selon rareté + rôle (hors chargement d’unité existante). */
+function applyBaseStatsFromRoleRarity() {
+  if (isLoadingUnitIntoForm.value) return;
+  const roleKey = normalizeRoleKeyForBaseStats(form.value.role);
+  const rarityKey = String(form.value.rarity ?? '').toLowerCase().trim();
+  if (!roleKey || !rarityKey) return;
+  const row = BASE_STATS_LEVEL1[roleKey]?.[rarityKey];
+  if (!row) return;
+  form.value.base_hp = row.hp;
+  form.value.base_attack = row.atk;
+  form.value.base_defense = row.def;
+  form.value.base_speed = row.speed;
+  form.value.mastery = row.mastery;
+}
+
 /** Auto-remplit attack_type et archetype selon le rôle. */
 function onRoleChange() {
   if (isLoadingUnitIntoForm.value) return;
@@ -780,6 +1012,15 @@ function onRoleChange() {
     form.value.attack_type = mapped.attack_type;
     form.value.archetype = mapped.archetype;
   }
+}
+
+function onRoleSelectChange() {
+  onRoleChange();
+  applyBaseStatsFromRoleRarity();
+}
+
+function onRarityChangeForBaseStats() {
+  applyBaseStatsFromRoleRarity();
 }
 
 const filteredUnitImageAssets = computed(() => {
@@ -827,25 +1068,37 @@ watch(
 /** Types d'effets (schéma API ; liste de repli inclut CLEANSE). */
 const effectTypes = computed(() => {
   const fromSchema = schema.value ? Object.keys(schema.value.SUPPORTED_EFFECTS || {}) : [];
-  if (fromSchema.length === 0) return ['DAMAGE', 'HEAL', 'APPLY_BUFF', 'APPLY_DEBUFF', 'STRIP', 'CLEANSE', 'REDUCE_ATB', 'ATB_UP', 'RESET_SKILL_COOLDOWN', 'SET_SKILL_COOLDOWN_MAX', 'RESURRECT'];
+  if (fromSchema.length === 0) {
+    return [
+      'DAMAGE', 'HEAL', 'APPLY_BUFF', 'APPLY_DEBUFF', 'STRIP', 'CLEANSE', 'REDUCE_ATB', 'ATB_UP',
+      'RESET_SKILL_COOLDOWN', 'SET_SKILL_COOLDOWN_MAX', 'CD_UP', 'CD_DOWN', 'STEAL_STAT', 'RESURRECT'
+    ];
+  }
   if (!fromSchema.includes('CLEANSE')) return [...fromSchema, 'CLEANSE'].sort();
   return fromSchema;
 });
 
-/** Options pour le trigger des passifs (schéma API ou liste de repli incluant ON_RECEIVE_DAMAGE, ON_DEAL_DAMAGE). */
+/** Options pour le trigger des passifs : union schéma API + liste canonique (évite liste périmée si le backend n’a pas été redémarré). */
 const passiveTriggerOptions = computed(() => {
   const fromSchema = schema.value?.SUPPORTED_TRIGGERS as string[] | undefined;
-  if (fromSchema && Array.isArray(fromSchema) && fromSchema.length > 0) return fromSchema;
-  return [
-    'ON_ATTACK',
-    'ON_HIT',
-    'ON_DEATH',
-    'ON_KILL',
-    'ON_ACTION_START',
-    'ON_ACTION_END',
-    'ON_RECEIVE_DAMAGE',
-    'ON_DEAL_DAMAGE'
-  ];
+  const fromApi = Array.isArray(fromSchema)
+    ? fromSchema.map((t) => String(t ?? '').trim()).filter(Boolean)
+    : [];
+  const merged = new Set<string>([...CANONICAL_PASSIVE_TRIGGERS, ...fromApi]);
+  const rank = new Map(CANONICAL_PASSIVE_TRIGGERS.map((t, i) => [t, i]));
+  return [...merged].sort((a, b) => {
+    const ra = rank.has(a) ? (rank.get(a) as number) : 1000;
+    const rb = rank.has(b) ? (rank.get(b) as number) : 1000;
+    if (ra !== rb) return ra - rb;
+    return a.localeCompare(b, 'en');
+  });
+});
+
+/** Passifs permanents documentés (schéma API). */
+const passivePermanentKindOptions = computed(() => {
+  const fromSchema = schema.value?.PASSIVE_KINDS_PERMANENT as string[] | undefined;
+  if (fromSchema && fromSchema.length > 0) return fromSchema;
+  return ['DEBUFF_IMMUNITY'] as string[];
 });
 
 /** Types de buff uniquement (exclut les debuffs) pour le select buffType quand type = APPLY_BUFF. */
@@ -892,6 +1145,10 @@ function skillLabel(sk: FormSkill): string {
   const n = Array.isArray(sk.effects) ? sk.effects.length : 0;
   const eff = n === 1 ? 'effet' : 'effets';
   if (sk.type === 'PASSIVE') {
+    if (isPermanentPassiveSkill(sk)) {
+      const pk = (sk as PassiveSkill).passiveKind ?? '?';
+      return `${id} — ${typeStr} — ${pk} (permanent) — ${n} ${eff}`;
+    }
     const trigger = (sk as PassiveSkill).trigger ?? '—';
     const cd = (sk as PassiveSkill).cooldown ?? 0;
     return `${id} — ${typeStr} — ${trigger} — CD ${cd} — ${n} ${eff}`;
@@ -918,6 +1175,9 @@ const finalSkillPreviews = computed(() => {
         if (next.cd_actions !== base.cd_actions) modifiedKeys.add('cd_actions');
         if (next.trigger !== base.trigger) modifiedKeys.add('trigger');
         if (next.cooldown !== base.cooldown) modifiedKeys.add('cooldown');
+        if ((next as { passiveKind?: string }).passiveKind !== (base as { passiveKind?: string }).passiveKind) {
+          modifiedKeys.add('passiveKind');
+        }
         base = next;
       }
     };
@@ -945,7 +1205,13 @@ const hasInvalidSpecializations = computed(() => {
   const hasContent = (spec: SpecSkillModifier) => {
     if (!spec?.modify) return false;
     const m = spec.modify;
-    return (Array.isArray(m.effects) && m.effects.length > 0) || typeof m.cd_actions === 'number' || typeof m.cooldown === 'number' || (typeof m.trigger === 'string' && (m.trigger ?? '').trim() !== '');
+    return (
+      (Array.isArray(m.effects) && m.effects.length > 0) ||
+      typeof m.cd_actions === 'number' ||
+      typeof m.cooldown === 'number' ||
+      (typeof m.trigger === 'string' && (m.trigger ?? '').trim() !== '') ||
+      (typeof m.passiveKind === 'string' && (m.passiveKind ?? '').trim() !== '')
+    );
   };
   if (hasContent(specA) && !specA.targetSkillId?.trim()) return true;
   if (hasContent(specB) && !specB.targetSkillId?.trim()) return true;
@@ -959,7 +1225,9 @@ const hasInvalidSkills = computed(() => {
   if (list.length === 0) return true;
   const skillsInvalid = list.some((s) => {
     if (s.type === 'ACTIVE') return !Array.isArray(s.effects);
-    return !(s.trigger && (s as PassiveSkill).trigger.trim()) || !Array.isArray(s.effects) || s.effects.length === 0;
+    if (!Array.isArray(s.effects)) return true;
+    if (isPermanentPassiveSkill(s)) return false;
+    return !(s as PassiveSkill).trigger?.trim() || s.effects.length === 0;
   });
 
   const hasSpecContent = (spec: SpecSkillModifier | undefined | null) => {
@@ -969,7 +1237,8 @@ const hasInvalidSkills = computed(() => {
       (Array.isArray(m.effects) && m.effects.length > 0) ||
       typeof m.cd_actions === 'number' ||
       typeof m.cooldown === 'number' ||
-      (typeof m.trigger === 'string' && m.trigger.trim())
+      (typeof m.trigger === 'string' && m.trigger.trim()) ||
+      (typeof m.passiveKind === 'string' && m.passiveKind.trim())
     );
   };
 
@@ -994,12 +1263,24 @@ function effectFields(type: string): string[] {
 /** Champs affichés selon le type d’effet ; pour APPLY_BUFF, dépend de buffType (dynamique). */
 function effectFieldsForEffect(eff: Record<string, unknown>): string[] {
   const type = (eff?.type ?? '').toString().toUpperCase();
+  if (type === 'ATB_UP' || type === 'REDUCE_ATB') {
+    return ['target', 'percent', 'scaleFromEffectIndex', 'percentPerRemoved', 'scaleMetric', 'chance'];
+  }
+  if (type === 'HEAL') {
+    return ['target', 'value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric', 'chance'];
+  }
+  if (type === 'DAMAGE') {
+    return ['target', 'mult', 'percentMaxHp', 'percentMaxHpCaster', 'count', 'missingHpScaling', 'scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric', 'chance'];
+  }
   if (type === 'APPLY_DEBUFF') return ['debuffType', 'remainingActions', 'target', 'chance'];
   if (type !== 'APPLY_BUFF') return effectFields(type);
   const buffType = (eff?.buffType ?? '').toString().toUpperCase();
   const fixedValues = schema.value?.BUFF_FIXED_VALUES as Record<string, number> | undefined;
-  if (buffType === 'SHIELD') return ['buffType', 'remainingActions', 'target', 'value', 'percentMaxHp', 'percentMaxHpCaster'];
-  if (buffType === 'REGEN') return ['buffType', 'remainingActions', 'target', 'value', 'percentMaxHp', 'percentMaxHpCaster'];
+  const chain = ['scaleFromEffectIndex', 'valuePerRemoved', 'scaleMetric', 'chance'] as const;
+  if (buffType === 'SHIELD') return ['buffType', 'remainingActions', 'target', 'value', 'percentMaxHp', 'percentMaxHpCaster', ...chain];
+  if (buffType === 'REGEN') return ['buffType', 'remainingActions', 'target', 'value', 'percentMaxHp', 'percentMaxHpCaster', ...chain];
+  if (buffType === 'DOT') return ['buffType', 'remainingActions', 'target', 'value', ...chain];
+  if (buffType === 'ANTI_BUFF') return ['buffType', 'remainingActions', 'target', 'value', ...chain];
   if (buffType === 'LIFESTEAL') return ['buffType', 'remainingActions', 'target', 'value'];
   if (fixedValues && Object.prototype.hasOwnProperty.call(fixedValues, buffType)) return ['buffType', 'remainingActions', 'target'];
   return ['buffType', 'remainingActions', 'target'];
@@ -1009,7 +1290,11 @@ function effectFieldsForEffect(eff: Record<string, unknown>): string[] {
 function isRequiredOneOfForEffect(eff: Record<string, unknown>, key: string): boolean {
   const type = (eff?.type ?? '').toString().toUpperCase();
   if (type === 'APPLY_DEBUFF') return false;
-  if (type === 'APPLY_BUFF' && (eff?.buffType ?? '').toString().toUpperCase() === 'SHIELD' && ['value', 'percentMaxHp', 'percentMaxHpCaster'].includes(key)) return true;
+  const bt = (eff?.buffType ?? '').toString().toUpperCase();
+  if (type === 'APPLY_BUFF' && bt === 'SHIELD' && ['value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'].includes(key)) return true;
+  if (type === 'APPLY_BUFF' && bt === 'REGEN' && ['value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'].includes(key)) return true;
+  if (type === 'HEAL' && ['value', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'].includes(key)) return true;
+  if (type === 'DAMAGE' && ['mult', 'percentMaxHp', 'percentMaxHpCaster', 'scaleFromEffectIndex'].includes(key)) return true;
   return isRequiredOneOf(type, key);
 }
 
@@ -1037,30 +1322,65 @@ function debuffFixedLabel(debuffType: string | undefined): string {
 }
 
 function isNumberField(key: string): boolean {
-  const numKeys = ['mult', 'percentMaxHp', 'percentMaxHpCaster', 'value', 'percent', 'remainingActions', 'count', 'percentHp', 'flatHp', 'chance', 'missingHpScaling'];
+  const numKeys = ['mult', 'percentMaxHp', 'percentMaxHpCaster', 'value', 'percent', 'remainingActions', 'count', 'percentHp', 'flatHp', 'chance', 'missingHpScaling', 'scaleFromEffectIndex', 'percentPerRemoved', 'valuePerRemoved'];
   return numKeys.includes(key);
 }
 
 /** Indication de format pour les champs chance / percent / value (LIFESTEAL) dans les labels. */
 function fieldHint(key: string, eff?: Record<string, unknown>): string {
-  if (key === 'chance') return ' (0–1, ex. 0.25 = 25%)';
+  if (key === 'chance') return ' (0–1 ou 1–100 ; ex. 0.25 ou 25 = 25%)';
   if (['percent', 'percentMaxHp', 'percentMaxHpCaster', 'percentHp'].includes(key)) return ' (0.1 ou 10 = 10%)';
   if (key === 'missingHpScaling') return ' (bonus max à PV très bas, ex. 0.5 = +50% max)';
   if (key === 'value' && (eff?.buffType ?? '').toString().toUpperCase() === 'LIFESTEAL') return ' (0–1, ex. 0.2 = 20% vampirisme)';
+  if (key === 'value' && ['CD_UP', 'CD_DOWN'].includes(String(eff?.type ?? '').toUpperCase())) {
+    return ' (tours de recharge à ajouter ou retirer, entier ≥ 1)';
+  }
+  const et = String(eff?.type ?? '').toUpperCase();
+  const eb = String(eff?.buffType ?? '').toUpperCase();
+  if (key === 'scaleFromEffectIndex' && (et === 'ATB_UP' || et === 'REDUCE_ATB' || et === 'HEAL' || et === 'DAMAGE' || ['SHIELD', 'REGEN', 'DOT', 'ANTI_BUFF'].includes(eb))) {
+    return ' (0 = 1er effet ; index < n° de cet effet)';
+  }
+  if (key === 'percentPerRemoved' && (et === 'ATB_UP' || et === 'REDUCE_ATB')) {
+    return ' (% barre ATB par unité : 0.05 ou 5 = 5 % ; removedCount = CLEANSE/STRIP)';
+  }
+  if (key === 'valuePerRemoved') {
+    if (et === 'HEAL') return ' (PV bonus par débuff retiré si CLEANSE ; même cible)';
+    if (et === 'DAMAGE') return ' (dégâts plats bonus par buff retiré si STRIP)';
+    if (eb === 'SHIELD' || eb === 'REGEN') return ' (flat bonus : CLEANSE typ.)';
+    if (eb === 'DOT') return ' (stacks en plus par buff stripé ; STRIP)';
+    if (eb === 'ANTI_BUFF') return ' (tours de durée en plus par buff stripé)';
+  }
+  if (key === 'scaleMetric') return ' (défaut removedCount = champ removed de l’effet cible)';
   return '';
 }
 
 /** Placeholder pour les champs chance / percent / value (LIFESTEAL). */
 function fieldPlaceholder(key: string, eff?: Record<string, unknown>): string {
-  if (key === 'chance') return 'ex. 0.25 pour 25%';
+  if (key === 'chance') return 'ex. 0.25 ou 25 pour 25%';
   if (['percent', 'percentMaxHp', 'percentMaxHpCaster', 'percentHp'].includes(key)) return 'ex. 0.1 ou 10 pour 10%';
   if (key === 'missingHpScaling') return 'ex. 0.5 pour +50% dégâts max';
   if (key === 'value' && (eff?.buffType ?? '').toString().toUpperCase() === 'LIFESTEAL') return 'ex. 0.2 pour 20%';
+  if (key === 'value' && ['CD_UP', 'CD_DOWN'].includes(String(eff?.type ?? '').toUpperCase())) return 'ex. 2';
   return '';
 }
 
 function addSkill() {
   form.value.skills.push({ id: generateSkillId(), type: 'ACTIVE', cd_actions: 3, description: '', effects: [] });
+}
+
+/** Passif permanent DEBUFF_IMMUNITY (unit builder + moteur). */
+function addDebuffImmunityPassive() {
+  const id = generateSkillId();
+  const p: PassiveSkill = {
+    id,
+    type: 'PASSIVE',
+    passiveKind: 'DEBUFF_IMMUNITY',
+    trigger: '',
+    cooldown: 0,
+    effects: [],
+    description: ''
+  };
+  form.value.skills.push(p);
 }
 
 function removeSkill(idx: number) {
@@ -1171,14 +1491,31 @@ function sanitizeEffectForPayload(e: any): any {
 function normalizeSkills(skillData: any): FormSkill[] {
   if (!skillData || typeof skillData !== 'object') return [{ id: generateSkillId(), type: 'ACTIVE', cd_actions: 3, description: '', effects: [] }];
   if (Array.isArray(skillData.skills) && skillData.skills.length > 0) {
-    return skillData.skills.map((s: any) => ({
-      id: (typeof s.id === 'string' && s.id.trim()) ? s.id : generateSkillId(),
-      type: (s.type === 'PASSIVE' ? 'PASSIVE' : 'ACTIVE') as 'ACTIVE' | 'PASSIVE',
-      ...(s.type === 'PASSIVE'
-        ? { trigger: s.trigger ?? '', cooldown: s.cooldown ?? 0 }
-        : { cd_actions: s.cd_actions ?? 3, description: s.description ?? '' }),
-      effects: Array.isArray(s.effects) ? s.effects.map(normalizeEffectForForm) : []
-    }));
+    return skillData.skills.map((s: any) => {
+      const type = (s.type === 'PASSIVE' ? 'PASSIVE' : 'ACTIVE') as 'ACTIVE' | 'PASSIVE';
+      const pk = typeof s.passiveKind === 'string' ? s.passiveKind.trim() : '';
+      const base: FormSkill = {
+        id: (typeof s.id === 'string' && s.id.trim()) ? s.id : generateSkillId(),
+        type,
+        effects: Array.isArray(s.effects) ? s.effects.map(normalizeEffectForForm) : []
+      } as FormSkill;
+      if (type === 'PASSIVE') {
+        const p = base as PassiveSkill;
+        p.trigger = s.trigger ?? '';
+        p.cooldown = s.cooldown ?? 0;
+        p.description = typeof s.description === 'string' ? s.description : '';
+        if (pk) p.passiveKind = pk;
+        if (pk && isPermanentPassiveKindString(pk)) {
+          p.trigger = '';
+          p.effects = [];
+        }
+      } else {
+        const a = base as ActiveSkill;
+        a.cd_actions = s.cd_actions ?? 3;
+        a.description = s.description ?? '';
+      }
+      return base;
+    });
   }
   const out: FormSkill[] = [];
   const skill = skillData.skill ?? skillData;
@@ -1195,15 +1532,25 @@ function normalizeSkills(skillData: any): FormSkill[] {
   const rawPassives = Array.isArray(skillData.passives) ? skillData.passives : (Array.isArray(innerSkill?.passives) ? innerSkill.passives : []);
   for (const p of rawPassives) {
     if (!p || typeof p !== 'object') continue;
+    const pk = typeof p.passiveKind === 'string' ? p.passiveKind.trim() : '';
     const trigger = (p.trigger ?? p.type ?? '').toString();
-    if (!trigger) continue;
-    out.push({
+    if (!trigger && !pk) continue;
+    const row: PassiveSkill = {
       id: generateSkillId(),
       type: 'PASSIVE',
-      trigger,
+      trigger: trigger || '',
       cooldown: typeof p.cooldown === 'number' ? p.cooldown : (p.cd_actions ?? 0),
+      description: typeof p.description === 'string' ? p.description : '',
       effects: Array.isArray(p.effects) ? p.effects.map(normalizeEffectForForm) : (p.effect ? [normalizeEffectForForm(p.effect)] : [])
-    });
+    };
+    if (pk) {
+      row.passiveKind = pk;
+      if (isPermanentPassiveKindString(pk)) {
+        row.trigger = '';
+        row.effects = [];
+      }
+    }
+    out.push(row);
   }
   if (out.length === 0) out.push({ id: generateSkillId(), type: 'ACTIVE', cd_actions: 3, description: '', effects: [] });
   return out;
@@ -1355,7 +1702,12 @@ const CC_WEIGHTS: Record<string, number> = {
   REMOVEBUFF: 8,
   REDUCE_COOLDOWN: 10,
   REDUCE_ATB: 5,
-  STRIP: 7
+  STRIP: 7,
+  CD_UP: 6,
+  CD_DOWN: 4,
+  SET_SKILL_COOLDOWN_MAX: 5,
+  RESET_SKILL_COOLDOWN: 6,
+  STEAL_STAT: 6
 };
 const controlIndex = computed(() => {
   const skills = form.value.skills || [];
@@ -1387,7 +1739,8 @@ const radarData = computed(() => {
           dpsNorm += (atk * m) / cd / 100;
           burst = Math.max(burst, m);
         }
-        if (['APPLY_BUFF', 'ATB_UP'].includes(String(e?.type ?? '').toUpperCase())) hasScaling = true;
+        const et = String(e?.type ?? '').toUpperCase();
+        if (['APPLY_BUFF', 'ATB_UP', 'REDUCE_ATB', 'HEAL', 'DAMAGE'].includes(et)) hasScaling = true;
       }
     }
   }
@@ -1558,6 +1911,9 @@ function loadUnitIntoForm(unit: { id: number; code: string; name: string; rarity
         if (typeof m.trigger === 'string') {
           modify.trigger = m.trigger;
         }
+        if (typeof m.passiveKind === 'string' && m.passiveKind.trim()) {
+          modify.passiveKind = m.passiveKind.trim();
+        }
         base.modify = modify;
       } else {
         base.modify = { effects: [] };
@@ -1585,6 +1941,9 @@ function loadUnitIntoForm(unit: { id: number; code: string; name: string; rarity
         if (typeof m.trigger === 'string') {
           modify.trigger = m.trigger;
         }
+        if (typeof m.passiveKind === 'string' && m.passiveKind.trim()) {
+          modify.passiveKind = m.passiveKind.trim();
+        }
         base.modify = modify;
       } else {
         base.modify = { effects: [] };
@@ -1592,7 +1951,8 @@ function loadUnitIntoForm(unit: { id: number; code: string; name: string; rarity
       if (!base.modify) base.modify = {};
       if (!base.modify.effects) base.modify.effects = [];
       return base;
-    })()
+    })(),
+    is_boss: Number((unit as { is_boss?: boolean | number }).is_boss) === 1 || (unit as { is_boss?: boolean }).is_boss === true
   };
   specA_prefilledFromBase.value = false;
   specB_prefilledFromBase.value = false;
@@ -1616,7 +1976,7 @@ async function updateUnit() {
     createSuccess.value = true;
     createMessage.value = `Unité mise à jour (id: ${data.id}, code: ${data.code})`;
     await loadUnits();
-    const updated = (existingUnits.value as Array<{ id: number; code: string; name: string; [k: string]: any }>).find((u) => u.id === form.value.id);
+    const updated = existingUnits.value.find((u) => u.id === form.value.id);
     if (updated) loadUnitIntoForm(updated);
   } catch (e: any) {
     if (e.response?.status === 403) return;
@@ -1700,14 +2060,32 @@ function buildPayload() {
         effects
       };
     }
+    const p = s as PassiveSkill;
+    if (isPermanentPassiveSkill(p)) {
+      return {
+        id: p.id,
+        type: 'PASSIVE',
+        passiveKind: p.passiveKind,
+        cooldown: p.cooldown ?? 0,
+        effects: [],
+        description: p.description ?? ''
+      };
+    }
     return {
       id: s.id,
       type: 'PASSIVE',
-      trigger: (s as PassiveSkill).trigger,
-      cooldown: (s as PassiveSkill).cooldown ?? 0,
-      effects
+      trigger: p.trigger,
+      cooldown: p.cooldown ?? 0,
+      effects,
+      description: p.description ?? ''
     };
-  }).filter((s) => Array.isArray(s.effects) && (s.type === 'PASSIVE' ? (s as PassiveSkill).trigger && s.effects.length > 0 : true));
+  }).filter((sk) => {
+    if (!Array.isArray(sk.effects)) return false;
+    if (sk.type === 'ACTIVE') return true;
+    if (isPermanentPassiveSkill(sk as FormSkill)) return true;
+    const p = sk as PassiveSkill;
+    return !!(p.trigger && p.trigger.trim() && sk.effects.length > 0);
+  });
 
   function buildSpecPayload(spec: SpecSkillModifier | undefined | null) {
     if (!spec || !spec.modify) return null;
@@ -1716,7 +2094,8 @@ function buildPayload() {
       (Array.isArray(m.effects) && m.effects.length > 0) ||
       typeof m.cd_actions === 'number' ||
       typeof m.cooldown === 'number' ||
-      (typeof m.trigger === 'string' && m.trigger.trim());
+      (typeof m.trigger === 'string' && m.trigger.trim()) ||
+      (typeof m.passiveKind === 'string' && m.passiveKind.trim());
     if (!hasContent) return null;
     if (!spec.targetSkillId) return null;
     const payload: any = { targetSkillId: spec.targetSkillId, modify: {} as any };
@@ -1731,6 +2110,9 @@ function buildPayload() {
     }
     if (typeof m.trigger === 'string' && m.trigger.trim()) {
       payload.modify.trigger = m.trigger.trim();
+    }
+    if (typeof m.passiveKind === 'string' && m.passiveKind.trim()) {
+      payload.modify.passiveKind = m.passiveKind.trim();
     }
     return payload;
   }
@@ -1769,7 +2151,8 @@ function buildPayload() {
     specA_bonus_stat: form.value.specA_bonus_stat || undefined,
     specB_bonus_stat: form.value.specB_bonus_stat || undefined,
     specA_skill_modifier: specA,
-    specB_skill_modifier: specB
+    specB_skill_modifier: specB,
+    is_boss: !!form.value.is_boss
   };
 }
 
@@ -1871,6 +2254,13 @@ onUnmounted(() => {
 .section-skill-base {
   background: rgba(15, 23, 42, 0.5);
 }
+.skill-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
 
 .unit-info-grid {
   display: grid;
@@ -1893,6 +2283,21 @@ onUnmounted(() => {
 }
 .unit-info-traits select {
   min-height: 52px;
+}
+
+.unit-boss-flag {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 720px;
+  color: rgba(226, 232, 240, 0.9);
+}
+.unit-boss-flag input {
+  margin-top: 3px;
+  flex-shrink: 0;
 }
 
 .section-unit-image .unit-image-upload {

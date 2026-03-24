@@ -16,9 +16,19 @@ import {
   STEALABLE_STATS,
   SUPPORTED_TRIGGERS,
   BUFF_FIXED_VALUES,
-  BUFF_FIXED_LABELS
+  BUFF_FIXED_LABELS,
+  PASSIVE_KINDS_PERMANENT
 } from '../config/supportedEffects.js';
 import { ARTIFACT_STAT_KEYS, ARTIFACT_STAT_LABELS_FR } from '../../../core/artifacts.js';
+
+/** Normalise le flag boss depuis le payload admin (booléen, 0/1, chaîne). */
+export function normalizeIsBoss(payload) {
+  const v = payload?.is_boss;
+  if (v === true || v === 1 || v === '1') return true;
+  if (v === false || v === 0 || v === '0' || v == null || v === '') return false;
+  if (typeof v === 'string' && v.trim().toLowerCase() === 'true') return true;
+  return Boolean(v);
+}
 
 function validateUnit(payload) {
   const errors = [];
@@ -39,13 +49,26 @@ function validateUnit(payload) {
   if (!attackTypeEnum.includes(u.attack_type)) {
     errors.push(`attack_type doit être l'un de: ${attackTypeEnum.join(', ')}`);
   }
-  const elementEnum = ['water', 'fire', 'plant'];
+  const elementEnum = ['water', 'fire', 'plant', 'light', 'dark'];
   if (!elementEnum.includes(u.element)) {
     errors.push(`element doit être l'un de: ${elementEnum.join(', ')}`);
   }
   const archetypeEnum = ['CAC_TANK', 'CAC_DPS', 'DISTANCE'];
   if (!archetypeEnum.includes(u.archetype)) {
     errors.push(`archetype doit être l'un de: ${archetypeEnum.join(', ')}`);
+  }
+
+  if (u.is_boss != null && u.is_boss !== '') {
+    const ok =
+      typeof u.is_boss === 'boolean' ||
+      u.is_boss === 0 ||
+      u.is_boss === 1 ||
+      u.is_boss === '0' ||
+      u.is_boss === '1' ||
+      (typeof u.is_boss === 'string' && ['true', 'false'].includes(String(u.is_boss).trim().toLowerCase()));
+    if (!ok) {
+      errors.push('is_boss doit être un booléen (ou 0/1)');
+    }
   }
 
   const stats = ['base_hp', 'base_attack', 'base_defense', 'base_speed', 'mastery'];
@@ -123,13 +146,39 @@ function validateUnit(payload) {
           errors.push(`${prefix}.effet[${i}]: buffType invalide`);
         }
         const buffTypeUpper = (eff.buffType ?? '').toString().toUpperCase();
-        if (buffTypeUpper === 'SHIELD') {
-          if (eff.value == null && eff.percentMaxHp == null && eff.percentMaxHpCaster == null) {
-            errors.push(`${prefix}.effet[${i}]: value (ou percentMaxHp/percentMaxHpCaster) requis pour buffType SHIELD`);
+        const buffHasScale = eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '';
+        const validateBuffScale = () => {
+          const sidx = Number(eff.scaleFromEffectIndex);
+          if (!Number.isInteger(sidx) || sidx < 0) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être un entier >= 0 (effet précédent)`);
+          } else if (sidx >= i) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être strictement inférieur à l'index de cet effet (ici < ${i})`);
           }
+          const vpr = Number(eff.valuePerRemoved);
+          if (!Number.isFinite(vpr) || vpr < 0) {
+            errors.push(`${prefix}.effet[${i}]: valuePerRemoved requis (nombre >= 0 ; flat PV/bouclier/regen, stacks DOT, tours ANTI_BUFF)`);
+          }
+        };
+        if (buffTypeUpper === 'SHIELD') {
+          const hasAmt = eff.value != null || eff.percentMaxHp != null || eff.percentMaxHpCaster != null;
+          if (!hasAmt && !buffHasScale) {
+            errors.push(`${prefix}.effet[${i}]: SHIELD — value (ou % PV) ou chaînage scaleFromEffectIndex + valuePerRemoved`);
+          }
+          if (buffHasScale) validateBuffScale();
+        } else if (buffTypeUpper === 'REGEN') {
+          const hasAmt = eff.value != null || eff.percentMaxHp != null || eff.percentMaxHpCaster != null;
+          if (!hasAmt && !buffHasScale) {
+            errors.push(`${prefix}.effet[${i}]: REGEN — value (ou % PV) ou chaînage scaleFromEffectIndex + valuePerRemoved`);
+          }
+          if (buffHasScale) validateBuffScale();
+        } else if (buffTypeUpper === 'DOT' || buffTypeUpper === 'ANTI_BUFF') {
+          if (buffHasScale) validateBuffScale();
         } else if (BUFF_FIXED_VALUES[buffTypeUpper] != null) {
           if (eff.value != null || eff.percentMaxHp != null || eff.percentMaxHpCaster != null) {
             errors.push(`${prefix}.effet[${i}]: value/percentMaxHp/percentMaxHpCaster non autorisés pour ce buff (valeur fixe)`);
+          }
+          if (buffHasScale) {
+            errors.push(`${prefix}.effet[${i}]: chaînage scale non supporté pour ce buffType (utiliser SHIELD/REGEN/DOT/ANTI_BUFF)`);
           }
         }
       }
@@ -144,6 +193,77 @@ function validateUnit(payload) {
         const percent = Number(eff.percent);
         if (!Number.isFinite(percent) || percent <= 0) {
           errors.push(`${prefix}.effet[${i}]: percent doit être > 0`);
+        }
+      }
+      if (type === 'CD_UP' || type === 'CD_DOWN') {
+        const v = Number(eff.value);
+        if (!Number.isFinite(v) || v < 1 || Math.floor(v) !== v) {
+          errors.push(`${prefix}.effet[${i}]: value doit être un entier >= 1 (tours de CD)`);
+        }
+      }
+      if (eff.chance != null && eff.chance !== '') {
+        const c = Number(eff.chance);
+        if (!Number.isFinite(c) || c < 0) {
+          errors.push(`${prefix}.effet[${i}]: chance invalide (nombre >= 0, ex. 0.25 ou 25 pour 25%)`);
+        }
+      }
+      if (type === 'ATB_UP' || type === 'REDUCE_ATB') {
+        const hasScale = eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '';
+        const pctRaw = eff.percent ?? eff.value;
+        const hasBase = pctRaw != null && pctRaw !== '' && Number.isFinite(Number(pctRaw));
+        if (!hasScale && !hasBase) {
+          errors.push(`${prefix}.effet[${i}]: ${type} — renseigner au moins "percent" (fixe, peut être 0) ou scaleFromEffectIndex + percentPerRemoved`);
+        }
+        if (hasScale) {
+          const sidx = Number(eff.scaleFromEffectIndex);
+          if (!Number.isInteger(sidx) || sidx < 0) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être un entier >= 0 (effet précédent)`);
+          }
+          if (sidx >= i) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être strictement inférieur à l'index de cet effet (ici < ${i})`);
+          }
+          const ppr = Number(eff.percentPerRemoved);
+          if (!Number.isFinite(ppr) || ppr < 0) {
+            errors.push(`${prefix}.effet[${i}]: percentPerRemoved requis (nombre >= 0, ex. 0.05 ou 5 pour 5% barre ATB par unité de métrique)`);
+          }
+        }
+      }
+      if (type === 'HEAL') {
+        const hasScale = eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '';
+        const hasBase = eff.value != null || eff.percentMaxHp != null || eff.percentMaxHpCaster != null;
+        if (!hasBase && !hasScale) {
+          errors.push(`${prefix}.effet[${i}]: HEAL — value / percentMaxHp / percentMaxHpCaster ou chaînage scaleFromEffectIndex`);
+        }
+        if (hasScale) {
+          const sidx = Number(eff.scaleFromEffectIndex);
+          if (!Number.isInteger(sidx) || sidx < 0) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex invalide`);
+          } else if (sidx >= i) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être < ${i}`);
+          }
+          const vpr = Number(eff.valuePerRemoved);
+          if (!Number.isFinite(vpr) || vpr < 0) {
+            errors.push(`${prefix}.effet[${i}]: valuePerRemoved requis (>= 0, PV soignés par unité retirée)`);
+          }
+        }
+      }
+      if (type === 'DAMAGE') {
+        const hasScale = eff.scaleFromEffectIndex != null && eff.scaleFromEffectIndex !== '';
+        const hasBase = eff.mult != null || eff.percentMaxHp != null || eff.percentMaxHpCaster != null;
+        if (!hasBase && !hasScale) {
+          errors.push(`${prefix}.effet[${i}]: DAMAGE — mult / percentMaxHp / percentMaxHpCaster ou chaînage scaleFromEffectIndex`);
+        }
+        if (hasScale) {
+          const sidx = Number(eff.scaleFromEffectIndex);
+          if (!Number.isInteger(sidx) || sidx < 0) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex invalide`);
+          } else if (sidx >= i) {
+            errors.push(`${prefix}.effet[${i}]: scaleFromEffectIndex doit être < ${i}`);
+          }
+          const vpr = Number(eff.valuePerRemoved);
+          if (!Number.isFinite(vpr) || vpr < 0) {
+            errors.push(`${prefix}.effet[${i}]: valuePerRemoved requis (>= 0, dégâts plats bonus par unité de métrique)`);
+          }
         }
       }
     }
@@ -174,18 +294,33 @@ function validateUnit(payload) {
           errors.push(`skills[${i}]: cd_actions doit être >= 0`);
         }
       }
+      let skipEffectsValidation = false;
       if (stype === 'PASSIVE') {
-        const trigger = (s.trigger ?? '').toString().toUpperCase().trim();
-        if (!trigger) {
-          errors.push(`skills[${i}]: trigger requis pour PASSIVE`);
-        } else if (!SUPPORTED_TRIGGERS.includes(trigger)) {
-          errors.push(`skills[${i}]: trigger invalide. Valeurs: ${SUPPORTED_TRIGGERS.join(', ')}`);
+        const pKind = (s.passiveKind ?? '').toString().toUpperCase().trim();
+        const permanentImmunity =
+          pKind === 'DEBUFF_IMMUNITY' ||
+          s.permanentDebuffImmunity === true ||
+          s.immuneToAllDebuffs === true;
+        if (permanentImmunity) {
+          if (pKind && pKind !== 'DEBUFF_IMMUNITY' && !PASSIVE_KINDS_PERMANENT.includes(pKind)) {
+            errors.push(`skills[${i}]: passiveKind permanent inconnu. Valeurs: ${PASSIVE_KINDS_PERMANENT.join(', ')}`);
+          }
+          skipEffectsValidation = !Array.isArray(s.effects) || s.effects.length === 0;
+        } else {
+          const trigger = (s.trigger ?? '').toString().toUpperCase().trim();
+          if (!trigger) {
+            errors.push(`skills[${i}]: trigger requis pour PASSIVE (ou passiveKind DEBUFF_IMMUNITY)`);
+          } else if (!SUPPORTED_TRIGGERS.includes(trigger)) {
+            errors.push(`skills[${i}]: trigger invalide. Valeurs: ${SUPPORTED_TRIGGERS.join(', ')}`);
+          }
         }
         if (s.cooldown != null && (typeof s.cooldown !== 'number' || s.cooldown < 0)) {
           errors.push(`skills[${i}]: cooldown doit être >= 0`);
         }
       }
-      validateEffects(s.effects, `skills[${i}]`);
+      if (!skipEffectsValidation) {
+        validateEffects(s.effects, `skills[${i}]`);
+      }
     }
     const skillIds = new Set((skills || []).map((s) => (s?.id ?? '').toString().trim()).filter(Boolean));
     for (const specKey of ['specA_skill_modifier', 'specB_skill_modifier']) {
@@ -251,6 +386,16 @@ function normalizeSkillsPayload(skillData) {
   const rawPassives = Array.isArray(skillData.passives) ? skillData.passives : (Array.isArray(skill?.passives) ? skill.passives : []);
   for (const p of rawPassives) {
     if (!p || typeof p !== 'object') continue;
+    const pKind = (p.passiveKind ?? '').toString().toUpperCase().trim();
+    if (pKind === 'DEBUFF_IMMUNITY' || p.permanentDebuffImmunity === true || p.immuneToAllDebuffs === true) {
+      out.push({
+        id: generateSkillId(),
+        type: 'PASSIVE',
+        passiveKind: 'DEBUFF_IMMUNITY',
+        effects: Array.isArray(p.effects) ? p.effects : (p.effect ? [p.effect] : [])
+      });
+      continue;
+    }
     const trigger = (p.trigger ?? p.type ?? '').toString().toUpperCase().trim();
     if (!trigger || !SUPPORTED_TRIGGERS.includes(trigger)) continue;
     out.push({
@@ -503,7 +648,8 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
           `SELECT id, code, name, rarity, role, attack_type, element, archetype,
                   base_hp, base_attack, base_defense, base_speed, mastery, image_url,
                   traits, skill_data, specA_bonus_stat, specB_bonus_stat,
-                  specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
+                  specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive,
+                  is_boss
            FROM units
            ORDER BY rarity, name`
         );
@@ -513,6 +659,7 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
             code: r.code,
             name: r.name,
             image_url: r.image_url ?? null,
+            is_boss: Number(r.is_boss) === 1,
             rarity: r.rarity,
             role: r.role,
             attack_type: r.attack_type,
@@ -551,11 +698,12 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
         DEBUFF_TYPES,
         STEALABLE_STATS,
         SUPPORTED_TRIGGERS,
+        PASSIVE_KINDS_PERMANENT,
         BUFF_FIXED_VALUES,
         BUFF_FIXED_LABELS,
         rarities: ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'],
         roles: ['support', 'tank', 'assassin', 'ranged'],
-        elements: ['water', 'fire', 'plant'],
+        elements: ['water', 'fire', 'plant', 'light', 'dark'],
         attack_types: ['melee', 'ranged'],
         archetypes: ['CAC_TANK', 'CAC_DPS', 'DISTANCE'],
         traits: ['GUARDIANS', 'DRUIDS', 'ARCANISTS', 'EXECUTIONERS', 'BERSERKERS', 'TACTICIANS']
@@ -605,14 +753,16 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
       const code = (payload.code || payload.name?.replace(/\s+/g, '_').toUpperCase() || 'CUSTOM_UNIT').slice(0, 64);
       const skillData = buildSkillData(payload);
       const traits = Array.isArray(payload.traits) ? payload.traits : [];
+      const isBoss = normalizeIsBoss(payload) ? 1 : 0;
       const sql = `INSERT INTO units (
         code, name, rarity, role, attack_type, element, archetype,
         base_hp, base_attack, base_defense, base_speed, mastery,
         traits, skill_data, image_url,
         specA_bonus_stat, specB_bonus_stat,
         specA_skill_modifier, specB_skill_modifier,
-        specA_passive, specB_passive
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        specA_passive, specB_passive,
+        is_boss
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       const params = [
         code,
         payload.name.trim(),
@@ -634,7 +784,8 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
         payload.specA_skill_modifier ? JSON.stringify(payload.specA_skill_modifier) : null,
         payload.specB_skill_modifier ? JSON.stringify(payload.specB_skill_modifier) : null,
         payload.specA_passive ? JSON.stringify(payload.specA_passive) : null,
-        payload.specB_passive ? JSON.stringify(payload.specB_passive) : null
+        payload.specB_passive ? JSON.stringify(payload.specB_passive) : null,
+        isBoss
       ];
       try {
         const [insertResult] = await getPool().execute(sql, params);
@@ -666,13 +817,15 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
       const code = (payload.code || payload.name?.replace(/\s+/g, '_').toUpperCase() || 'CUSTOM_UNIT').slice(0, 64);
       const skillData = buildSkillData(payload);
       const traits = Array.isArray(payload.traits) ? payload.traits : [];
+      const isBoss = normalizeIsBoss(payload) ? 1 : 0;
       const sql = `UPDATE units SET
         code = ?, name = ?, rarity = ?, role = ?, attack_type = ?, element = ?, archetype = ?,
         base_hp = ?, base_attack = ?, base_defense = ?, base_speed = ?, mastery = ?,
         traits = ?, skill_data = ?, image_url = ?,
         specA_bonus_stat = ?, specB_bonus_stat = ?,
         specA_skill_modifier = ?, specB_skill_modifier = ?,
-        specA_passive = ?, specB_passive = ?
+        specA_passive = ?, specB_passive = ?,
+        is_boss = ?
         WHERE id = ?`;
       const params = [
         code,
@@ -696,6 +849,7 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
         payload.specB_skill_modifier ? JSON.stringify(payload.specB_skill_modifier) : null,
         payload.specA_passive ? JSON.stringify(payload.specA_passive ?? null) : null,
         payload.specB_passive ? JSON.stringify(payload.specB_passive ?? null) : null,
+        isBoss,
         id
       ];
       try {
@@ -1432,6 +1586,203 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
       } catch (err) {
         fastify.log?.error?.(err, 'Admin delete user-unit');
         return reply.code(500).send({ error: 'Delete failed', message: err.message });
+      }
+    }
+  );
+
+  // --- Campagne Admin ---
+  fastify.get(
+    '/admin/campaign-stages',
+    { preHandler: preAdmin },
+    async (_request, reply) => {
+      try {
+        const rows = await query(
+          'SELECT chapter, stage, is_boss, normal_multiplier, hard_multiplier, enemy_template, boss_unit_code FROM campaign_stages ORDER BY chapter, stage'
+        );
+        const stages = rows.map((r) => {
+          let template = r.enemy_template;
+          if (typeof template === 'string') {
+            try {
+              template = JSON.parse(template);
+            } catch {
+              template = null;
+            }
+          }
+          return {
+            chapter: Number(r.chapter),
+            stage: Number(r.stage),
+            is_boss: !!r.is_boss,
+            normal_multiplier: Number(r.normal_multiplier),
+            hard_multiplier: Number(r.hard_multiplier),
+            enemy_template: template,
+            boss_unit_code: r.boss_unit_code ?? null
+          };
+        });
+        return { stages };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign-stages list');
+        return reply.code(500).send({ error: 'List failed', message: err.message });
+      }
+    }
+  );
+
+  fastify.put(
+    '/admin/campaign-stages/:chapter/:stage',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const chapter = Number(request.params.chapter);
+      const stage = Number(request.params.stage);
+      if (!Number.isInteger(chapter) || chapter < 1 || chapter > 10 || !Number.isInteger(stage) || stage < 1 || stage > 10) {
+        return reply.code(400).send({ error: 'Invalid chapter or stage' });
+      }
+      const body = request.body || {};
+      const enemyTemplate = body.enemy_template;
+      const bossUnitCode = body.boss_unit_code ?? null;
+      if (enemyTemplate != null && typeof enemyTemplate !== 'object') {
+        return reply.code(400).send({ error: 'enemy_template must be an object' });
+      }
+      try {
+        const templateJson = enemyTemplate != null ? JSON.stringify(enemyTemplate) : null;
+        await query(
+          `UPDATE campaign_stages SET enemy_template = ?, boss_unit_code = ? WHERE chapter = ? AND stage = ?`,
+          [templateJson, bossUnitCode, chapter, stage]
+        );
+        const [rows] = await getPool().execute(
+          'SELECT chapter, stage, is_boss, enemy_template, boss_unit_code FROM campaign_stages WHERE chapter = ? AND stage = ?',
+          [chapter, stage]
+        );
+        if (!rows.length) {
+          return reply.code(404).send({ error: 'Stage not found' });
+        }
+        const r = rows[0];
+        let template = r.enemy_template;
+        if (typeof template === 'string') {
+          try {
+            template = JSON.parse(template);
+          } catch {
+            template = null;
+          }
+        }
+        return {
+          ok: true,
+          stage: {
+            chapter: Number(r.chapter),
+            stage: Number(r.stage),
+            is_boss: !!r.is_boss,
+            enemy_template: template,
+            boss_unit_code: r.boss_unit_code ?? null
+          }
+        };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign-stages update');
+        return reply.code(500).send({ error: 'Update failed', message: err.message });
+      }
+    }
+  );
+
+  // --- Donjon Admin (compositions ennemies : 3 combats par niveau × élément) ---
+  const DUNGEON_ELEMENTS = new Set(['fire', 'water', 'plant', 'light', 'dark']);
+  const MAX_DUNGEON_LEVEL = 10;
+  const COMBATS_PER_DUNGEON_LEVEL = 3;
+
+  function normalizeDungeonElement(raw) {
+    const e = String(raw || '')
+      .toLowerCase()
+      .trim();
+    if (e === 'lumiere' || e === 'light') return 'light';
+    if (e === 'tenebres' || e === 'tenebre' || e === 'dark') return 'dark';
+    return DUNGEON_ELEMENTS.has(e) ? e : null;
+  }
+
+  fastify.get(
+    '/admin/dungeon-encounters',
+    { preHandler: preAdmin },
+    async (_request, reply) => {
+      try {
+        const rows = await query(
+          'SELECT element, level, combat_index, enemy_template_json FROM dungeon_encounters ORDER BY element, level, combat_index'
+        );
+        const encounters = rows.map((r) => {
+          let template = r.enemy_template_json;
+          if (typeof template === 'string') {
+            try {
+              template = JSON.parse(template);
+            } catch {
+              template = null;
+            }
+          }
+          return {
+            element: String(r.element),
+            level: Number(r.level),
+            combat_index: Number(r.combat_index),
+            enemy_template: template
+          };
+        });
+        return { encounters };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin dungeon-encounters list');
+        return reply.code(500).send({ error: 'List failed', message: err.message });
+      }
+    }
+  );
+
+  fastify.put(
+    '/admin/dungeon-encounters/:element/:level/:combatIndex',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const element = normalizeDungeonElement(request.params.element);
+      const level = Number(request.params.level);
+      const combatIndex = Number(request.params.combatIndex);
+      if (!element) {
+        return reply.code(400).send({ error: 'Invalid element' });
+      }
+      if (!Number.isInteger(level) || level < 1 || level > MAX_DUNGEON_LEVEL) {
+        return reply.code(400).send({ error: 'Invalid level (1–10)' });
+      }
+      if (!Number.isInteger(combatIndex) || combatIndex < 1 || combatIndex > COMBATS_PER_DUNGEON_LEVEL) {
+        return reply.code(400).send({ error: 'Invalid combat index (1–3)' });
+      }
+      const body = request.body || {};
+      const enemyTemplate = body.enemy_template;
+      if (enemyTemplate != null && typeof enemyTemplate !== 'object') {
+        return reply.code(400).send({ error: 'enemy_template must be an object' });
+      }
+      try {
+        const templateJson = enemyTemplate != null ? JSON.stringify(enemyTemplate) : null;
+        await query(
+          `INSERT INTO dungeon_encounters (element, level, combat_index, enemy_template_json)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE enemy_template_json = VALUES(enemy_template_json)`,
+          [element, level, combatIndex, templateJson]
+        );
+        const [rows] = await getPool().execute(
+          'SELECT element, level, combat_index, enemy_template_json FROM dungeon_encounters WHERE element = ? AND level = ? AND combat_index = ?',
+          [element, level, combatIndex]
+        );
+        if (!rows.length) {
+          return reply.code(404).send({ error: 'Encounter not found' });
+        }
+        const r = rows[0];
+        let template = r.enemy_template_json;
+        if (typeof template === 'string') {
+          try {
+            template = JSON.parse(template);
+          } catch {
+            template = null;
+          }
+        }
+        return {
+          ok: true,
+          encounter: {
+            element: String(r.element),
+            level: Number(r.level),
+            combat_index: Number(r.combat_index),
+            enemy_template: template
+          }
+        };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin dungeon-encounters update');
+        return reply.code(500).send({ error: 'Update failed', message: err.message });
       }
     }
   );

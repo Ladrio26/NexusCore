@@ -58,8 +58,8 @@ withDefaults(
     guildCoins: number;
     memberCount: number;
     maxMembers: number;
-    currentTab: 'members' | 'requests' | 'portal' | 'chat';
-    tabs: Array<{ id: 'members' | 'requests' | 'portal' | 'chat'; label: string }>;
+    currentTab: 'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq';
+    tabs: Array<{ id: 'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq'; label: string }>;
     tabNotifications?: Record<string, boolean>;
     feedback?: { message: string; success: boolean } | null;
   }>(),
@@ -67,7 +67,7 @@ withDefaults(
 );
 
 defineEmits<{
-  (event: 'switch-tab', tabId: 'members' | 'requests' | 'portal' | 'chat'): void;
+  (event: 'switch-tab', tabId: 'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq'): void;
 }>();
 
 function roleLabel(role: string | null) {

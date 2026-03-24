@@ -1,6 +1,7 @@
 import { query } from '../config/db.js';
 import { computeScaledStats } from '../../../core/combatEngine.js';
 import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
+import { getRestCenterUserUnitIdSet, REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE, DEFAULT_FATIGUE_RECOVERY_PER_MINUTE } from './restCenterService.js';
 import { applyArtifactBonusesToUnit } from '../../../core/artifacts.js';
 import { getEquippedArtifactsForUnitIds } from './artifactService.js';
 
@@ -253,6 +254,13 @@ export async function buildTeamFromDb(userId, slots) {
   const byId = new Map(rows.map((r) => [Number(r.user_unit_id), r]));
   const equippedArtifactsByUnit = await getEquippedArtifactsForUnitIds(userId, Array.from(byId.keys()));
 
+  let restCenterUnitIds = new Set();
+  try {
+    restCenterUnitIds = await getRestCenterUserUnitIdSet(userId);
+  } catch (e) {
+    if (!(e?.message || '').includes('rest_center_slots')) throw e;
+  }
+
   /** Log debug temporaire fatigue (à retirer en prod si besoin). */
   function logFatigueRecalculated(id, oldVal, minutesPassed, newVal) {
     console.log('Fatigue recalculated:', { id, old: oldVal, minutesPassed, new: newVal });
@@ -266,11 +274,17 @@ export async function buildTeamFromDb(userId, slots) {
 
     let fatigue;
     if (hasFatigueLastUpdate) {
-      const computed = computeCurrentFatigue({
-        fatigue: row.fatigue ?? 0,
-        fatigue_last_update: row.fatigue_last_update,
-        fatigue_last_update_ts: row.fatigue_last_update_ts
-      });
+      const recoveryRate = restCenterUnitIds.has(Number(row.user_unit_id))
+        ? REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE
+        : DEFAULT_FATIGUE_RECOVERY_PER_MINUTE;
+      const computed = computeCurrentFatigue(
+        {
+          fatigue: row.fatigue ?? 0,
+          fatigue_last_update: row.fatigue_last_update,
+          fatigue_last_update_ts: row.fatigue_last_update_ts
+        },
+        { fatigueRecoveryPerMinute: recoveryRate }
+      );
       fatigue = computed.fatigue;
       if (computed.minutesPassed > 0) {
         await query(
@@ -348,4 +362,18 @@ export async function buildTeamFromDb(userId, slots) {
   }
 
   return result;
+}
+
+/**
+ * Au moins une unité ne peut pas combattre (PV max à zéro, blessure ou KO).
+ * À appeler après computeScaledStats / bonus noyau / artefacts sur chaque unité.
+ */
+export function teamHasUnfitUnits(team) {
+  if (!Array.isArray(team)) return false;
+  return team.some((u) => {
+    const maxHp = Number(u?.maxHp ?? 0);
+    const inj = Number(u?.injury_level ?? 0);
+    const ko = Number(u?.is_injured ?? 0);
+    return ko === 1 || inj > 0 || !Number.isFinite(maxHp) || maxHp <= 0;
+  });
 }

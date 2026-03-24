@@ -14,16 +14,24 @@
       <div class="sidebar-user" v-if="currentUser">
         <div class="sidebar-username">{{ currentUser.display_name || currentUser.email || '—' }}</div>
         <div class="sidebar-wallet">
-          <span class="sidebar-wallet-item credits" title="Crédits">💰 {{ wallet.credits }}</span>
-          <span class="sidebar-wallet-item cores" title="Cores">🔷 {{ wallet.cores }}</span>
-          <span class="sidebar-wallet-item fragments" title="Fragments">🧩 {{ wallet.fragments }}</span>
-          <span class="sidebar-wallet-item gold" title="Or">🪙 {{ wallet.gold }}</span>
+          <div class="sidebar-wallet-row">
+            <span class="sidebar-wallet-item credits" title="Crédits">💰 {{ wallet.credits }}</span>
+            <span class="sidebar-wallet-item cores" title="Cores">🔷 {{ wallet.cores }}</span>
+            <span class="sidebar-wallet-item fragments" title="Fragments">🧩 {{ wallet.fragments }}</span>
+            <span class="sidebar-wallet-item gold" title="Or">🪙 {{ wallet.gold }}</span>
+          </div>
+          <div class="sidebar-wallet-row sidebar-wallet-row-divine">
+            <span class="sidebar-wallet-item divine-cores" title="Cores divins">💎 {{ wallet.divine_cores ?? 0 }}</span>
+            <span class="sidebar-wallet-item divine-credits" title="Crédits divins">💠 {{ wallet.divine_credits ?? 0 }}</span>
+            <span class="sidebar-wallet-item divine-fragments" title="Fragments divins">🔮 {{ wallet.divine_fragments ?? 0 }}</span>
+          </div>
         </div>
       </div>
       <h1 class="sidebar-title">Nexus Core Arena</h1>
       <nav class="sidebar-menu">
         <router-link to="/collection" class="menu-item" @click="sidebarOpen = false">Ma Collection</router-link>
         <router-link to="/team-builder" class="menu-item" @click="sidebarOpen = false">Mes Equipes</router-link>
+        <router-link to="/rest-center" class="menu-item" @click="sidebarOpen = false">Centre de Repos</router-link>
         <router-link to="/sanctuary" class="menu-item menu-item-with-indicator" @click="sidebarOpen = false">
           <span>Sanctuaire</span>
           <span v-if="hasSanctuaryNotification" class="menu-item-indicator" aria-label="Invocation disponible" title="Invocation disponible" />
@@ -36,12 +44,18 @@
           </button>
           <div v-show="combatsMenuOpen" class="menu-dropdown-panel">
             <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Campagne</router-link>
+            <!-- Donjon joueur : tout joueur connecté. L’édition des compositions ennemies = Admin → Donjon Admin uniquement. -->
+            <router-link to="/dungeon" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Donjon</router-link>
             <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">PvP</router-link>
           </div>
         </div>
         <router-link to="/classement" class="menu-item" @click="sidebarOpen = false">Classement</router-link>
         <router-link to="/bestiaire" class="menu-item" @click="sidebarOpen = false">Bestiaire</router-link>
         <router-link to="/faq" class="menu-item" @click="sidebarOpen = false">FAQ</router-link>
+        <router-link to="/news" class="menu-item menu-item-news menu-item-with-indicator" @click="sidebarOpen = false">
+          <span>📰 News</span>
+          <span v-if="hasNewsNotification" class="menu-item-indicator" aria-label="Nouvelle actualité" title="Nouvelle actualité" />
+        </router-link>
         <router-link to="/feedback" class="menu-item" @click="sidebarOpen = false">Feedback</router-link>
         <div v-if="isAdmin" class="menu-dropdown">
           <button type="button" class="menu-item menu-item-trigger" :class="{ open: adminMenuOpen, 'router-link-active': isAdminRoute }" @click="adminMenuOpen = !adminMenuOpen" aria-haspopup="true" :aria-expanded="adminMenuOpen">
@@ -52,6 +66,8 @@
             <router-link to="/admin/player-units" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Gestion unités joueurs</router-link>
             <router-link to="/admin/users" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Gestion Utilisateurs</router-link>
             <router-link to="/admin/feedback" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Feedback / Tickets</router-link>
+            <router-link to="/admin/campaign" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Campagne Admin</router-link>
+            <router-link to="/admin/dungeon" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Donjon Admin</router-link>
           </div>
         </div>
       </nav>
@@ -65,6 +81,25 @@
       <router-view />
     </main>
     <TutorialOverlay />
+    <Teleport to="body">
+      <Transition name="client-update-banner">
+        <div
+          v-if="showUpdateBanner"
+          class="client-update-banner"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="client-update-banner-inner">
+            <p class="client-update-banner-text">
+              Une nouvelle version du site est disponible. Tu peux charger la mise à jour quand tu voudras, c’est instantané&nbsp;:
+            </p>
+            <button type="button" class="nx-btn client-update-btn-primary" @click="acknowledgeAndReload">
+              Mettre à jour
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
     <Transition name="daily-reward">
       <div
         v-if="dailyRewardPopup"
@@ -100,18 +135,73 @@
         </section>
       </div>
     </Transition>
+    <Transition name="daily-reward">
+      <div
+        v-if="dungeonFirstClearPopup"
+        class="daily-reward-overlay"
+        @click.self="closeDungeonFirstClearPopup"
+      >
+        <section class="daily-reward-modal nx-panel dungeon-first-clear-modal">
+          <span class="daily-reward-kicker">Niveau {{ dungeonFirstClearPopup.level }} réussi</span>
+          <h2 class="daily-reward-title">Récompenses de première réussite</h2>
+          <p class="daily-reward-text">Liste des récompenses :</p>
+          <div class="daily-reward-grid daily-reward-grid--six">
+            <div class="daily-reward-card credits">
+              <span class="daily-reward-icon">💰</span>
+              <strong>+{{ dungeonFirstClearPopup.credits }}</strong>
+              <span>Crédits</span>
+            </div>
+            <div class="daily-reward-card cores">
+              <span class="daily-reward-icon">🔷</span>
+              <strong>+{{ dungeonFirstClearPopup.cores }}</strong>
+              <span>Cores</span>
+            </div>
+            <div class="daily-reward-card fragments">
+              <span class="daily-reward-icon">🧩</span>
+              <strong>+{{ dungeonFirstClearPopup.fragments }}</strong>
+              <span>Fragments</span>
+            </div>
+            <div class="daily-reward-card divine-credits">
+              <span class="daily-reward-icon">💠</span>
+              <strong>+{{ dungeonFirstClearPopup.divine_credits }}</strong>
+              <span>Crédits divins</span>
+            </div>
+            <div class="daily-reward-card divine-cores">
+              <span class="daily-reward-icon">💎</span>
+              <strong>+{{ dungeonFirstClearPopup.divine_cores }}</strong>
+              <span>Cores divins</span>
+            </div>
+            <div class="daily-reward-card divine-fragments">
+              <span class="daily-reward-icon">🔮</span>
+              <strong>+{{ dungeonFirstClearPopup.divine_fragments }}</strong>
+              <span>Fragments divins</span>
+            </div>
+          </div>
+          <button type="button" class="nx-btn daily-reward-close" @click="closeDungeonFirstClearPopup">
+            Super
+          </button>
+        </section>
+      </div>
+    </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { authToken, clearToken, isAdminUser } from './api';
-import api from './api';
+import api, { authToken, clearToken, isAdminUser } from './api';
 import NexusParticles from './components/NexusParticles.vue';
 import NotificationBell from './components/NotificationBell.vue';
 import TutorialOverlay from './components/TutorialOverlay.vue';
 import { startTutorial } from './composables/useTutorial';
+import { useClientUpdateCheck } from './composables/useClientUpdateCheck';
+import {
+  getLatestNewsSignature,
+  readNewsLastSeenSignature,
+  writeNewsLastSeenSignature
+} from './data/newsData';
+
+const { showUpdateBanner, acknowledgeAndReload } = useClientUpdateCheck();
 
 const router = useRouter();
 const route = useRoute();
@@ -125,21 +215,46 @@ const sidebarOpen = ref(false);
 const adminMenuOpen = ref(false);
 const combatsMenuOpen = ref(false);
 const dailyRewardPopup = ref<{ credits: number; cores: number; fragments: number } | null>(null);
+type DungeonFirstClearPayload = {
+  level: number;
+  credits: number;
+  cores: number;
+  fragments: number;
+  divine_credits: number;
+  divine_cores: number;
+  divine_fragments: number;
+};
+const dungeonFirstClearPopup = ref<DungeonFirstClearPayload | null>(null);
 const dailyRewardTimerId = ref<number | null>(null);
 const dailyRewardCheckInFlight = ref(false);
-const wallet = ref({ credits: 0, cores: 0, fragments: 0, gold: 0 });
+const wallet = ref({ credits: 0, cores: 0, fragments: 0, gold: 0, divine_cores: 0, divine_credits: 0, divine_fragments: 0 });
 const isAdminRoute = computed(() => route.path.startsWith('/admin'));
-const isCombatsRoute = computed(() => route.path === '/campaign' || route.path === '/pvp');
+const isCombatsRoute = computed(
+  () => route.path === '/campaign' || route.path === '/dungeon' || route.path === '/pvp'
+);
 const hasSanctuaryNotification = computed(() => (
   wallet.value.cores >= 10
   || wallet.value.credits >= 100
   || wallet.value.fragments >= 100
 ));
 
+const newsSeenSignature = ref(typeof window !== 'undefined' ? readNewsLastSeenSignature() : '');
+const hasNewsNotification = computed(() => {
+  if (!authToken.value) return false;
+  const latest = getLatestNewsSignature();
+  if (!latest) return false;
+  return latest !== newsSeenSignature.value;
+});
+
 watch(() => route.path, (path) => {
   sidebarOpen.value = false;
   adminMenuOpen.value = path.startsWith('/admin');
   combatsMenuOpen.value = path === '/campaign' || path === '/pvp';
+  if (path === '/news' && authToken.value) {
+    const sig = getLatestNewsSignature();
+    writeNewsLastSeenSignature(sig);
+    newsSeenSignature.value = sig;
+  }
 }, { immediate: true });
 
 async function fetchCurrentUser() {
@@ -160,26 +275,58 @@ async function fetchWallet() {
       credits: Number(data.credits ?? 0),
       cores: Number(data.cores ?? 0),
       fragments: Number(data.fragments ?? 0),
-      gold: Number(data.gold ?? 0)
+      gold: Number(data.gold ?? 0),
+      divine_cores: Number(data.divine_cores ?? 0),
+      divine_credits: Number(data.divine_credits ?? 0),
+      divine_fragments: Number(data.divine_fragments ?? 0)
     };
   } catch {
-    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0 };
+    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0, divine_cores: 0, divine_credits: 0, divine_fragments: 0 };
   }
 }
 
 function handleWalletUpdated(event: Event) {
-  const detail = (event as CustomEvent<{ credits?: number; cores?: number; fragments?: number; gold?: number }>).detail;
+  const detail = (event as CustomEvent<{
+    credits?: number;
+    cores?: number;
+    fragments?: number;
+    gold?: number;
+    divine_cores?: number;
+    divine_credits?: number;
+    divine_fragments?: number;
+  }>).detail;
   if (!detail) return;
   wallet.value = {
     credits: Number(detail.credits ?? wallet.value.credits ?? 0),
     cores: Number(detail.cores ?? wallet.value.cores ?? 0),
     fragments: Number(detail.fragments ?? wallet.value.fragments ?? 0),
-    gold: Number(detail.gold ?? wallet.value.gold ?? 0)
+    gold: Number(detail.gold ?? wallet.value.gold ?? 0),
+    divine_cores: Number(detail.divine_cores ?? wallet.value.divine_cores ?? 0),
+    divine_credits: Number(detail.divine_credits ?? wallet.value.divine_credits ?? 0),
+    divine_fragments: Number(detail.divine_fragments ?? wallet.value.divine_fragments ?? 0)
   };
 }
 
 function closeDailyRewardPopup() {
   dailyRewardPopup.value = null;
+}
+
+function closeDungeonFirstClearPopup() {
+  dungeonFirstClearPopup.value = null;
+}
+
+function handleDungeonFirstClearEvent(e: Event) {
+  const detail = (e as CustomEvent<DungeonFirstClearPayload>).detail;
+  if (!detail || typeof detail.level !== 'number') return;
+  dungeonFirstClearPopup.value = {
+    level: Number(detail.level),
+    credits: Number(detail.credits ?? 0),
+    cores: Number(detail.cores ?? 0),
+    fragments: Number(detail.fragments ?? 0),
+    divine_credits: Number(detail.divine_credits ?? 0),
+    divine_cores: Number(detail.divine_cores ?? 0),
+    divine_fragments: Number(detail.divine_fragments ?? 0)
+  };
 }
 
 function clearDailyRewardTimer() {
@@ -240,9 +387,11 @@ watch(authToken, async (token) => {
   if (!token) {
     currentUser.value = null;
     dailyRewardPopup.value = null;
-    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0 };
+    dungeonFirstClearPopup.value = null;
+    wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0, divine_cores: 0, divine_credits: 0, divine_fragments: 0 };
     return;
   }
+  newsSeenSignature.value = readNewsLastSeenSignature();
   await fetchCurrentUser();
   await fetchWallet();
   await checkDailyReward();
@@ -261,6 +410,7 @@ function handleTutorialOpenSidebar() {
 onMounted(() => {
   window.addEventListener('profile-updated', fetchCurrentUser);
   window.addEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.addEventListener('dungeon-first-clear', handleDungeonFirstClearEvent as EventListener);
   window.addEventListener('focus', handleWindowResume);
   document.addEventListener('visibilitychange', handleWindowResume);
   window.addEventListener('tutorial:open-combats', handleTutorialOpenCombats);
@@ -270,6 +420,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('profile-updated', fetchCurrentUser);
   window.removeEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.removeEventListener('dungeon-first-clear', handleDungeonFirstClearEvent as EventListener);
   window.removeEventListener('focus', handleWindowResume);
   document.removeEventListener('visibilitychange', handleWindowResume);
   window.removeEventListener('tutorial:open-combats', handleTutorialOpenCombats);
@@ -393,11 +544,23 @@ function logout() {
 
 .sidebar-wallet {
   margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.6rem;
+  color: #cbd5e1;
+}
+
+.sidebar-wallet-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.15rem 0.2rem;
-  font-size: 0.6rem;
-  color: #cbd5e1;
+}
+
+.sidebar-wallet-row-divine {
+  grid-template-columns: repeat(3, 1fr);
+  padding-top: 0.2rem;
+  border-top: 1px solid rgba(255,255,255,0.08);
 }
 
 .sidebar-wallet-item {
@@ -429,6 +592,18 @@ function logout() {
 
 .sidebar-wallet-item.gold {
   color: #f59e0b;
+}
+
+.sidebar-wallet-item.divine-cores {
+  color: #a78bfa;
+}
+
+.sidebar-wallet-item.divine-credits {
+  color: #67e8f9;
+}
+
+.sidebar-wallet-item.divine-fragments {
+  color: #c084fc;
 }
 
 .sidebar-title {
@@ -511,6 +686,10 @@ function logout() {
     border-color 0.25s ease,
     transform 0.25s ease,
     box-shadow 0.25s ease;
+}
+
+.menu-item-news {
+  font-weight: 600;
 }
 
 .menu-item-with-indicator {
@@ -613,7 +792,7 @@ function logout() {
 
 .app-main {
   flex: 1;
-  padding: 2rem;
+  padding: 0.75rem 1rem;
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
@@ -642,7 +821,7 @@ function logout() {
 .daily-reward-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 9100; /* Au-dessus du tutoriel (9000) pour pouvoir valider la récompense avant */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -696,6 +875,20 @@ function logout() {
   gap: 0.85rem;
 }
 
+.daily-reward-grid--six {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.dungeon-first-clear-modal {
+  width: min(100%, 640px);
+}
+
+@media (max-width: 520px) {
+  .daily-reward-grid--six {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .daily-reward-card {
   display: flex;
   flex-direction: column;
@@ -725,6 +918,18 @@ function logout() {
   box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.22);
 }
 
+.daily-reward-card.divine-credits {
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.22);
+}
+
+.daily-reward-card.divine-cores {
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.28);
+}
+
+.daily-reward-card.divine-fragments {
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.22);
+}
+
 .daily-reward-icon {
   font-size: 1.6rem;
 }
@@ -747,6 +952,56 @@ function logout() {
 .daily-reward-enter-from .daily-reward-modal,
 .daily-reward-leave-to .daily-reward-modal {
   transform: translateY(12px) scale(0.98);
+}
+
+.client-update-banner {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 8500;
+  padding: 0.85rem 1rem;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.97), rgba(2, 6, 23, 0.99));
+  border-top: 1px solid rgba(34, 211, 238, 0.35);
+  box-shadow: 0 -8px 32px rgba(2, 6, 23, 0.55);
+}
+
+.client-update-banner-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem 1rem;
+}
+
+.client-update-banner-text {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+  text-align: center;
+  flex: 1 1 260px;
+}
+
+.client-update-btn-primary {
+  flex-shrink: 0;
+  min-width: 120px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.25), rgba(56, 189, 248, 0.15));
+  border-color: rgba(34, 211, 238, 0.45);
+  color: #f0fdfa;
+}
+
+.client-update-banner-enter-active,
+.client-update-banner-leave-active {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.client-update-banner-enter-from,
+.client-update-banner-leave-to {
+  opacity: 0;
+  transform: translateY(12px);
 }
 
 /* Mobile layout (< 768px) */
@@ -773,8 +1028,8 @@ function logout() {
   }
 
   .app-main {
-    padding: 1rem;
-    padding-top: calc(44px + 0.5rem);
+    padding: 0.5rem 0.75rem;
+    padding-top: calc(44px + 0.35rem);
   }
 
   .app-notification-bell {

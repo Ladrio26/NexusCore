@@ -1,8 +1,28 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
+
+/** Écrit `dist/build-id.json` à chaque build — utilisé par le SPA pour proposer une mise à jour sans reload forcé. */
+function buildIdPlugin(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'nexus-write-build-id',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const buildId =
+        process.env.BUILD_ID?.trim()
+        || process.env.CI_COMMIT_SHORT_SHA?.trim()
+        || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const dir = path.isAbsolute(outDir) ? outDir : path.resolve(__dirname, outDir);
+      const file = path.join(dir, 'build-id.json');
+      fs.writeFileSync(file, `${JSON.stringify({ buildId })}\n`, 'utf8');
+    }
+  };
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,7 +59,7 @@ const hmrPort = Number(process.env.VITE_HMR_PORT || 0);
 const hmrProtocol = process.env.VITE_HMR_PROTOCOL?.trim();
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), buildIdPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),

@@ -10,6 +10,34 @@
               </div>
               <div class="header-right">
                 <span v-if="battleResult && hasReplayMode" class="round-counter" :title="'Tour actuel / limite avant match nul'">{{ currentRound }} / {{ MAX_ROUNDS }}</span>
+                <template v-if="isDungeonBattle && showBattleResult">
+                  <!-- Rejouer : fin de série (combat 3 gagné) ou défaite — pas entre les combats 1→2 et 2→3 (enchaînement auto). -->
+                  <button
+                    v-if="!battleFinalizeResult?.dungeonChainNext"
+                    type="button"
+                    class="campaign-quick-btn campaign-btn-replay"
+                    @click="handleDungeonReplay"
+                  >
+                    Rejouer
+                  </button>
+                </template>
+                <template v-else-if="isCampaignBattle && showBattleResult">
+                  <button
+                    type="button"
+                    class="campaign-quick-btn campaign-btn-replay"
+                    @click="handleReplay"
+                  >
+                    Rejouer
+                  </button>
+                  <button
+                    v-if="hasNextStage"
+                    type="button"
+                    class="campaign-quick-btn campaign-btn-next"
+                    @click="handleGoNext"
+                  >
+                    Suivant
+                  </button>
+                </template>
                 <button
                   type="button"
                   class="auto-mode-btn"
@@ -30,14 +58,36 @@
                   <span class="btn-text-desktop">{{ showLogs ? '📋 Logs' : 'Logs' }}</span>
                   <span class="btn-text-mobile">{{ showLogs ? '📋' : 'Logs' }}</span>
                 </button>
-                <button type="button" class="close-btn" aria-label="Fermer" @click="closeAndNotify">✕</button>
+                <button type="button" class="close-btn" aria-label="Fermer" @click.stop.prevent="closeAndNotify(false)">✕</button>
+                <button
+                  v-if="activePendingBattle"
+                  type="button"
+                  class="abandon-btn"
+                  title="Abandonner le combat (en cas de blocage)"
+                  @click.stop="emit('abandon')"
+                >
+                  Abandonner
+                </button>
                 <button type="button" class="legend-btn" @click="toggleLegend">
                   <span class="btn-text-desktop">Légende</span>
                   <span class="btn-text-mobile">?</span>
                 </button>
               </div>
             </div>
-            <div v-if="showBattleResult" class="stage-result" :class="resultClass">{{ resultText }}</div>
+            <div v-if="showBattleResult" class="stage-result" :class="resultClass">
+              <span class="stage-result-label">{{ resultText }}</span>
+              <div v-if="battleRewardsDisplay.length" class="stage-result-rewards">
+                <div v-for="(line, i) in battleRewardsDisplay" :key="i" class="stage-result-reward-line">{{ line }}</div>
+              </div>
+              <div v-else-if="!hasFinalized && activePendingBattle?.id" class="stage-result-rewards stage-result-loading">
+                Chargement des récompenses…
+              </div>
+            </div>
+            <div v-if="isPvpBattle && showBattleResult" class="pvp-result-actions">
+              <button type="button" class="pvp-find-opponent-btn campaign-quick-btn" @click.stop="handlePvpFindOpponent">
+                Rechercher un Adversaire
+              </button>
+            </div>
             <div v-if="showDecisionPanelVisible" class="manual-decision-panel" :class="{ 'is-waiting': isDecisionPanelWaiting }">
               <div class="manual-decision-title">
                 Tour de {{ manualDecisionContext?.actorName ?? 'votre unité' }}.
@@ -51,7 +101,39 @@
                 >
                   Attaque de base
                 </button>
+                <template v-if="manualSkillSlotsMulti && manualDecisionContext?.skillSlots?.length">
+                  <div
+                    v-for="(slot, idx) in manualDecisionContext.skillSlots"
+                    :key="String(slot.skillKey)"
+                    class="manual-skill-wrap"
+                    @mouseenter="manualSkillHoverKey = String(slot.skillKey)"
+                    @mouseleave="manualSkillHoverKey = null"
+                  >
+                    <button
+                      type="button"
+                      class="manual-action-btn"
+                      :class="{
+                        active:
+                          manualActionChoice === 'SKILL' && manualSelectedSkillKey === String(slot.skillKey)
+                      }"
+                      :disabled="!slot.ready || !(slot.skillTargets?.length)"
+                      @click="selectManualAction('SKILL', String(slot.skillKey))"
+                    >
+                      Compétence {{ idx + 1 }}{{ manualSlotCooldownText(slot) }}
+                    </button>
+                    <div
+                      v-if="
+                        manualSkillHoverKey === String(slot.skillKey) &&
+                        manualSlotTooltipText(slot)
+                      "
+                      class="manual-skill-tooltip"
+                    >
+                      {{ manualSlotTooltipText(slot) }}
+                    </div>
+                  </div>
+                </template>
                 <div
+                  v-else
                   class="manual-skill-wrap"
                   @mouseenter="manualSkillHover = true"
                   @mouseleave="manualSkillHover = false"
@@ -95,7 +177,7 @@
             </div>
           </template>
 
-        <template v-if="!battleResult">
+        <template v-if="!battleResult && !dungeonMode">
           <div v-if="hardChapterModifierText" class="hard-modifier-preview">
             <strong>Effet du chapitre difficile :</strong> {{ hardChapterModifierText }}
           </div>
@@ -139,6 +221,7 @@
               <span v-else>Combattre</span>
             </button>
           </div>
+          <p v-if="presetHasUnfitUnits && !battleResult" class="preset-unfit-msg">{{ presetUnfitMessage }}</p>
           <div v-if="battleError" class="battle-error">
             {{ battleError }}
           </div>
@@ -172,10 +255,16 @@
               class="unit-tooltip"
             >
               <div v-if="getUnitImageUrl(hoveredUnit)" class="tooltip-unit-image" :style="{ backgroundImage: `url(${getUnitImageUrl(hoveredUnit)})` }" />
-              <div class="tooltip-title">
+              <div class="tooltip-title" :style="hoveredUnitRarityStyle">
                 {{ hoveredUnit.name }} (Nv.{{ hoveredUnit.level ?? '?' }})
               </div>
-              <div class="tooltip-meta">{{ elementLabel(hoveredUnit.element) }}</div>
+              <div class="tooltip-meta">
+                {{ elementLabel(hoveredUnit.element) }}
+                <span v-if="hoveredUnitRoleLabel"> · {{ hoveredUnitRoleLabel }}</span>
+              </div>
+              <div v-if="hoveredUnitFatigue != null" class="tooltip-meta tooltip-fatigue">
+                Fatigue : {{ hoveredUnitFatigue }}
+              </div>
               <div class="tooltip-stats">
                 <div>HP : {{ currentHp(hoveredUnit) }} / {{ hoveredUnit.maxHp }}</div>
                 <div>ATQ : {{ hoveredUnit.attack ?? '—' }}</div>
@@ -188,10 +277,17 @@
               <div v-if="hoveredUnitSkillDescription" class="tooltip-skill">
                 ⚡ {{ hoveredUnitSkillDescription }}
               </div>
+              <div v-if="hoveredUnitSpecDescription" class="tooltip-spec">
+                ✨ {{ hoveredUnitSpecDescription }}
+              </div>
             </div>
             <div class="battle-body">
-            <div class="combat-layout" :class="{ 'logs-hidden': !showLogs }">
-              <div v-if="showLogs" class="battle-logs battle-logs-left log-column team-a">
+            <div class="combat-layout">
+              <div
+                class="battle-logs battle-logs-left log-column team-a"
+                :class="{ 'battle-logs--collapsed': !showLogs }"
+                :aria-hidden="!showLogs"
+              >
                 <div ref="logColumnARef" class="log-container" @scroll="replayLogScrollLock = true">
                   <template v-if="hasReplayMode">
                     <div v-for="(log, i) in visibleReplayLogEntries.logsA" :key="'ra-' + i" class="log-entry" :class="{ 'log-entry-current': hasReplayMode && i === visibleReplayLogEntries.logsA.length - 1 }" :style="{ color: log.color }">{{ log.text }}</div>
@@ -219,7 +315,11 @@
                 </div>
               </div>
               </div>
-              <div v-if="showLogs" class="battle-logs battle-logs-right log-column team-b">
+              <div
+                class="battle-logs battle-logs-right log-column team-b"
+                :class="{ 'battle-logs--collapsed': !showLogs }"
+                :aria-hidden="!showLogs"
+              >
                 <div ref="logColumnBRef" class="log-container" @scroll="replayLogScrollLock = true">
                   <template v-if="hasReplayMode">
                     <div v-for="(log, i) in visibleReplayLogEntries.logsB" :key="'rb-' + i" class="log-entry" :class="{ 'log-entry-current': hasReplayMode && i === visibleReplayLogEntries.logsB.length - 1 }" :style="{ color: log.color }">{{ log.text }}</div>
@@ -240,18 +340,30 @@
 </template>
 
 <script setup lang="ts">
+// @ts-nocheck — composant très large ; le typage strict sera affiné progressivement.
 import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
-import { getHardChapterModifierLabelsFr } from '../../../core/campaignHardModifiers.js';
+import { getHardChapterModifierLabelsFr } from '@engine/campaignHardModifiers.js';
 // @ts-expect-error moteur JS sans types
 import { simulateBattle, MAX_ROUNDS } from '@engine/combatEngine.js';
 import api, { getToken } from '../api';
 import Battlefield from '../components/Battlefield.vue';
 import { getBuffVisual } from '../utils/buffVisualMap';
 import { getUnitImageUrl } from '../utils/unitImage';
-import { toTraitFr } from '../utils/i18nFr';
-import { buildSkillDescriptionFromSkillData } from '../utils/skillDescription';
+import { toTraitFr, combatRoleLabel } from '../utils/i18nFr';
+import { rarityColors } from '../utils/invokeAnimation';
+import { normalizeSkillDescription } from '../utils/skillDescription';
+import { getSkillTooltipPlainText } from '@engine/skillDescriptionTooltip.js';
 
-type PresetItem = { preset_index: number; preset_name: string | null; front_slots: number[]; back_slots: number[]; selected_noyau_index?: number };
+type PresetUnit = { user_unit_id: number; fatigue?: number };
+type PresetItem = {
+  preset_index: number;
+  preset_name: string | null;
+  front_slots: number[];
+  back_slots: number[];
+  selected_noyau_index?: number;
+  front_units?: PresetUnit[];
+  back_units?: PresetUnit[];
+};
 const props = defineProps<{
   show: boolean;
   chapter: number;
@@ -261,28 +373,30 @@ const props = defineProps<{
   campaignTeam: Array<{ user_unit_id: number; position: 'front' | 'back' }>;
   pendingBattle?: {
     id: number;
-    battleType: 'campaign' | 'pvp' | 'guild_war';
+    battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon';
     title?: string;
     result?: string;
     success?: boolean;
     battleLog?: unknown[];
-    replay?: { seed?: number; frames: ReplayFrame[] };
-    initialUnits?: BattlefieldUnit[];
-    summary?: { totalTurns?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number };
+    replay?: { seed?: number; frames: ReplayFrame[] | unknown[] };
+    initialUnits?: BattlefieldUnit[] | unknown[];
+    summary?: { totalTurns?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number } | unknown;
     enemyTeamLabel?: string;
     interactiveSession?: { seed: number; bossModifier?: unknown; teamA: unknown[]; teamB: unknown[] };
   } | null;
   /** Replay autonome (ex: PvP). Quand défini, affiche uniquement le visualiseur de combat. */
   standaloneReplay?: {
     battleLog?: unknown[];
-    replay?: { seed?: number; frames: ReplayFrame[] };
-    initialUnits?: BattlefieldUnit[];
-    summary?: { totalTurns?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number };
+    replay?: { seed?: number; frames: ReplayFrame[] | unknown[] };
+    initialUnits?: BattlefieldUnit[] | unknown[];
+    summary?: { totalTurns?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number } | unknown;
     decisionRequest?: {
       actorCombatIndex: number;
       actorName: string;
       skillAvailable: boolean;
       skillCd?: number;
+      mainSkillDescription?: string;
+      skillSlots?: DecisionSkillSlot[] | null;
       basicTargets: Array<{ combatIndex: number; name: string }>;
       skillTargets: Array<{ combatIndex: number; name: string }>;
     } | null;
@@ -290,6 +404,12 @@ const props = defineProps<{
     /** Label équipe ennemie (ex. "PNJ" en PvP contre bot). */
     enemyTeamLabel?: string;
   } | null;
+  /** Quand true, lance automatiquement le combat à l'ouverture (ex: bouton Suivant). */
+  autoStartOnOpen?: boolean;
+  /** Donjon : pas d'écran preset interne, le parent fournit le pendingBattle. */
+  dungeonMode?: boolean;
+  /** Donjon : mode Auto/Manuel à appliquer à l’ouverture (ex. mémorisé depuis le combat précédent). */
+  dungeonInitialAutoMode?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -297,6 +417,11 @@ const emit = defineEmits<{
   (e: 'battle-done'): void;
   (e: 'battle-finalized', payload: Record<string, unknown>): void;
   (e: 'campaign-updated'): void;
+  (e: 'go-next', payload: { chapter: number; stage: number }): void;
+  (e: 'close', payload?: { findOpponent?: boolean }): void;
+  (e: 'abandon'): void;
+  (e: 'dungeon-combat-next', payload: { autoMode: boolean }): void;
+  (e: 'dungeon-replay', payload: { autoMode: boolean }): void;
 }>();
 
 /** Évite d'émettre campaign-updated plusieurs fois (victoire). */
@@ -312,6 +437,7 @@ type BattlefieldUnit = {
   id: string;
   name: string;
   image_url?: string | null;
+  rarity?: string;
   maxHp: number;
   element: string;
   side: 'A' | 'B';
@@ -345,7 +471,256 @@ type ReplaySnapshot = {
 };
 type ReplayFrame = { i: number; ts: number; event: Record<string, unknown>; snapshot: ReplaySnapshot };
 
+/** Slot compétence renvoyé par le moteur (decisionRequest.skillSlots). */
+type DecisionSkillSlot = {
+  skillKey: string;
+  name?: string | null;
+  priority?: number;
+  skillCd?: number;
+  ready?: boolean;
+  skillTargets?: Array<{ combatIndex: number; name: string }>;
+  description?: string;
+};
+
+/* Déclarations nécessaires avant isStandaloneReplay, finalizeAndStore, watch (évite "Cannot access before initialization") */
+const battleResult = ref<{
+  success: boolean | null;
+  result: 'win' | 'loss' | 'draw' | null;
+  rewardsGranted: { credits: number; cores: number; fragments: number; ascension_essence: number } | null;
+  battleLog?: unknown[];
+  initialUnits?: BattlefieldUnit[];
+  replay?: { seed?: number; frames: ReplayFrame[] };
+  summary?: { totalTurns: number; playerUnitsAlive: number; enemyUnitsAlive: number };
+  decisionRequest?: {
+    actorCombatIndex: number;
+    actorName: string;
+    skillAvailable: boolean;
+    skillCd?: number;
+    mainSkillDescription?: string;
+    skillSlots?: DecisionSkillSlot[] | null;
+    basicTargets: Array<{ combatIndex: number; name: string }>;
+    skillTargets: Array<{ combatIndex: number; name: string }>;
+  } | null;
+} | null>(null);
+const activePendingBattle = ref<{ id: number; battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon'; title?: string; enemyTeamLabel?: string } | null>(null);
+const finalizeDataRef = ref<{ team?: Array<{ user_unit_id: number }>; attackerUserUnitIds?: number[]; attackerUnitIds?: number[] } | null>(null);
+const battleFinalizeResult = ref<Record<string, unknown> | null>(null);
+const hasFinalized = ref(false);
+
+function computeCombatStatsFromLog(battleLog: unknown[] | undefined, teamSlots: Array<{ user_unit_id: number }>): Record<number, { kills: number; damage: number; healing: number }> {
+  const stats: Record<number, { kills: number; damage: number; healing: number }> = {};
+  const teamASize = teamSlots.length;
+  const teamAIds = teamSlots.map((s) => Number(s.user_unit_id)).filter(Boolean);
+  const idxToUid = (idx: number | null) => (idx != null && idx >= 0 && idx < teamASize ? teamAIds[idx] : null);
+  const lastDamageByTarget: Record<number, number> = {};
+  for (const ev of battleLog || []) {
+    const e = ev as { type?: string; sourceId?: number | string; targetId?: number | string; value?: number; meta?: { amount?: number; effectiveDamage?: number } };
+    const type = e?.type;
+    const src = e?.sourceId;
+    const tgt = e?.targetId;
+    const val = (e?.value ?? e?.meta?.amount ?? e?.meta?.effectiveDamage ?? 0) as number;
+    const srcIdx = typeof src === 'number' ? src : (typeof src === 'string' && /^\d+$/.test(src) ? parseInt(src, 10) : null);
+    const tgtIdx = typeof tgt === 'number' ? tgt : (typeof tgt === 'string' && /^\d+$/.test(tgt) ? parseInt(tgt, 10) : null);
+    if (type === 'DAMAGE' && srcIdx != null && val > 0) {
+      if (tgtIdx != null) lastDamageByTarget[tgtIdx] = srcIdx;
+      const uid = idxToUid(srcIdx);
+      if (uid) {
+        stats[uid] = stats[uid] || { kills: 0, damage: 0, healing: 0 };
+        stats[uid].damage += val;
+      }
+    }
+    if (type === 'HEAL' && srcIdx != null && val > 0) {
+      const uid = idxToUid(srcIdx);
+      if (uid) {
+        stats[uid] = stats[uid] || { kills: 0, damage: 0, healing: 0 };
+        stats[uid].healing += val;
+      }
+    }
+    if (type === 'DEATH' && tgtIdx != null) {
+      const killerIdx = lastDamageByTarget[tgtIdx];
+      if (killerIdx != null) {
+        const uid = idxToUid(killerIdx);
+        if (uid) {
+          stats[uid] = stats[uid] || { kills: 0, damage: 0, healing: 0 };
+          stats[uid].kills += 1;
+        }
+      }
+      delete lastDamageByTarget[tgtIdx];
+    }
+  }
+  return stats;
+}
+
+function getTeamSlotsForStats(): Array<{ user_unit_id: number }> {
+  const fd = finalizeDataRef.value;
+  if (fd?.team?.length) return fd.team;
+  const ids = fd?.attackerUserUnitIds ?? fd?.attackerUnitIds;
+  if (ids?.length) return ids.map((id) => ({ user_unit_id: id }));
+  if (
+    (activePendingBattle.value?.battleType === 'campaign' || activePendingBattle.value?.battleType === 'dungeon')
+    && props.campaignTeam?.length
+  ) {
+    return props.campaignTeam.map((s) => ({ user_unit_id: s.user_unit_id }));
+  }
+  return [];
+}
+
+const showBattleResult = computed(() => !!battleResult.value?.result);
+
 const isStandaloneReplay = computed(() => !!props.standaloneReplay || activePendingBattle.value?.battleType === 'pvp' || activePendingBattle.value?.battleType === 'guild_war');
+const isCampaignBattle = computed(() => activePendingBattle.value?.battleType === 'campaign');
+const isDungeonBattle = computed(() => activePendingBattle.value?.battleType === 'dungeon');
+const isCampaignLikeBattle = computed(
+  () => activePendingBattle.value?.battleType === 'campaign' || activePendingBattle.value?.battleType === 'dungeon'
+);
+const isPvpBattle = computed(() => activePendingBattle.value?.battleType === 'pvp');
+const dungeonMode = computed(() => props.dungeonMode === true);
+const hasNextStage = computed(() => props.stage < 10 || (props.stage === 10 && props.chapter < 10));
+
+/** Appelle /battle/finalize et stocke le résultat pour l'affichage des récompenses. */
+async function finalizeAndStore() {
+  if (!showBattleResult.value || !activePendingBattle.value?.id || hasFinalized.value) return;
+  const winner = battleResult.value?.result ?? 'loss';
+  const teamSlots = getTeamSlotsForStats();
+  const combatStats = teamSlots.length && battleResult.value?.battleLog
+    ? computeCombatStatsFromLog(battleResult.value.battleLog, teamSlots)
+    : {};
+  try {
+    const { data } = await api.post('/battle/finalize', {
+      id: activePendingBattle.value.id,
+      winner,
+      combatStats
+    });
+    battleFinalizeResult.value = (data ?? {}) as Record<string, unknown>;
+    hasFinalized.value = true;
+    if (data?.wallet) {
+      window.dispatchEvent(new CustomEvent('wallet-updated', { detail: data.wallet }));
+    }
+    if (activePendingBattle.value?.battleType === 'campaign' && data?.progressUpdated && !progressionAlreadySent.value) {
+      progressionAlreadySent.value = true;
+      emit('campaign-updated');
+    }
+    emit('battle-finalized', data ?? {});
+  } catch (e) {
+    console.error('[StageModal] Auto-finalize error:', e);
+  }
+}
+
+watch(
+  [showBattleResult, () => activePendingBattle.value?.id],
+  ([showRes, battleId]) => {
+    if (showRes && battleId && !hasFinalized.value && !loading.value) {
+      finalizeAndStore();
+    }
+  },
+  { immediate: true }
+);
+
+/** Finalise le combat campagne si nécessaire (victoire : récompenses, XP, fatigue ; défaite : nettoyage). */
+async function finalizeCampaignBattleIfNeeded(): Promise<boolean> {
+  if (!isCampaignLikeBattle.value || battleResult.value?.result == null || !activePendingBattle.value?.id) {
+    return false;
+  }
+  if (hasFinalized.value) {
+    activePendingBattle.value = null;
+    return true;
+  }
+  loading.value = true;
+  try {
+    const winner = battleResult.value.result;
+    const teamSlots = getTeamSlotsForStats();
+    const combatStats = teamSlots.length && battleResult.value?.battleLog
+      ? computeCombatStatsFromLog(battleResult.value.battleLog, teamSlots)
+      : {};
+    const { data } = await api.post('/battle/finalize', {
+      id: activePendingBattle.value.id,
+      winner,
+      combatStats
+    });
+    battleFinalizeResult.value = (data ?? {}) as Record<string, unknown>;
+    hasFinalized.value = true;
+    if (data?.wallet) {
+      window.dispatchEvent(new CustomEvent('wallet-updated', { detail: data.wallet }));
+    }
+    if (data?.progressUpdated) {
+      progressionAlreadySent.value = true;
+      emit('campaign-updated'); /* Toujours notifier pour débloquer le niveau suivant (Rejouer ou Suivant) */
+    }
+    battleFinalizeResult.value = (data ?? {}) as Record<string, unknown>;
+    hasFinalized.value = true;
+    emit('battle-finalized', data ?? {});
+    activePendingBattle.value = null;
+    return true;
+  } catch (e) {
+    console.error('[StageModal] Finalize error:', e);
+    return false;
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function handleReplay() {
+  const finalized = await finalizeCampaignBattleIfNeeded();
+  // Pause pour laisser le parent rafraîchir le statut (déblocage du niveau suivant)
+  if (finalized && battleResult.value?.result === 'win') {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  startBattle();
+}
+async function handleDungeonCombatNextClick() {
+  await finalizeCampaignBattleIfNeeded();
+  emit('dungeon-combat-next', { autoMode: autoMode.value });
+}
+
+async function handleDungeonReplay() {
+  await finalizeCampaignBattleIfNeeded();
+  emit('dungeon-replay', { autoMode: autoMode.value });
+}
+
+/** Donjon : enchaîne automatiquement combat 1→2 et 2→3 (sans cliquer « Combat suivant »). */
+const dungeonAutoChainScheduled = ref(false);
+watch(
+  () => activePendingBattle.value?.id,
+  () => {
+    dungeonAutoChainScheduled.value = false;
+  }
+);
+watch(
+  () => ({
+    fin: battleFinalizeResult.value,
+    hf: hasFinalized.value,
+    win: battleResult.value?.result === 'win',
+    dm: props.dungeonMode,
+    br: showBattleResult.value,
+    dungeonBt: activePendingBattle.value?.battleType === 'dungeon'
+  }),
+  async (st) => {
+    if (!st.dm || !st.br || !st.win || !st.hf || !st.dungeonBt) return;
+    const d = st.fin as Record<string, unknown> | null;
+    if (!d || d.dungeonChainNext !== true) return;
+    if (dungeonAutoChainScheduled.value) return;
+    dungeonAutoChainScheduled.value = true;
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 650));
+    try {
+      await handleDungeonCombatNextClick();
+    } catch (e) {
+      console.error('[StageModal] dungeon auto-chain', e);
+      dungeonAutoChainScheduled.value = false;
+    }
+  }
+);
+
+async function handleGoNext() {
+  await finalizeCampaignBattleIfNeeded();
+  // Courte pause après finalisation pour laisser le backend confirmer et le parent traiter campaign-updated
+  if (battleResult.value?.result === 'win' && props.stage === 10) {
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  const nextCh = props.stage < 10 ? props.chapter : props.chapter + 1;
+  const nextSt = props.stage < 10 ? props.stage + 1 : 1;
+  emit('go-next', { chapter: nextCh, stage: nextSt });
+}
 const battleTitle = computed(() => {
   if (activePendingBattle.value?.title) return activePendingBattle.value.title;
   if (props.standaloneReplay) return 'Combat PvP';
@@ -358,24 +733,6 @@ const battleEnemyTeamLabel = computed(() => {
   return 'Équipe Ennemie';
 });
 
-const battleResult = ref<{
-  success: boolean | null;
-  result: 'win' | 'loss' | 'draw' | null;
-  rewardsGranted: { credits: number; cores: number; fragments: number; ascension_essence: number } | null;
-  battleLog?: BattleLogEvent[];
-  initialUnits?: BattlefieldUnit[];
-  replay?: { seed?: number; frames: ReplayFrame[] };
-  summary?: { totalTurns: number; playerUnitsAlive: number; enemyUnitsAlive: number };
-  decisionRequest?: {
-    actorCombatIndex: number;
-    actorName: string;
-    skillAvailable: boolean;
-    skillCd?: number;
-    basicTargets: Array<{ combatIndex: number; name: string }>;
-    skillTargets: Array<{ combatIndex: number; name: string }>;
-  } | null;
-} | null>(null);
-const activePendingBattle = ref<{ id: number; battleType: 'campaign' | 'pvp' | 'guild_war'; title?: string; enemyTeamLabel?: string } | null>(null);
 function getInitialUnitsNow(): BattlefieldUnit[] {
   return Array.isArray(battleResult.value?.initialUnits) ? battleResult.value.initialUnits as BattlefieldUnit[] : [];
 }
@@ -408,12 +765,13 @@ function resolveUnitFromLogIdSafe(logId: string | number | null | undefined): { 
   return { combatIndex, unit };
 }
 function hasElementAdvantage(attackerElement: string | null | undefined, targetElement: string | null | undefined): boolean {
-  const a = String(attackerElement ?? '').toUpperCase();
-  const t = String(targetElement ?? '').toUpperCase();
+  const a = String(attackerElement ?? '').toLowerCase();
+  const t = String(targetElement ?? '').toLowerCase();
   if (!a || !t) return false;
-  return (a === 'WATER' && t === 'FIRE')
-    || (a === 'FIRE' && t === 'PLANT')
-    || (a === 'PLANT' && t === 'WATER');
+  if ((a === 'water' && t === 'fire') || (a === 'fire' && t === 'plant') || (a === 'plant' && t === 'water')) return true;
+  if ((a === 'light' || a === 'lumiere') && (t === 'dark' || t === 'tenebres' || t === 'tenebre')) return true;
+  if ((a === 'dark' || a === 'tenebres' || a === 'tenebre') && (t === 'light' || t === 'lumiere')) return true;
+  return false;
 }
 
 const battlefieldRef = ref<HTMLElement | null>(null);
@@ -445,6 +803,10 @@ function onEsc(e: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('keydown', onEsc);
   window.addEventListener('beforeunload', handleBeforeUnload);
+  // Déclencher la finalisation si le combat est déjà terminé (ex: replay PvP au chargement)
+  if (showBattleResult.value && activePendingBattle.value?.id && !hasFinalized.value && !loading.value) {
+    finalizeAndStore();
+  }
 });
 
 onUnmounted(() => {
@@ -467,21 +829,24 @@ const engineTeamA = ref<unknown[]>([]);
 const engineTeamB = ref<unknown[]>([]);
 const engineSeed = ref<number>(1);
 const engineBossModifier = ref<unknown>(null);
-const combatDecisions = ref<Array<{ action: string; targetCombatIndex: number }>>([]);
+const combatDecisions = ref<Array<{ action: string; targetCombatIndex: number; skillKey?: string }>>([]);
 
 type ManualAction = 'BASIC' | 'SKILL';
 const manualActionChoice = ref<ManualAction | null>(null);
 const manualTargetChoice = ref<number | null>(null);
 const manualDecisionError = ref('');
 const manualSkillHover = ref(false);
-const autoMode = ref(false);
+/** Survol d’un slot précis (multi-compétences). */
+const manualSkillHoverKey = ref<string | null>(null);
+/** Slot choisi quand plusieurs compétences actives (clé moteur). */
+const manualSelectedSkillKey = ref<string | null>(null);
+const autoMode = ref(props.dungeonMode ? !!props.dungeonInitialAutoMode : false);
 
 let __lastAppliedSnapshot: ReplaySnapshot | null = null;
 let __lastAppliedTick: number | null = null;
 
 const hasReplayMode = computed(() => (battleResult.value?.replay?.frames?.length ?? 0) > 0);
 const replayReachedEnd = computed(() => hasReplayMode.value && replayFrames.value.length > 0 && replayFrameIndex.value >= replayFrames.value.length - 1);
-const showBattleResult = computed(() => !!battleResult.value?.result);
 const currentReplaySnapshot = computed((): ReplaySnapshot | null => {
   const frames = replayFrames.value;
   if (!frames.length) return null;
@@ -508,17 +873,37 @@ const manualDecisionContext = computed(() => {
   if (serverDecision && Number.isInteger(Number(serverDecision.actorCombatIndex))) {
     const actorIdx = Number(serverDecision.actorCombatIndex);
     const actorUnit = getInitialUnitsNow()[actorIdx] || null;
+    const n = teamASize.value ?? 0;
+    const rawUnit =
+      actorIdx < n
+        ? (engineTeamA.value as Record<string, unknown>[])?.[actorIdx]
+        : (engineTeamB.value as Record<string, unknown>[])?.[actorIdx - n];
+    const skillData =
+      rawUnit && typeof rawUnit === 'object' && rawUnit.skill_data
+        ? (rawUnit.skill_data as Record<string, unknown>)
+        : null;
+    const drSlots = (serverDecision as { skillSlots?: DecisionSkillSlot[] }).skillSlots;
+    const skillSlots = Array.isArray(drSlots) ? drSlots : null;
+    const mainFromServer = String(
+      (serverDecision as { mainSkillDescription?: string }).mainSkillDescription ?? ''
+    ).trim();
+    /** Tooltip bouton unique : texte aligné moteur/API (multi-compétences si applicable). */
     const skillDesc = (() => {
-      const from = actorUnit?.skillDescription;
-      if (from) return from;
-      const n = teamASize.value ?? 0;
-      const raw = actorIdx < n ? (engineTeamA.value as Record<string, unknown>[])?.[actorIdx] : (engineTeamB.value as Record<string, unknown>[])?.[actorIdx - n];
-      return (raw && typeof raw === 'object' && raw.skill_data) ? buildSkillDescriptionFromSkillData(raw.skill_data as Record<string, unknown>) : null;
+      if (skillSlots && skillSlots.length > 1) return null;
+      const fromUnit = actorUnit?.skillDescription;
+      if (fromUnit && String(fromUnit).trim()) return normalizeSkillDescription(String(fromUnit).trim());
+      if (mainFromServer) return normalizeSkillDescription(mainFromServer);
+      if (skillData) {
+        const t = getSkillTooltipPlainText(skillData);
+        return t ? normalizeSkillDescription(t) : null;
+      }
+      return null;
     })();
     return {
       actorName: serverDecision.actorName ?? actorUnit?.name ?? 'Unité',
       actorCombatIndex: actorIdx,
       skillDescription: skillDesc,
+      skillSlots,
       expectedTargetCombatIndex: null,
       skillAvailable: Boolean(serverDecision.skillAvailable),
       skillInCooldown: Number(serverDecision.skillCd ?? 0) > 0,
@@ -568,6 +953,11 @@ const manualDecisionContext = computed(() => {
     .map((u) => ({ combatIndex: Number(u.combatIndex), role: String(u.role ?? '').toUpperCase() }))
     .filter((u) => Number.isInteger(u.combatIndex) && u.combatIndex >= 0);
 
+  const allyDead = snapshotUnits
+    .filter((u) => String(u.team ?? '') === 'ALLY' && (u.isDead === true || u.alive === false))
+    .map((u) => Number(u.combatIndex))
+    .filter((ci) => Number.isInteger(ci) && ci >= 0);
+
   const enemyFrontAlive = enemyAlive.filter((u) => u.role === 'CAC').map((u) => u.combatIndex);
   const enemyBackAlive = enemyAlive.filter((u) => u.role !== 'CAC').map((u) => u.combatIndex);
   const enemyAllAlive = enemyAlive.map((u) => u.combatIndex);
@@ -577,31 +967,42 @@ const manualDecisionContext = computed(() => {
     ? enemyAllAlive
     : (enemyFrontAlive.length > 0 ? enemyFrontAlive : enemyBackAlive);
 
+  /** Priorité des cibles pour le ciblage manuel : du plus prioritaire au moins. */
+  const TARGET_PRIORITY: string[] = [
+    'ALLY_DEAD_SINGLE', 'ENEMY_SINGLE', 'ALLY_SINGLE', 'TEAM_ENEMY', 'TEAM_ALLY', 'LOWEST_HP_ALLY', 'SELF'
+  ];
+
   const effectsByTarget = Array.isArray(nextEvent.effectsResultsByTarget)
     ? (nextEvent.effectsResultsByTarget as Array<{ effect?: string; effectConfig?: Record<string, unknown>; results?: Array<Record<string, unknown>> }>)
     : [];
-  const hasDamageEffect = effectsByTarget.some((e) => String(e.effect ?? '').toUpperCase() === 'DAMAGE');
-  const hasTeamAllyTarget = effectsByTarget.some((e) => String(e.effectConfig?.target ?? '').toUpperCase() === 'TEAM_ALLY');
-  const hasTeamEnemyTarget = effectsByTarget.some((e) => String(e.effectConfig?.target ?? '').toUpperCase() === 'TEAM_ENEMY');
-  const hasSingleEnemyDamage = effectsByTarget.some((e) => {
-    if (String(e.effect ?? '').toUpperCase() !== 'DAMAGE') return false;
-    const mode = String(e.effectConfig?.target ?? '').toUpperCase();
-    if (mode === 'TEAM_ENEMY' || mode === 'TEAM_ALLY') return false;
-    return true;
-  });
+  const effectTargets = effectsByTarget
+    .map((e) => String(e.effectConfig?.target ?? '').toUpperCase().trim())
+    .filter((t) => t.length > 0);
+  const preferredTarget = TARGET_PRIORITY.find((p) => effectTargets.includes(p));
 
   const expectedTargetRaw = (nextEvent.target ?? nextEvent.targetId ?? (Array.isArray(nextEvent.targets) ? nextEvent.targets[0] : null)) as string | number | null;
   const expectedTargetCombatIndex = getCombatIndexSafe(expectedTargetRaw);
   const forcedProvokeTargets = isProvoked && expectedTargetCombatIndex != null ? [expectedTargetCombatIndex] : [];
-  const skillTargetIndexes = !hasDamageEffect
-    ? [...enemyAllAlive, ...allyAllAlive]
-    : hasTeamAllyTarget
-      ? allyAllAlive
-      : hasTeamEnemyTarget
-        ? enemyAllAlive
-        : hasSingleEnemyDamage
-          ? basicTargetIndexes
-          : enemyAllAlive;
+
+  let skillTargetIndexes: number[];
+  if (preferredTarget === 'ALLY_DEAD_SINGLE') {
+    skillTargetIndexes = allyDead;
+  } else if (preferredTarget === 'ENEMY_SINGLE') {
+    skillTargetIndexes = basicTargetIndexes;
+  } else if (preferredTarget === 'ALLY_SINGLE') {
+    skillTargetIndexes = allyAllAlive;
+  } else if (preferredTarget === 'TEAM_ENEMY') {
+    skillTargetIndexes = enemyAllAlive;
+  } else if (preferredTarget === 'TEAM_ALLY') {
+    skillTargetIndexes = allyAllAlive;
+  } else if (preferredTarget === 'LOWEST_HP_ALLY') {
+    skillTargetIndexes = allyAllAlive;
+  } else if (preferredTarget === 'SELF') {
+    const actorCi = actorResolved.combatIndex ?? 0;
+    skillTargetIndexes = actorCi >= 0 ? [actorCi] : [];
+  } else {
+    skillTargetIndexes = [...enemyAllAlive, ...allyAllAlive];
+  }
 
   const basicTargets = Array.from(new Set(isProvoked ? forcedProvokeTargets : basicTargetIndexes)).map((ci) => ({
     combatIndex: ci,
@@ -615,15 +1016,21 @@ const manualDecisionContext = computed(() => {
   const ci = actorResolved.combatIndex ?? 0;
   const sizeA = initialUnitsForBattlefield.value.filter((u) => u.side === 'A').length;
   const rawUnit = ci < sizeA ? (engineTeamA.value as Record<string, unknown>[])?.[ci] : (engineTeamB.value as Record<string, unknown>[])?.[ci - sizeA];
-  const desc = (actorUnit as { skillDescription?: string })?.skillDescription?.trim()
-    || (rawUnit && typeof rawUnit === 'object' && rawUnit.skill_data
-      ? buildSkillDescriptionFromSkillData(rawUnit.skill_data as Record<string, unknown>)
-      : null);
+  const sd = rawUnit && typeof rawUnit === 'object' && rawUnit.skill_data
+    ? (rawUnit.skill_data as Record<string, unknown>)
+    : null;
+  const rawActorDesc = (actorUnit as { skillDescription?: string })?.skillDescription?.trim();
+  const desc = rawActorDesc
+    ? normalizeSkillDescription(rawActorDesc)
+    : sd
+      ? normalizeSkillDescription(getSkillTooltipPlainText(sd) || '')
+      : null;
 
   return {
     actorName: actorUnit.name,
     actorCombatIndex: actorResolved.combatIndex,
     skillDescription: desc ?? null,
+    skillSlots: null,
     expectedTargetCombatIndex,
     skillAvailable: actorHasSkill && actorSkillCd <= 0 && !isStunned && !isProvoked && !actorDebuffs.some((d) => String(d?.type ?? '').toUpperCase() === 'SILENCE'),
     skillInCooldown: actorHasSkill && actorSkillCd > 0,
@@ -640,6 +1047,22 @@ const manualDecisionContext = computed(() => {
     return null;
   }
 });
+
+const manualSkillSlotsMulti = computed(() => {
+  const n = manualDecisionContext.value?.skillSlots?.length ?? 0;
+  return n > 1;
+});
+
+function manualSlotCooldownText(slot: { skillCd?: number }) {
+  const cd = Math.max(0, Number(slot.skillCd ?? 0));
+  if (cd <= 0) return '';
+  return ` (${cd})`;
+}
+
+function manualSlotTooltipText(slot: { description?: string }) {
+  const d = slot.description != null ? String(slot.description).trim() : '';
+  return d;
+}
 
 const showManualDecisionPanel = computed(() =>
   hasReplayMode.value &&
@@ -704,7 +1127,19 @@ const manualValidTargets = computed(() => {
   const effectiveChoice = manualActionChoice.value || 'BASIC';
   let candidates: Array<{ combatIndex: number; name: string }> = [];
   if (effectiveChoice === 'BASIC') candidates = ctx.basicTargets;
-  else if (effectiveChoice === 'SKILL') candidates = ctx.skillTargets;
+  else if (effectiveChoice === 'SKILL') {
+    const slots = ctx.skillSlots;
+    if (slots && slots.length > 1) {
+      const key = manualSelectedSkillKey.value;
+      if (!key) candidates = [];
+      else {
+        const slot = slots.find((s) => String(s.skillKey) === String(key));
+        candidates = Array.isArray(slot?.skillTargets) ? slot.skillTargets : [];
+      }
+    } else {
+      candidates = ctx.skillTargets;
+    }
+  }
   // Le replay est pré-calculé côté moteur: on n'autorise que la cible réellement jouée dans le prochain event.
   if (ctx.expectedTargetCombatIndex != null) {
     return candidates.filter((t) => t.combatIndex === ctx.expectedTargetCombatIndex);
@@ -817,11 +1252,86 @@ const hoveredUnitSkillDescription = computed(() => {
   if (idx == null || typeof idx !== 'number') return '';
   const initial = initialUnitsForBattlefield.value[idx];
   const fromInit = (initial as { skillDescription?: string })?.skillDescription?.trim();
-  if (fromInit) return fromInit;
+  if (fromInit) return normalizeSkillDescription(fromInit);
   const sizeA = initialUnitsForBattlefield.value.filter((u) => u.side === 'A').length;
   const raw = idx < sizeA ? (engineTeamA.value as Record<string, unknown>[])?.[idx] : (engineTeamB.value as Record<string, unknown>[])?.[idx - sizeA];
-  return (raw && typeof raw === 'object' && raw.skill_data) ? buildSkillDescriptionFromSkillData(raw.skill_data as Record<string, unknown>) : '';
+  if (raw && typeof raw === 'object' && raw.skill_data) {
+    const t = getSkillTooltipPlainText(raw.skill_data as Record<string, unknown>);
+    return t ? normalizeSkillDescription(t) : '';
+  }
+  return '';
 });
+
+/** Description de la spécialisation choisie (A ou B) pour l'unité survolée. Affichée uniquement si l'unité a une spécialisation. */
+const hoveredUnitSpecDescription = computed(() => {
+  const unit = hoveredUnit.value;
+  if (!unit) return '';
+  const idx = (unit as { combatIndex?: number }).combatIndex;
+  if (idx == null || typeof idx !== 'number') return '';
+  const sizeA = initialUnitsForBattlefield.value.filter((u) => u.side === 'A').length;
+  const raw = idx < sizeA ? (engineTeamA.value as Record<string, unknown>[])?.[idx] : (engineTeamB.value as Record<string, unknown>[])?.[idx - sizeA];
+  if (!raw || typeof raw !== 'object') return '';
+  const specRaw = (raw as { specialization?: string | null }).specialization;
+  const spec = specRaw != null && String(specRaw).trim() !== '' ? String(specRaw).trim().toUpperCase() : null;
+  if (spec !== 'A' && spec !== 'B') return '';
+  const skillData = (raw as { skill_data?: unknown }).skill_data;
+  if (!skillData || typeof skillData !== 'object') return '';
+  const desc = (skillData as Record<string, unknown>).description;
+  if (!desc || typeof desc !== 'object') return '';
+  const d = desc as Record<string, unknown>;
+  const text = spec === 'A' ? d.specA : d.specB;
+  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : '';
+});
+
+/** Couleur du nom de l'unité selon sa rareté (tooltip). Fallback sur initialUnits si uiUnit n'a pas rarity. */
+const hoveredUnitRarityStyle = computed(() => {
+  const u = hoveredUnit.value;
+  if (!u) return {};
+  let r = String((u as { rarity?: string }).rarity || '').toLowerCase();
+  if (!r) {
+    const idx = (u as { combatIndex?: number }).combatIndex;
+    const initial = typeof idx === 'number' && idx >= 0 ? initialUnitsForBattlefield.value[idx] : null;
+    r = String((initial as { rarity?: string })?.rarity || 'common').toLowerCase();
+  }
+  const color = rarityColors[r] ?? rarityColors.common;
+  return { color };
+});
+
+/** Rôle affiché (Tank, DPS, Soutien, Assassin) pour l'unité survolée. */
+const hoveredUnitRoleLabel = computed(() => {
+  const u = hoveredUnit.value;
+  if (!u) return '';
+  const hu = u as { unitRole?: string | null; archetype?: string | null; combatIndex?: number };
+  let unitRole = hu.unitRole ?? null;
+  let archetype = hu.archetype ?? null;
+  if (!unitRole && !archetype) {
+    const idx = hu.combatIndex;
+    const initial = typeof idx === 'number' && idx >= 0 ? initialUnitsForBattlefield.value[idx] : null;
+    const init = initial as { role?: string; archetype?: string } | null;
+    if (init) {
+      unitRole = init.role ?? null;
+      archetype = init.archetype ?? null;
+    }
+  }
+  return combatRoleLabel(unitRole, archetype);
+});
+
+/** Fatigue de l'unité survolée (équipe joueur uniquement, side A).
+ *  En guerre de guilde, la fatigue n'est pas prise en compte : toujours 0 pour le camp A. */
+const hoveredUnitFatigue = computed(() => {
+  const u = hoveredUnit.value;
+  if (!u) return null;
+  const hu = u as { fatigue?: number; team?: string; combatIndex?: number };
+  const idx = hu.combatIndex;
+  const initial = typeof idx === 'number' && idx >= 0 ? initialUnitsForBattlefield.value[idx] : null;
+  const init = initial as { fatigue?: number; side?: string } | null;
+  if (init?.side !== 'A') return null;
+  if (activePendingBattle.value?.battleType === 'guild_war') return 0;
+  if (hu.fatigue != null) return hu.fatigue;
+  if (init?.fatigue != null) return init.fatigue;
+  return null;
+});
+
 /** combatUnits = ordre exact moteur (teamA puis teamB), avec combatIndex. */
 const combatUnitsWithIndex = computed(() =>
   initialUnitsForBattlefield.value.map((u, i) => ({ ...u, combatIndex: i }))
@@ -882,6 +1392,18 @@ type BattleLogEvent = {
 const CAMPAIGN_LAST_PRESET_KEY = 'nexus_campaign_last_preset_index';
 const presets = ref<PresetItem[]>([]);
 const selectedPresetIndex = ref<number | null>(null);
+/** Map user_unit_id -> fatigue (depuis /collection) pour afficher la fatigue moyenne des presets */
+const collectionFatigueByUnitId = ref<Map<number, number>>(new Map());
+/** Unités non utilisables au combat (0 PV effectifs, blessure, etc.) — clé = user_unit_id */
+const collectionCannotFightByUnitId = ref<Map<number, boolean>>(new Map());
+
+function collectionUnitUnfit(u: Record<string, unknown>): boolean {
+  const inj = Number(u.injury_level ?? 0);
+  const knocked = Number(u.is_injured ?? 0);
+  if (knocked === 1 || inj > 0) return true;
+  const maxHp = Number(u.maxHp ?? u.base_hp ?? 0);
+  return !Number.isFinite(maxHp) || maxHp <= 0;
+}
 
 const hasAnyPreset = computed(() => presets.value.some((p) => (p.front_slots?.length || 0) + (p.back_slots?.length || 0) > 0));
 const presetsWithUnits = computed(() => presets.value.filter((p) => (p.front_slots?.length || 0) + (p.back_slots?.length || 0) > 0));
@@ -898,7 +1420,19 @@ const teamToUse = computed(() => {
   return props.campaignTeam || [];
 });
 
-const canFight = computed(() => (teamToUse.value?.length ?? 0) >= 1);
+const presetHasUnfitUnits = computed(() => {
+  const team = teamToUse.value;
+  if (!team?.length) return false;
+  const map = collectionCannotFightByUnitId.value;
+  return team.some((slot) => map.get(Number(slot.user_unit_id)) === true);
+});
+
+const presetUnfitMessage =
+  'Impossible de lancer le combat : au moins une unité du preset a des PV à zéro ou est blessée. Soigne tes unités dans la collection.';
+
+const canFight = computed(
+  () => (teamToUse.value?.length ?? 0) >= 1 && !presetHasUnfitUnits.value
+);
 
 const rewardsText = computed(() => {
   const r = battleResult.value?.rewardsGranted;
@@ -909,6 +1443,46 @@ const rewardsText = computed(() => {
   if (r.fragments) parts.push(`Fragments +${r.fragments}`);
   if (r.ascension_essence) parts.push(`Essence +${r.ascension_essence}`);
   return parts.length ? parts.join(' · ') : 'XP attribuée aux survivants.';
+});
+
+/** Lignes de récompenses à afficher dans l'encadré Victoire/Défaite (depuis battle/finalize). */
+const battleRewardsDisplay = computed((): string[] => {
+  const r = battleFinalizeResult.value;
+  if (!r || !showBattleResult.value) return [];
+  const lines: string[] = [];
+  const bt = String(r.battleType ?? '').toLowerCase();
+
+  if (bt === 'dungeon') {
+    const gold = Number(r.gold_gained ?? 0);
+    if (gold > 0) lines.push(`Or : +${gold}`);
+    if (r.artifact_drop) lines.push('Artefact');
+    if (r.dungeonLevelComplete) lines.push('Niveau terminé');
+  } else if (bt === 'campaign') {
+    const xp = Number(r.xp_per_unit ?? 0);
+    if (xp > 0) lines.push(`XP par unité : +${xp}`);
+    const rg = r.rewardsGranted as Record<string, number> | undefined;
+    if (rg) {
+      if (rg.credits) lines.push(`Crédits : +${rg.credits}`);
+      if (rg.cores) lines.push(`Cores : +${rg.cores}`);
+      if (rg.fragments) lines.push(`Fragments : +${rg.fragments}`);
+      if (rg.ascension_essence) lines.push(`Essence : +${rg.ascension_essence}`);
+    }
+    if (r.artifact_drop) lines.push('Artefact');
+  } else if (bt === 'pvp') {
+    const xp = Number(r.xp_granted ?? 0);
+    if (xp > 0) lines.push(`XP : +${xp}`);
+    const gold = Number(r.gold_gained ?? 0);
+    if (gold > 0) lines.push(`Or : +${gold}`);
+    const credits = Number(r.credits_gained ?? 0);
+    if (credits > 0) lines.push(`Crédits : +${credits}`);
+    if (r.artifact_drop) lines.push('Artefact');
+  } else {
+    /* Fallback : guilde, ou format inattendu — afficher au moins l'or */
+    const gold = Number(r.gold_gained ?? 0);
+    if (gold > 0) lines.push(`Or : +${gold}`);
+  }
+
+  return lines;
 });
 
 const resultClass = computed(() => {
@@ -969,14 +1543,53 @@ const normalizedBattleLog = computed(() => {
 
 function presetDisplayName(p: PresetItem): string {
   const name = (p.preset_name || '').trim();
-  return name || 'Preset ' + p.preset_index;
+  const base = name || 'Preset ' + p.preset_index;
+  const avgFatigue = averagePresetFatigue(p);
+  if (avgFatigue != null) return `${base} (fatigue moy. : ${Math.round(avgFatigue)})`;
+  return base;
+}
+
+function averagePresetFatigue(p: PresetItem): number | null {
+  const units = [...(p.front_units || []), ...(p.back_units || [])];
+  const unitIds = [...new Set([...(p.front_slots || []), ...(p.back_slots || [])])];
+  if (units.length === 0 && unitIds.length === 0) return null;
+  let sum = 0;
+  let count = 0;
+  if (units.length > 0) {
+    for (const u of units) {
+      const f = u.fatigue;
+      if (typeof f === 'number' || (f != null && !Number.isNaN(Number(f)))) {
+        sum += Number(f);
+        count++;
+      } else if (u.user_unit_id != null) {
+        const fromColl = collectionFatigueByUnitId.value.get(Number(u.user_unit_id));
+        if (fromColl != null) {
+          sum += fromColl;
+          count++;
+        }
+      }
+    }
+  }
+  if (count === 0 && unitIds.length > 0) {
+    const fatigueMap = collectionFatigueByUnitId.value;
+    for (const id of unitIds) {
+      const f = fatigueMap.get(Number(id));
+      if (f != null) {
+        sum += f;
+        count++;
+      }
+    }
+  }
+  if (count === 0) return null;
+  return sum / count;
 }
 
 function hydrateBattleState(payload: {
   id?: number;
-  battleType?: 'campaign' | 'pvp' | 'guild_war';
+  battleType?: 'campaign' | 'pvp' | 'guild_war' | 'dungeon';
   title?: string;
   result?: string;
+  finalizeData?: { team?: Array<{ user_unit_id: number }>; attackerUserUnitIds?: number[]; attackerUnitIds?: number[] };
   battleLog?: unknown[];
   initialUnits?: BattlefieldUnit[];
   replay?: { seed?: number; frames: ReplayFrame[] };
@@ -986,28 +1599,45 @@ function hydrateBattleState(payload: {
     actorName: string;
     skillAvailable: boolean;
     skillCd?: number;
+    mainSkillDescription?: string;
+    skillSlots?: DecisionSkillSlot[] | null;
     basicTargets: Array<{ combatIndex: number; name: string }>;
     skillTargets: Array<{ combatIndex: number; name: string }>;
   } | null;
   enemyTeamLabel?: string;
   interactiveSession?: { seed: number; bossModifier?: unknown; teamA: unknown[]; teamB: unknown[] };
 }) {
+  hasFinalized.value = false;
+  battleFinalizeResult.value = null;
   // Extraire et stocker les paramètres du moteur local
   const session = payload.interactiveSession;
+  const pPayload = payload as { chapter?: number; stage?: number; mode?: string };
+  const ch10St10 = Number(pPayload.chapter) === 10 && Number(pPayload.stage) === 10;
+  const bossModifierFallback = ch10St10
+    ? { resurrectOnce: true, resurrectThenDot: pPayload.mode === 'hard' }
+    : null;
+  // Pour ch10 st10 : garantir resurrectOnce même si le payload a perdu bossModifier
+  const sessionMod = session?.bossModifier as Record<string, unknown> | null | undefined;
+  const effectiveBossModifier = ch10St10 && !sessionMod?.resurrectOnce
+    ? bossModifierFallback
+    : (session?.bossModifier ?? bossModifierFallback);
   if (session?.teamA?.length && session?.teamB?.length) {
     engineTeamA.value = session.teamA;
     engineTeamB.value = session.teamB;
     engineSeed.value = Number(session.seed) || (Date.now() % 2147483647);
-    engineBossModifier.value = session.bossModifier ?? null;
+    engineBossModifier.value = effectiveBossModifier;
     combatDecisions.value = [];
   } else {
     engineTeamA.value = [];
     engineTeamB.value = [];
+    engineBossModifier.value = null;
   }
 
   activePendingBattle.value = payload.id && payload.battleType
     ? { id: payload.id, battleType: payload.battleType, title: payload.title, enemyTeamLabel: payload.enemyTeamLabel }
     : null;
+  const p = payload as { finalizeData?: { team?: Array<{ user_unit_id: number }>; attackerUserUnitIds?: number[]; attackerUnitIds?: number[] } };
+  finalizeDataRef.value = p?.finalizeData ?? null;
   battleError.value = '';
 
   const hasLocalEngine = engineTeamA.value.length > 0 && engineTeamB.value.length > 0;
@@ -1058,18 +1688,30 @@ function runEngineLocally(isFirstRun = false) {
   if (!engineTeamA.value.length || !engineTeamB.value.length) return;
   const prevFrameIdx = replayFrameIndex.value;
 
+  // Ch10 st10 : garantir bossModifier (résurrection) même si absent du payload
+  let bossMod = engineBossModifier.value as { resurrectOnce?: boolean; resurrectThenDot?: boolean } | null | undefined;
+  if (!bossMod?.resurrectOnce && props.chapter === 10 && props.stage === 10) {
+    bossMod = props.mode === 'hard'
+      ? { resurrectOnce: true, resurrectThenDot: true }
+      : { resurrectOnce: true };
+  }
   const log = (simulateBattle as (a: unknown[], b: unknown[], c: unknown) => {
     summary?: { winner?: string; totalTurns?: number; totalRounds?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number };
     battleLog?: unknown[];
     replay?: { seed?: number; frames: ReplayFrame[] };
     decisionRequest?: {
-      actorCombatIndex: number; actorName: string; skillAvailable: boolean; skillCd?: number;
+      actorCombatIndex: number;
+      actorName: string;
+      skillAvailable: boolean;
+      skillCd?: number;
+      mainSkillDescription?: string;
+      skillSlots?: DecisionSkillSlot[] | null;
       basicTargets: Array<{ combatIndex: number; name: string }>;
       skillTargets: Array<{ combatIndex: number; name: string }>;
     } | null;
   })(engineTeamA.value, engineTeamB.value, {
     seed: engineSeed.value,
-    bossModifier: engineBossModifier.value || undefined,
+    bossModifier: bossMod || undefined,
     interactive: true,
     decisions: [...combatDecisions.value]
   });
@@ -1095,6 +1737,8 @@ function runEngineLocally(isFirstRun = false) {
   // Réinitialiser les champs de saisie de décision
   manualActionChoice.value = null;
   manualTargetChoice.value = null;
+  manualSelectedSkillKey.value = null;
+  manualSkillHoverKey.value = null;
   manualDecisionError.value = '';
 
   nextTick(() => {
@@ -1146,7 +1790,7 @@ watch(
 watch(
   () => [props.show, props.chapter, props.stage, props.mode] as const,
   async ([show, ch, st, mode]) => {
-    if (props.standaloneReplay || props.pendingBattle) return;
+    if (props.standaloneReplay || props.pendingBattle || props.dungeonMode) return;
     battleResult.value = null;
     battleError.value = '';
     if (!show || !ch || !st) {
@@ -1163,15 +1807,34 @@ watch(
     }
     if (show) {
       try {
-        const { data } = await api.get('/team/presets');
-        presets.value = data.presets || [];
-        const withUnits = (data.presets || []).filter((p: PresetItem) => ((p.front_slots?.length || 0) + (p.back_slots?.length || 0)) > 0);
+        const [presetsRes, collectionRes] = await Promise.all([
+          api.get('/team/presets'),
+          api.get('/collection').catch(() => ({ data: { units: [] } }))
+        ]);
+        presets.value = presetsRes.data?.presets || [];
+        const units = Array.isArray(collectionRes.data?.units) ? collectionRes.data.units : [];
+        const map = new Map<number, number>();
+        const unfit = new Map<number, boolean>();
+        for (const u of units) {
+          const raw = u as Record<string, unknown>;
+          const id = raw?.user_unit_id ?? raw?.id;
+          const f = raw?.fatigue;
+          if (id != null && (typeof f === 'number' || (f != null && !Number.isNaN(Number(f))))) {
+            map.set(Number(id), Math.min(100, Math.max(0, Number(f))));
+          }
+          if (id != null) {
+            unfit.set(Number(id), collectionUnitUnfit(raw));
+          }
+        }
+        collectionFatigueByUnitId.value = map;
+        collectionCannotFightByUnitId.value = unfit;
+        const withUnits = (presetsRes.data?.presets || []).filter((p: PresetItem) => ((p.front_slots?.length || 0) + (p.back_slots?.length || 0)) > 0);
         const lastUsed = (() => {
           try {
             const s = localStorage.getItem(CAMPAIGN_LAST_PRESET_KEY);
             if (s != null) {
               const n = parseInt(s, 10);
-              if (!Number.isNaN(n) && withUnits.some((p) => p.preset_index === n)) return n;
+              if (!Number.isNaN(n) && withUnits.some((p: PresetItem) => p.preset_index === n)) return n;
             }
           } catch {}
           return null;
@@ -1179,6 +1842,8 @@ watch(
         selectedPresetIndex.value = lastUsed ?? (withUnits.length ? withUnits[0].preset_index : null);
       } catch {
         presets.value = [];
+        collectionFatigueByUnitId.value = new Map();
+        collectionCannotFightByUnitId.value = new Map();
         selectedPresetIndex.value = null;
       }
     }
@@ -1249,6 +1914,7 @@ function initBattlefieldHp() {
   uiUnits.clear();
   for (let i = 0; i < units.length; i++) {
     const u = units[i];
+    const initU = u as { archetype?: string; role?: string; fatigue?: number };
     next[u.id] = u.maxHp;
     uiUnits.set(u.id, {
       id: u.id,
@@ -1257,6 +1923,9 @@ function initBattlefieldHp() {
       element: u.element,
       team: u.side === 'A' ? 'ALLY' : 'ENEMY',
       role: u.position === 'front' ? 'CAC' : 'DISTANCE',
+      unitRole: initU.role ?? null,
+      archetype: initU.archetype ?? null,
+      fatigue: initU.fatigue ?? 0,
       combatIndex: i,
       hp: u.maxHp,
       maxHp: u.maxHp,
@@ -1267,7 +1936,8 @@ function initBattlefieldHp() {
       attack: u.attack,
       defense: u.defense,
       speed: u.speed,
-      level: u.level
+      level: u.level,
+      rarity: (u as { rarity?: string }).rarity ?? 'common'
     });
   }
   battlefieldHp.value = next;
@@ -1300,6 +1970,7 @@ function applyReplaySnapshotToBattlefield(snapshot: ReplaySnapshot | null) {
     const raw = u as Record<string, unknown>;
     const combatIdx = u.combatIndex ?? 0;
     const initialUnit = (combatIdx >= 0 && combatIdx < initial.length ? initial[combatIdx] : null) ?? byId.get(u.id);
+    const initU = initialUnit as { archetype?: string; role?: string; fatigue?: number } | null;
     uiUnits.set(u.id, {
       id: u.id,
       name: u.name,
@@ -1307,6 +1978,9 @@ function applyReplaySnapshotToBattlefield(snapshot: ReplaySnapshot | null) {
       element: raw.element ?? initialUnit?.element ?? '',
       team: raw.team ?? (initialUnit?.side === 'A' ? 'ALLY' : initialUnit?.side === 'B' ? 'ENEMY' : ''),
       role: raw.role ?? (initialUnit?.position === 'front' ? 'CAC' : 'DISTANCE'),
+      unitRole: (raw.unitRole as string) ?? initU?.role ?? null,
+      archetype: (raw.archetype as string) ?? initU?.archetype ?? null,
+      fatigue: (raw.fatigue as number) ?? initU?.fatigue ?? 0,
       combatIndex: u.combatIndex ?? 0,
       hp: u.hp,
       maxHp: u.hpMax ?? (raw.maxHp as number) ?? initialUnit?.maxHp ?? 100,
@@ -1317,7 +1991,8 @@ function applyReplaySnapshotToBattlefield(snapshot: ReplaySnapshot | null) {
       attack: (raw.attack as number) ?? (initialUnit as Record<string, unknown>)?.attack,
       defense: (raw.defense as number) ?? (initialUnit as Record<string, unknown>)?.defense,
       speed: (raw.speed as number) ?? (initialUnit as Record<string, unknown>)?.speed,
-      level: (raw.level as number) ?? (initialUnit as Record<string, unknown>)?.level
+      level: (raw.level as number) ?? (initialUnit as Record<string, unknown>)?.level,
+      rarity: (raw.rarity as string) ?? (initialUnit as Record<string, unknown>)?.rarity ?? 'common'
     });
   }
   if (typeof console !== 'undefined' && console.log) {
@@ -1464,6 +2139,34 @@ function expandSkillEventsToFlat(events: Record<string, unknown>[]): Record<stri
                 before: r.before ?? null,
                 after: r.after ?? null,
                 baseCooldown: r.baseCooldown ?? null,
+                skillId,
+                meta: cfg
+              });
+              continue;
+            }
+            if (eff === 'CD_UP' && r.applied) {
+              flat.push({
+                type: 'CD_UP',
+                sourceId: actor,
+                targetId,
+                value: r.delta ?? (cfg as Record<string, unknown>)?.value ?? 0,
+                before: r.before ?? null,
+                after: r.after ?? null,
+                delta: r.delta ?? null,
+                skillId,
+                meta: cfg
+              });
+              continue;
+            }
+            if (eff === 'CD_DOWN' && r.applied) {
+              flat.push({
+                type: 'CD_DOWN',
+                sourceId: actor,
+                targetId,
+                value: r.delta ?? (cfg as Record<string, unknown>)?.value ?? 0,
+                before: r.before ?? null,
+                after: r.after ?? null,
+                delta: r.delta ?? null,
                 skillId,
                 meta: cfg
               });
@@ -1969,6 +2672,12 @@ function rawEventToLogEntries(event: Record<string, unknown>): Array<{ text: str
           } else if (eff === 'SET_SKILL_COOLDOWN_MAX' && r.applied) {
             const value = Number((r as Record<string, unknown>).after ?? (r as Record<string, unknown>).baseCooldown ?? 0);
             out.push({ text: `${srcName} remet le temps de recharge de ${tgtName} à ${value}.`, color: LOG_COLORS.debuff, team });
+          } else if (eff === 'CD_UP' && r.applied) {
+            const d = Number((r as Record<string, unknown>).delta ?? 0);
+            out.push({ text: `${srcName} retarde le temps de recharge de ${tgtName} de ${d} tour(s).`, color: LOG_COLORS.debuff, team });
+          } else if (eff === 'CD_DOWN' && r.applied) {
+            const d = Number((r as Record<string, unknown>).delta ?? 0);
+            out.push({ text: `${srcName} réduit le temps de recharge de ${tgtName} de ${d} tour(s).`, color: LOG_COLORS.buff, team });
           }
         }
       }
@@ -2085,7 +2794,7 @@ function startManualAutoFlow() {
   }, REPLAY_TICK_MS);
 }
 
-function selectManualAction(action: ManualAction) {
+function selectManualAction(action: ManualAction, skillKey?: string | null) {
   manualDecisionError.value = '';
   const ctx = manualDecisionContext.value;
   if (action === 'SKILL' && (!ctx || !ctx.skillAvailable)) {
@@ -2093,12 +2802,32 @@ function selectManualAction(action: ManualAction) {
     return;
   }
   manualActionChoice.value = action;
+  if (action === 'SKILL') {
+    const slots = ctx?.skillSlots;
+    if (slots && slots.length > 1) {
+      manualSelectedSkillKey.value = skillKey != null && String(skillKey).length ? String(skillKey) : null;
+    } else {
+      manualSelectedSkillKey.value = null;
+    }
+  } else {
+    manualSelectedSkillKey.value = null;
+  }
 }
 
-function submitInteractiveAction(action: ManualAction, targetCombatIndex: number) {
+function submitInteractiveAction(action: ManualAction, targetCombatIndex: number, skillKey?: string)
+{
   if (!activePendingBattle.value?.id) return;
-  combatDecisions.value = [...combatDecisions.value, { action, targetCombatIndex }];
-  runEngineLocally(false);
+  const entry: { action: string; targetCombatIndex: number; skillKey?: string } = { action, targetCombatIndex };
+  if (skillKey != null && String(skillKey).length) entry.skillKey = String(skillKey);
+  combatDecisions.value = [...combatDecisions.value, entry];
+  try {
+    runEngineLocally(false);
+  } catch (e: unknown) {
+    const err = e as Error & { response?: { data?: { message?: string; error?: string } } };
+    const msg = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Impossible de jouer cette action.';
+    manualDecisionError.value = msg;
+    throw e;
+  }
 }
 
 function performAutoDecision() {
@@ -2107,14 +2836,45 @@ function performAutoDecision() {
   if (!dr || !ctx || ctx.isStunned || ctx.isProvoked || !hasReplayMode.value) return;
   if (replayFrameIndex.value < replayFrames.value.length - 1) return;
   const actionRaw = String((dr as { suggestedAction?: string })?.suggestedAction ?? 'BASIC').toUpperCase();
-  const action: ManualAction = actionRaw === 'SKILL' && ctx.skillAvailable ? 'SKILL' : 'BASIC';
-  const pool = action === 'SKILL' ? ctx.skillTargets : ctx.basicTargets;
+  // Préférer la compétence si disponible, sinon attaque de base
+  let action: ManualAction = actionRaw === 'SKILL' && ctx.skillAvailable ? 'SKILL' : 'BASIC';
+  let pool: Array<{ combatIndex: number; name: string }> = [];
+  let autoSkillKey: string | undefined;
+  if (action === 'SKILL') {
+    const slots = ctx.skillSlots;
+    if (slots && slots.length > 1) {
+      const sorted = [...slots].sort((a, b) => Number(a.priority ?? 999) - Number(b.priority ?? 999));
+      for (const s of sorted) {
+        if (!s.ready) continue;
+        const st = (s.skillTargets ?? []).length ? s.skillTargets : [];
+        if (st && st.length > 0) {
+          pool = st as Array<{ combatIndex: number; name: string }>;
+          autoSkillKey = String(s.skillKey);
+          break;
+        }
+      }
+      if (!pool.length) {
+        action = 'BASIC';
+        pool = ctx.basicTargets;
+      }
+    } else {
+      pool = ctx.skillTargets;
+    }
+  } else {
+    pool = ctx.basicTargets;
+  }
+  // Si compétence choisie mais aucune cible valide (ex: résurrection sans allié mort), repli sur attaque de base
+  if (action === 'SKILL' && (!pool || pool.length === 0)) {
+    action = 'BASIC';
+    pool = ctx.basicTargets;
+    autoSkillKey = undefined;
+  }
   const target = ctx.expectedTargetCombatIndex != null
     ? pool.find((t) => t.combatIndex === ctx.expectedTargetCombatIndex)?.combatIndex
     : pool[0]?.combatIndex;
   if (target == null) return;
   manualDecisionError.value = '';
-  submitInteractiveAction(action, target);
+  submitInteractiveAction(action, target, autoSkillKey);
 }
 
 async function confirmManualDecision() {
@@ -2126,6 +2886,15 @@ async function confirmManualDecision() {
   }
   if (manualActionChoice.value === 'SKILL' && !ctx.skillAvailable) {
     manualDecisionError.value = 'Compétence indisponible.';
+    return;
+  }
+  if (
+    manualActionChoice.value === 'SKILL' &&
+    ctx.skillSlots &&
+    ctx.skillSlots.length > 1 &&
+    !manualSelectedSkillKey.value
+  ) {
+    manualDecisionError.value = 'Choisis une compétence (1 ou 2).';
     return;
   }
   if (manualTargetChoice.value == null) {
@@ -2143,11 +2912,17 @@ async function confirmManualDecision() {
   manualActionChoice.value = null;
   manualTargetChoice.value = null;
   manualSkillHover.value = false;
+  manualSkillHoverKey.value = null;
+  const skillKeyForSubmit =
+    selectedAction === 'SKILL' && ctx.skillSlots && ctx.skillSlots.length > 1
+      ? manualSelectedSkillKey.value ?? undefined
+      : undefined;
+  manualSelectedSkillKey.value = null;
   if (battleResult.value?.decisionRequest && activePendingBattle.value?.id && selectedAction && selectedTarget != null) {
     try {
-      await submitInteractiveAction(selectedAction, selectedTarget);
+      await submitInteractiveAction(selectedAction, selectedTarget, skillKeyForSubmit);
     } catch (e: any) {
-      manualDecisionError.value = e?.response?.data?.message || e?.response?.data?.error || 'Impossible de jouer cette action.';
+      manualDecisionError.value = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Impossible de jouer cette action.';
     }
     return;
   }
@@ -2182,6 +2957,8 @@ watch([replayFrameIndex, hasReplayMode], () => {
   manualDecisionError.value = '';
   if (!battleResult.value?.decisionRequest) manualActionChoice.value = null;
   manualTargetChoice.value = null;
+  manualSelectedSkillKey.value = null;
+  manualSkillHoverKey.value = null;
   nextTick(() => startManualAutoFlow());
 });
 
@@ -2189,11 +2966,13 @@ watch(manualDecisionContext, (ctx) => {
   if (!ctx) return;
   if (ctx.isStunned || ctx.isProvoked) {
     manualActionChoice.value = null;
+    manualSelectedSkillKey.value = null;
     return;
   }
   // Par défaut, on reste sur attaque de base pour afficher immédiatement les cibles valides.
   if (!manualActionChoice.value) {
     manualActionChoice.value = 'BASIC';
+    manualSelectedSkillKey.value = null;
   }
 });
 
@@ -2703,7 +3482,7 @@ const debuffConfig: Record<string, { icon: string; label: string; description: s
   SLOW: { icon: '⏳', label: 'Ralentissement', description: 'Réduit la vitesse de 20%' },
   SILENCE: { icon: '🔇', label: 'Silence', description: "Empêche l'utilisation des compétences" },
   STUN: { icon: '★', label: 'Étourdissement', description: 'Passe son tour' },
-  PROVOKE: { icon: '🔥', label: 'Provocation', description: 'Force les attaques sur cette unité' },
+  PROVOKE: { icon: '🎯', label: 'Provocation', description: 'Force les attaques sur cette unité' },
   ANTI_HEAL: { icon: '💔', label: 'Anti-Soin', description: 'Empêche tout soin reçu' },
   ANTI_SHIELD: { icon: '🛡', label: 'Anti-Bouclier', description: 'Empêche tout nouveau bouclier' },
   ANTI_BUFF: { icon: '✕', label: 'Anti-Buff', description: "Empêche l'obtention de nouveaux buffs" },
@@ -2721,11 +3500,9 @@ const buffConfig: Record<string, { icon: string; label: string; description: str
   ATK_UP: { icon: '⚔', label: 'ATQ +50%', description: "Augmente l'attaque de 50%" },
   DEF_UP: { icon: '🛡', label: 'DEF +50%', description: 'Augmente la défense de 50%' },
   SPEED: { icon: '⚡', label: 'Vitesse', description: 'Augmente la vitesse de 30%' },
-  SPEED_UP: { icon: '⚡', label: 'Vitesse +30%', description: 'Augmente la vitesse de 30%' },
   CRIT_UP: { icon: '💥', label: 'Critique', description: 'Augmente les dégâts critiques' },
   SHIELD: { icon: '🛡', label: 'Bouclier', description: 'Absorbe les dégâts (anneau bleu)' },
   REGEN: { icon: '💚', label: 'Régénération', description: 'Soigne au début du tour (cumulable)' },
-  HEAL_OVER_TIME: { icon: '💚', label: 'Régénération', description: 'Soins sur la durée' },
   STAT_STEAL_BUFF: { icon: '🧲', label: 'Vol de stats', description: 'Stat temporairement volée à un ennemi' },
   IMMUNITY: { icon: '✨', label: 'Immunité', description: 'Immunité aux débuffs (anneau blanc)' },
   INVINCIBILITY: { icon: '○', label: 'Invulnérable', description: 'Invulnérable aux dégâts (anneau pulsant)' },
@@ -2948,6 +3725,8 @@ function formatGroupedEffectApplyPhrase(sourceName: string, effectKey: string): 
   if (key === 'STEAL_STAT' || key === 'STAT_STEAL_DEBUFF') return { text: `${sourceName} vole des stats à plusieurs cibles.`, color: LOG_COLORS.passive };
   if (key === 'RESET_SKILL_COOLDOWN') return { text: `${sourceName} remet plusieurs temps de recharge à 0.`, color: LOG_COLORS.neutral };
   if (key === 'SET_SKILL_COOLDOWN_MAX') return { text: `${sourceName} remet plusieurs temps de recharge à leur valeur initiale.`, color: LOG_COLORS.debuff };
+  if (key === 'CD_UP') return { text: `${sourceName} retarde les temps de recharge adverses.`, color: LOG_COLORS.debuff };
+  if (key === 'CD_DOWN') return { text: `${sourceName} accélère les temps de recharge alliés.`, color: LOG_COLORS.buff };
   if (key === 'ATB_UP') return { text: `${sourceName} augmente l'ATB de toute son équipe.`, color: LOG_COLORS.buff };
   if (key === 'ATB_DOWN') return { text: `${sourceName} réduit l'ATB de l'équipe ennemie.`, color: LOG_COLORS.debuff };
 
@@ -3495,16 +4274,20 @@ function formatEvent(event: NormalizedBattleEvent | BattleLogEvent): string {
   }
 }
 
-async function closeAndNotify() {
+async function closeAndNotify(andFindOpponent = false) {
   if (loading.value) return;
-  if (activePendingBattle.value?.id) {
+  if (activePendingBattle.value?.id && !hasFinalized.value) {
     // Si le combat n'est pas terminé, le joueur perd automatiquement.
     const winner = battleResult.value?.result ?? 'loss';
     const battleId = activePendingBattle.value.id;
     const battleType = activePendingBattle.value.battleType;
+    const teamSlots = getTeamSlotsForStats();
+    const combatStats = teamSlots.length && battleResult.value?.battleLog
+      ? computeCombatStatsFromLog(battleResult.value.battleLog, teamSlots)
+      : {};
     loading.value = true;
     try {
-      const { data } = await api.post('/battle/finalize', { id: battleId, winner });
+      const { data } = await api.post('/battle/finalize', { id: battleId, winner, combatStats });
       if (data?.wallet) {
         window.dispatchEvent(new CustomEvent('wallet-updated', { detail: data.wallet }));
       }
@@ -3512,6 +4295,8 @@ async function closeAndNotify() {
         progressionAlreadySent.value = true;
         emit('campaign-updated');
       }
+      battleFinalizeResult.value = (data ?? {}) as Record<string, unknown>;
+      hasFinalized.value = true;
       emit('battle-finalized', data);
     } catch (e: any) {
       // On logge l'erreur mais on ferme quand même la modale pour ne pas bloquer le joueur.
@@ -3528,7 +4313,11 @@ async function closeAndNotify() {
   replayFrames.value = [];
   activePendingBattle.value = null;
   loading.value = false;
-  emit('close');
+  emit('close', { findOpponent: !!andFindOpponent });
+}
+
+function handlePvpFindOpponent() {
+  closeAndNotify(true);
 }
 
 function handleOverlayClose() {
@@ -3589,12 +4378,24 @@ function handleBeforeUnload() {
 }
 
 .battle-modal.battle-modal--combat .modal-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
   background: linear-gradient(180deg, #0b1c2c, #091423);
   border-radius: 18px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  /* Masquer toute barre de défilement pendant les animations combat */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.battle-modal.battle-modal--combat .modal-card::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .modal-header.modal-header--combat {
@@ -3626,6 +4427,50 @@ function handleBeforeUnload() {
   gap: 6px;
   flex-shrink: 0;
   flex-wrap: nowrap;
+}
+.campaign-quick-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.campaign-quick-btn:hover {
+  border-color: rgba(0, 255, 200, 0.5);
+  background: rgba(0, 255, 200, 0.12);
+  color: #00ffc8;
+}
+.campaign-btn-next {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+.campaign-btn-next:hover {
+  border-color: rgba(34, 197, 94, 0.7);
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+.campaign-quick-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 6px;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+.campaign-quick-btn:hover {
+  background: rgba(30, 41, 59, 0.9);
+  border-color: rgba(0, 255, 200, 0.4);
+}
+.campaign-btn-next {
+  color: #22c55e;
+}
+.campaign-btn-next:hover {
+  background: rgba(34, 197, 94, 0.15);
+}
+.campaign-btn-replay:hover {
+  background: rgba(59, 130, 246, 0.15);
 }
 .modal-header--combat .round-counter {
   font-size: 12px;
@@ -3688,6 +4533,20 @@ function handleBeforeUnload() {
 .modal-header--combat .legend-btn:hover {
   border-color: rgba(0, 255, 200, 0.4);
   color: #a5f3fc;
+}
+.modal-header--combat .abandon-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  color: #fda4af;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.modal-header--combat .abandon-btn:hover {
+  border-color: rgba(248, 113, 113, 0.6);
+  color: #fecdd3;
+  background: rgba(248, 113, 113, 0.1);
 }
 .modal-header--combat .logs-toggle-btn {
   font-size: 12px;
@@ -3765,12 +4624,20 @@ function handleBeforeUnload() {
   min-width: 0;
 }
 .stage-result {
-  display: inline-block;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
   padding: 6px 14px;
   border-radius: 8px;
   font-weight: 600;
   font-size: 0.95rem;
   margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.stage-result-loading {
+  font-weight: 500;
+  font-size: 0.88rem;
+  opacity: 0.9;
 }
 .stage-result.victory {
   background: #1c6e45;
@@ -3780,6 +4647,23 @@ function handleBeforeUnload() {
   background: #6e1c1c;
   color: #ffb3b3;
 }
+.stage-result.draw {
+  background: #4a5568;
+  color: #e2e8f0;
+}
+.stage-result-rewards {
+  margin-top: 6px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  opacity: 0.95;
+}
+.stage-result-reward-line {
+  line-height: 1.4;
+}
+.stage-result-reward-line + .stage-result-reward-line {
+  margin-top: 2px;
+}
+
 .battle-lock-message {
   margin-bottom: 10px;
   font-size: 0.88rem;
@@ -3875,6 +4759,9 @@ function handleBeforeUnload() {
 .battle-modal-content {
   width: 100%;
   max-width: 1400px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3884,7 +4771,9 @@ function handleBeforeUnload() {
 .modal-card.stage-modal.modal-card--combat {
   max-width: none;
   width: 100%;
-  max-height: 95vh;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -3931,7 +4820,8 @@ function handleBeforeUnload() {
   .modal-header--combat .close-btn,
   .modal-header--combat .legend-btn,
   .modal-header--combat .logs-toggle-btn,
-  .modal-header--combat .auto-mode-btn {
+  .modal-header--combat .auto-mode-btn,
+  .modal-header--combat .abandon-btn {
     min-height: 28px;
     min-width: 28px;
     padding: 4px 6px;
@@ -4154,7 +5044,8 @@ function handleBeforeUnload() {
 .manual-skill-tooltip {
   position: absolute;
   top: calc(100% + 8px);
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
   width: 260px;
   max-width: min(72vw, 320px);
   padding: 8px 10px;
@@ -4164,9 +5055,21 @@ function handleBeforeUnload() {
   color: #dbeafe;
   font-size: 12px;
   line-height: 1.35;
+  white-space: pre-line;
   z-index: 40;
   box-shadow: 0 8px 22px rgba(2, 6, 23, 0.6);
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .manual-skill-tooltip {
+    max-width: calc(100vw - 24px);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    top: auto;
+    bottom: calc(100% + 8px);
+  }
 }
 .manual-action-btn.active,
 .manual-target-btn.active {
@@ -4341,7 +5244,7 @@ function handleBeforeUnload() {
   font-weight: 700;
   font-size: 15px;
   margin-bottom: 8px;
-  color: #3aa3ff;
+  /* couleur gérée par hoveredUnitRarityStyle (rareté) */
 }
 
 .unit-tooltip .tooltip-meta {
@@ -4369,6 +5272,15 @@ function handleBeforeUnload() {
   font-size: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 6px;
+  white-space: pre-line;
+}
+
+.unit-tooltip .tooltip-spec {
+  font-size: 11px;
+  color: #a5b4fc;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(165, 180, 252, 0.2);
 }
 
 .legend-overlay {
@@ -4462,6 +5374,29 @@ function handleBeforeUnload() {
   overflow: hidden;
   gap: 0;
   align-items: stretch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.combat-layout::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Colonnes de logs toujours présentes dans le flux flex : repliées sans changer la hauteur totale de la modale */
+.battle-logs.battle-logs--collapsed {
+  flex: 0 0 0 !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  opacity: 0;
+  overflow: hidden !important;
+  pointer-events: none;
 }
 
 .battle-logs {
@@ -4490,6 +5425,13 @@ function handleBeforeUnload() {
   .combat-layout {
     flex-direction: column;
     overflow-y: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .combat-layout::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 
   .battle-arena {
@@ -4578,10 +5520,29 @@ function handleBeforeUnload() {
   display: flex;
   justify-content: center;
   align-items: center;
-  overflow: visible;
+  overflow: clip;
   min-width: 0;
   padding: 0;
   position: relative;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.battle-arena::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.preset-unfit-msg {
+  margin-top: 12px;
+  margin-bottom: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(120, 53, 15, 0.35);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  color: #fde68a;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .battle-error {
@@ -4600,6 +5561,14 @@ function handleBeforeUnload() {
   justify-content: center;
   min-width: 0;
   position: relative;
+  overflow: clip;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.combat-visual::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .legend-row {
@@ -4858,10 +5827,20 @@ function handleBeforeUnload() {
   padding-bottom: 0;
 }
 
-/* Terrain de combat 2D */
+/* Terrain de combat 2D — overflow clip pour empêcher toute scrollbar dans l'encart central */
 .battlefield-wrapper {
   width: 100%;
   margin-top: 15px;
+  overflow: clip;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.battlefield-wrapper::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.battlefield-wrapper-inner {
   min-height: 0;
   flex: 1;
   display: flex;
@@ -4881,6 +5860,14 @@ function handleBeforeUnload() {
   border-radius: 8px;
   margin: 0.75rem 0;
   border: 1px solid rgba(148, 163, 184, 0.2);
+  overflow: clip;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.battlefield::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .battlefield .row {
@@ -4920,7 +5907,7 @@ function handleBeforeUnload() {
 
 .battlefield .unit-name {
   color: white;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   margin-bottom: 6px;
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }

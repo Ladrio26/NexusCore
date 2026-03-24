@@ -21,41 +21,44 @@
 
     <div class="members-grid">
       <article v-for="member in members" :key="member.user_id" class="member-card" :class="`role-${member.role}`">
-        <div class="member-card-row">
+        <div class="member-card-top">
           <img :src="getAvatarUrl(member)" alt="" class="member-avatar" />
           <div class="member-info">
-            <strong>{{ member.display_name }}</strong>
+            <strong class="member-name">{{ member.display_name }}</strong>
             <span class="member-role">{{ roleLabel(member.role) }}</span>
             <span v-if="member.joined_at" class="member-date">Arrivé le {{ formatDate(member.joined_at) }}</span>
           </div>
-          <div v-if="currentRole === 'leader' && member.role !== 'leader'" class="member-actions">
-            <button
-              v-if="member.role === 'member'"
-              type="button"
-              class="nx-btn nx-btn-small"
-              :disabled="loadingRoleUserId === member.user_id"
-              @click="$emit('change-role', { userId: member.user_id, role: 'officer' })"
-            >
-              {{ loadingRoleUserId === member.user_id ? '...' : 'Promouvoir' }}
-            </button>
-            <button
-              v-else
-              type="button"
-              class="nx-btn nx-btn-secondary nx-btn-small"
-              :disabled="loadingRoleUserId === member.user_id"
-              @click="$emit('change-role', { userId: member.user_id, role: 'member' })"
-            >
-              {{ loadingRoleUserId === member.user_id ? '...' : 'Rétrograder' }}
-            </button>
-            <button
-              type="button"
-              class="nx-btn nx-btn-kick nx-btn-small"
-              :disabled="kickLoadingUserId === member.user_id"
-              @click="confirmKick(member)"
-            >
-              {{ kickLoadingUserId === member.user_id ? '...' : 'Expulser' }}
-            </button>
-          </div>
+        </div>
+        <div
+          v-if="currentRole === 'leader' && member.role !== 'leader'"
+          class="member-actions"
+        >
+          <button
+            v-if="member.role === 'member'"
+            type="button"
+            class="nx-btn nx-btn-small"
+            :disabled="loadingRoleUserId === member.user_id"
+            @click="$emit('change-role', { userId: member.user_id, role: 'officer' })"
+          >
+            {{ loadingRoleUserId === member.user_id ? '...' : 'Promouvoir' }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="nx-btn nx-btn-secondary nx-btn-small"
+            :disabled="loadingRoleUserId === member.user_id"
+            @click="$emit('change-role', { userId: member.user_id, role: 'member' })"
+          >
+            {{ loadingRoleUserId === member.user_id ? '...' : 'Rétrograder' }}
+          </button>
+          <button
+            type="button"
+            class="nx-btn nx-btn-kick nx-btn-small"
+            :disabled="kickLoadingUserId === member.user_id"
+            @click="confirmKick(member)"
+          >
+            {{ kickLoadingUserId === member.user_id ? '...' : 'Expulser' }}
+          </button>
         </div>
       </article>
     </div>
@@ -180,7 +183,10 @@ function formatDate(value: string) {
 }
 
 .member-card {
-  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
   border-radius: 14px;
   background: rgba(15, 23, 42, 0.66);
   border: 1px solid rgba(148, 163, 184, 0.14);
@@ -201,10 +207,11 @@ function formatDate(value: string) {
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.14), rgba(15, 23, 42, 0.72));
 }
 
-.member-card-row {
+.member-card-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
+  min-width: 0;
 }
 
 .member-avatar {
@@ -221,14 +228,16 @@ function formatDate(value: string) {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-.member-info strong {
+.member-name {
   color: #f8fafc;
   font-size: 0.95rem;
+  line-height: 1.25;
+  word-break: break-word;
 }
 
 .member-role {
@@ -239,11 +248,18 @@ function formatDate(value: string) {
 .member-date {
   color: #64748b;
   font-size: 0.78rem;
-  width: 100%;
+  line-height: 1.3;
 }
 
 .member-actions {
-  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  margin-top: 2px;
 }
 
 .member-actions :deep(.nx-btn-small) {
@@ -264,12 +280,8 @@ function formatDate(value: string) {
 }
 
 @media (max-width: 640px) {
-  .member-card-row {
-    flex-wrap: wrap;
-  }
   .member-actions {
-    width: 100%;
-    margin-left: 52px;
+    justify-content: flex-start;
   }
 }
 </style>

@@ -1,6 +1,20 @@
 # Config nginx : servir le build statique (frontend/dist). Aucun hot reload, pas de refresh en boucle.
-# À copier vers /etc/nginx/sites-enabled/nexuscore.goodloss.conf puis : nginx -t && systemctl reload nginx
+# Vhost HTTPS complet (recommandé) : voir nginx/nexuscore.goodloss.conf à la racine du projet.
+# Sinon, à fusionner / copier vers /etc/nginx/sites-enabled/nexuscore.goodloss.conf puis : nginx -t && systemctl reload nginx
 # Pour le hot reload à la place, utiliser deploy/nginx.conf.hot-reload
+#
+# --- HTTPS / HTTP/2 (souvent ailleurs sur le serveur : certbot, autre fichier) ---
+# Ce fichier ne contient souvent pas les lignes "listen 443 ssl …" : elles sont
+# ajoutées par le déploiement ou Let's Encrypt.
+# Si Chrome affiche ERR_HTTP2_PROTOCOL_ERROR sur /assets/index-*.js :
+#   • dans le bloc server HTTPS, remplacer  listen 443 ssl http2;  par  listen 443 ssl;
+#     (sans "http2" → HTTP/1.1 sur TLS, souvent corrige l’erreur)
+#   • détail : deploy/TROUBLESHOOTING_HTTP2_QUIC.md
+# Exemple de lignes à avoir dans le même server { } que ci-dessous (certificats à adapter) :
+#   listen 443 ssl;
+#   listen [::]:443 ssl;
+#   ssl_certificate     /etc/letsencrypt/live/nexuscore.goodloss.fr/fullchain.pem;
+#   ssl_certificate_key /etc/letsencrypt/live/nexuscore.goodloss.fr/privkey.pem;
 
 #########################################
 #  NE PAS TOUCHER AUX LIGNES EN DESSOUS #

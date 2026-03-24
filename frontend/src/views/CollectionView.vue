@@ -8,6 +8,13 @@
         </span>
       </h1>
       <div class="collection-toolbar">
+        <div class="filter-group">
+          <span class="filter-label">Traits</span>
+          <label v-for="t in traitOptions" :key="t.id" class="filter-check">
+            <input type="checkbox" v-model="filterTraits[t.id]" />
+            {{ t.label }}
+          </label>
+        </div>
         <label class="collection-sort-label">Afficher les unités</label>
         <select v-model="collectionSortMode" class="collection-sort-select nexus-input">
           <option value="rarity">Par rareté</option>
@@ -153,6 +160,126 @@
               @click="openDetail(unit)"
             >
 <header>
+                <h3>{{ unit.name }}</h3>
+                <span v-if="hasSpec(unit)" class="badge-spec-inline" title="Spécialisée">★</span>
+                <span class="rarity">{{ toRarityFr(unit.rarity) }}</span>
+                <span class="badge-power-inline nx-badge">P{{ unit.power_level ?? 1 }}</span>
+                <span v-if="hasNoyau(unit)" class="badge-noyau-inline nx-badge" title="Noyau">Noyau</span>
+              </header>
+              <p class="meta">
+                Niveau {{ unit.level }} • Puissance {{ unit.power_level ?? 1 }} • {{ toRoleFr(unit.role) }} • {{ toAttackTypeFr(unit.attack_type) }}
+              </p>
+              <div class="stats-grid">
+                <div class="stat">
+                  <span class="stat-label">❤ PV</span>
+                  <span class="stat-value">{{ unit.maxHp ?? unit.base_hp }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">⚔ ATQ</span>
+                  <span class="stat-value">{{ unit.attack ?? unit.base_attack }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">🛡 DEF</span>
+                  <span class="stat-value">{{ unit.defense ?? unit.base_defense }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">⚡ VIT</span>
+                  <span class="stat-value">{{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed) }}</span>
+                  <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
+                </div>
+              </div>
+              <div class="state-grid">
+                <div class="stat">
+                  <span class="stat-label">✨ Maîtrise</span>
+                  <span class="stat-value">{{ unit.mastery }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">😴 Fatigue</span>
+                  <span class="stat-value">{{ unit.fatigue }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">💥 Blessure</span>
+                  <span class="stat-value">{{ unit.injury_level }}</span>
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+        <div class="element-column">
+          <h3 class="element-title nx-subtitle element-title-light">
+            LUMIÈRE <span class="element-count-inline">({{ lumiereUnits.length }})</span>
+          </h3>
+          <div class="element-list">
+            <button
+              v-for="unit in lumiereUnits"
+              :key="unit.user_unit_id"
+              type="button"
+              class="unit-card nx-card"
+              :class="['rarity-' + (unit.rarity || 'common').toLowerCase(), { 'unit-card-has-image': getUnitImageUrl(unit), 'unit-card-blurred': isUnitBlurred(unit) }]"
+              :style="unitCardBgStyle(unit)"
+              @click="openDetail(unit)"
+            >
+              <header>
+                <h3>{{ unit.name }}</h3>
+                <span v-if="hasSpec(unit)" class="badge-spec-inline" title="Spécialisée">★</span>
+                <span class="rarity">{{ toRarityFr(unit.rarity) }}</span>
+                <span class="badge-power-inline nx-badge">P{{ unit.power_level ?? 1 }}</span>
+                <span v-if="hasNoyau(unit)" class="badge-noyau-inline nx-badge" title="Noyau">Noyau</span>
+              </header>
+              <p class="meta">
+                Niveau {{ unit.level }} • Puissance {{ unit.power_level ?? 1 }} • {{ toRoleFr(unit.role) }} • {{ toAttackTypeFr(unit.attack_type) }}
+              </p>
+              <div class="stats-grid">
+                <div class="stat">
+                  <span class="stat-label">❤ PV</span>
+                  <span class="stat-value">{{ unit.maxHp ?? unit.base_hp }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">⚔ ATQ</span>
+                  <span class="stat-value">{{ unit.attack ?? unit.base_attack }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">🛡 DEF</span>
+                  <span class="stat-value">{{ unit.defense ?? unit.base_defense }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">⚡ VIT</span>
+                  <span class="stat-value">{{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed) }}</span>
+                  <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
+                </div>
+              </div>
+              <div class="state-grid">
+                <div class="stat">
+                  <span class="stat-label">✨ Maîtrise</span>
+                  <span class="stat-value">{{ unit.mastery }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">😴 Fatigue</span>
+                  <span class="stat-value">{{ unit.fatigue }}</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">💥 Blessure</span>
+                  <span class="stat-value">{{ unit.injury_level }}</span>
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+        <div class="element-column">
+          <h3 class="element-title nx-subtitle element-title-dark">
+            TÉNÈBRES <span class="element-count-inline">({{ tenebresUnits.length }})</span>
+          </h3>
+          <div class="element-list">
+            <button
+              v-for="unit in tenebresUnits"
+              :key="unit.user_unit_id"
+              type="button"
+              class="unit-card nx-card"
+              :class="['rarity-' + (unit.rarity || 'common').toLowerCase(), { 'unit-card-has-image': getUnitImageUrl(unit), 'unit-card-blurred': isUnitBlurred(unit) }]"
+              :style="unitCardBgStyle(unit)"
+              @click="openDetail(unit)"
+            >
+              <header>
                 <h3>{{ unit.name }}</h3>
                 <span v-if="hasSpec(unit)" class="badge-spec-inline" title="Spécialisée">★</span>
                 <span class="rarity">{{ toRarityFr(unit.rarity) }}</span>
@@ -345,7 +472,7 @@ import {
   toTraitFr,
   STAT_FR
 } from '../utils/i18nFr';
-import { normalizeSkillDescription } from '../utils/skillDescription';
+import { normalizeSkillDescription, getBestiaryMultiSkillDescriptions } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
 import {
   TOOLTIP_TYPE,
@@ -380,6 +507,13 @@ type CollectionUnit = {
   base_attack: number;
   base_defense: number;
   base_speed: number;
+  /** Stats effectives (affichage fiche / tooltips) — sinon fallback sur base_* */
+  maxHp?: number;
+  attack?: number;
+  defense?: number;
+  speed?: number;
+  specA_bonus_stat?: string | null;
+  specB_bonus_stat?: string | null;
   mastery: number;
   traits?: string[] | string | null;
   synergy_tag?: string | null;
@@ -420,7 +554,7 @@ const collectionTitle = computed(() =>
     ? `Collection de ${ownerDisplayName.value || route.params.userId || 'Joueur'}`
     : 'Ma Collection'
 );
-const totalUnits = computed(() => units.value.length);
+const totalUnits = computed(() => filteredByTraitsUnits.value.length);
 
 const canAscend = computed(() => {
   const u = detailUnit.value;
@@ -430,6 +564,18 @@ const canAscend = computed(() => {
 
 /** Mode de tri : Par rareté (rarité + niveau + nom), Par niveau (niveau + rareté + nom). */
 const collectionSortMode = ref<'rarity' | 'level'>('rarity');
+
+const filterTraits = ref<Record<string, boolean>>({
+  GUARDIANS: false, DRUIDS: false, ARCANISTS: false, EXECUTIONERS: false, BERSERKERS: false, TACTICIANS: false
+});
+const traitOptions = [
+  { id: 'GUARDIANS', label: 'Gardien' },
+  { id: 'DRUIDS', label: 'Druide' },
+  { id: 'ARCANISTS', label: 'Arcaniste' },
+  { id: 'EXECUTIONERS', label: 'Bourreau' },
+  { id: 'BERSERKERS', label: 'Berserker' },
+  { id: 'TACTICIANS', label: 'Tacticien' }
+];
 
 const rarityOrderMap: Record<string, number> = {
   mythic: 6,
@@ -467,14 +613,35 @@ function sortUnits(list: CollectionUnit[], mode: 'rarity' | 'level'): Collection
   });
 }
 
+function parseUnitTraits(traits: CollectionUnit['traits']): string[] {
+  if (!traits) return [];
+  if (Array.isArray(traits)) return traits.map((t) => String(t).toUpperCase());
+  return [String(traits).toUpperCase()];
+}
+const filteredByTraitsUnits = computed(() => {
+  const u = units.value;
+  const ft = filterTraits.value;
+  const selectedTraits = Object.entries(ft).filter(([, v]) => v).map(([k]) => k);
+  if (selectedTraits.length === 0) return u;
+  return u.filter((unit) => {
+    const unitTraits = parseUnitTraits(unit.traits);
+    return selectedTraits.some((t) => unitTraits.includes(t));
+  });
+});
 const eauUnits = computed(() =>
-  sortUnits(units.value.filter((u) => (u.element || '').toLowerCase() === 'water'), collectionSortMode.value)
+  sortUnits(filteredByTraitsUnits.value.filter((u) => (u.element || '').toLowerCase() === 'water'), collectionSortMode.value)
 );
 const feuUnits = computed(() =>
-  sortUnits(units.value.filter((u) => (u.element || '').toLowerCase() === 'fire'), collectionSortMode.value)
+  sortUnits(filteredByTraitsUnits.value.filter((u) => (u.element || '').toLowerCase() === 'fire'), collectionSortMode.value)
 );
 const planteUnits = computed(() =>
-  sortUnits(units.value.filter((u) => (u.element || '').toLowerCase() === 'plant'), collectionSortMode.value)
+  sortUnits(filteredByTraitsUnits.value.filter((u) => (u.element || '').toLowerCase() === 'plant'), collectionSortMode.value)
+);
+const lumiereUnits = computed(() =>
+  sortUnits(filteredByTraitsUnits.value.filter((u) => (u.element || '').toLowerCase() === 'light'), collectionSortMode.value)
+);
+const tenebresUnits = computed(() =>
+  sortUnits(filteredByTraitsUnits.value.filter((u) => (u.element || '').toLowerCase() === 'dark'), collectionSortMode.value)
 );
 
 function hasSpec(unit: CollectionUnit): boolean {
@@ -647,6 +814,20 @@ function getDescriptionFromSkillData(skillData: CollectionUnit['skill_data']): {
 const descriptionSkill = computed(() => {
   const u = detailUnit.value;
   if (!u) return '—';
+  const raw = u.skill_data;
+  let sd: Record<string, unknown> | null = null;
+  if (raw && typeof raw === 'object') sd = raw as Record<string, unknown>;
+  else if (typeof raw === 'string') {
+    try {
+      sd = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      sd = null;
+    }
+  }
+  if (sd) {
+    const multi = getBestiaryMultiSkillDescriptions(sd);
+    if (multi.trim()) return multi.trim();
+  }
   const desc = getDescriptionFromSkillData(u.skill_data ?? null);
   const text = desc?.skill;
   return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : (detailUnit.value ? buildSkillDescription(detailUnit.value.skill_data ?? null) : '—');
@@ -740,24 +921,24 @@ const specBModifierText = computed(() =>
 <style scoped>
 .collection {
   width: 100%;
-  padding: 30px 50px;
+  padding: 8px 12px;
 }
 
 .collection-header {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 .page-title {
-  font-size: 2rem;
+  font-size: 1.6rem;
   font-weight: 800;
   letter-spacing: 0.5px;
   margin: 0;
   color: #f8fafc;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -765,8 +946,8 @@ const specBModifierText = computed(() =>
   content: '';
   display: block;
   height: 2px;
-  width: 120px;
-  margin-top: 10px;
+  width: 100px;
+  margin-top: 6px;
   background: linear-gradient(to right, rgba(0, 255, 255, 0.65), rgba(138, 43, 226, 0));
   filter: blur(0.2px);
 }
@@ -782,16 +963,42 @@ const specBModifierText = computed(() =>
 
 .collection-wrapper {
   display: grid;
-  grid-template-columns: repeat(3, minmax(280px, 1fr));
-  gap: 30px;
+  grid-template-columns: repeat(5, minmax(260px, 1fr));
+  gap: 14px;
   align-items: flex-start;
   overflow-x: auto;
 }
 
 .collection-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+.collection-toolbar .filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.collection-toolbar .filter-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: rgba(203, 213, 225, 0.85);
+  margin-right: 4px;
+}
+.collection-toolbar .filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.88rem;
+  color: rgba(203, 213, 225, 0.9);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.collection-toolbar .filter-check input {
+  margin: 0;
+  accent-color: var(--accent, #94a3b8);
   flex-shrink: 0;
 }
 
@@ -820,20 +1027,20 @@ const specBModifierText = computed(() =>
 
 @media (max-width: 768px) {
   .collection {
-    padding: 1rem;
+    padding: 6px 8px;
   }
   .collection-header {
-    gap: 0.75rem;
-    margin-bottom: 1rem;
+    gap: 8px;
+    margin-bottom: 6px;
   }
   .page-title {
-    font-size: 1.35rem;
+    font-size: 1.2rem;
   }
   .collection-wrapper {
-    gap: 1rem;
+    gap: 8px;
   }
   .element-column {
-    padding: 1rem;
+    padding: 8px 10px;
   }
   .collection-sort-select {
     min-width: 120px;
@@ -843,20 +1050,20 @@ const specBModifierText = computed(() =>
 .element-column {
   background: rgba(15, 23, 42, 0.5);
   backdrop-filter: blur(10px);
-  border-radius: 16px;
-  padding: 22px;
-  padding-top: 26px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  padding-top: 12px;
   border: 1px solid rgba(148, 163, 184, 0.25);
   position: relative;
   isolation: isolate;
 }
 
 .element-title {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 700;
   text-align: center;
-  letter-spacing: 0.15em;
-  margin: 0 0 12px 0;
+  letter-spacing: 0.12em;
+  margin: 0 0 6px 0;
 }
 
 .element-title-water {
@@ -874,6 +1081,16 @@ const specBModifierText = computed(() =>
   text-shadow: 0 0 14px rgba(34, 197, 94, 0.15);
 }
 
+.element-title-light {
+  color: rgba(250, 204, 21, 0.95);
+  text-shadow: 0 0 14px rgba(250, 204, 21, 0.2);
+}
+
+.element-title-dark {
+  color: rgba(168, 85, 247, 0.9);
+  text-shadow: 0 0 14px rgba(168, 85, 247, 0.2);
+}
+
 .element-count-inline {
   font-size: 0.9rem;
   opacity: 0.85;
@@ -883,10 +1100,10 @@ const specBModifierText = computed(() =>
 .element-list {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  padding: 6px 4px 6px 6px;
-  padding-top: 10px;
-  margin-top: -10px;
+  gap: 0.4rem;
+  padding: 4px 2px 4px 4px;
+  padding-top: 6px;
+  margin-top: -6px;
 }
 
 .element-list::-webkit-scrollbar {
@@ -903,8 +1120,8 @@ const specBModifierText = computed(() =>
   position: relative;
   overflow: hidden;
   background: linear-gradient(160deg, #0f172a, #0b1120);
-  border-radius: 18px;
-  padding: 14px 16px;
+  border-radius: 14px;
+  padding: 8px 10px;
   border: 1px solid rgba(148, 163, 184, 0.5);
   box-shadow:
     0 10px 30px rgba(0, 0, 0, 0.6),
@@ -1025,19 +1242,19 @@ const specBModifierText = computed(() =>
 
 .unit-card h3 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.88rem;
   font-weight: 700;
 }
 
 .rarity {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
   color: #facc15;
 }
 
 .meta {
-  margin: 0.15rem 0 0.4rem 0;
-  font-size: 0.85rem;
+  margin: 0.1rem 0 0.25rem 0;
+  font-size: 0.75rem;
   color: #cbd5e1;
 }
 
@@ -1054,14 +1271,14 @@ const specBModifierText = computed(() =>
 .state-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.2rem 0.75rem;
-  margin-top: 0.15rem;
+  gap: 0.15rem 0.5rem;
+  margin-top: 0.1rem;
 }
 
 .stat {
   display: flex;
   justify-content: space-between;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   opacity: 0.95;
 }
 
@@ -1077,35 +1294,35 @@ const specBModifierText = computed(() =>
 .badge-noyau {
   background: rgba(168, 85, 247, 0.35);
   color: #e9d5ff;
-  font-size: 0.7rem;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 0.62rem;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .badge-power,
 .badge-power-inline {
   background: rgba(250, 204, 21, 0.22);
   color: #fef08a;
-  font-size: 0.7rem;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 0.62rem;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .badge-spec-inline {
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   color: #fbbf24;
   text-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
-  margin-left: 6px;
+  margin-left: 4px;
   line-height: 1;
 }
 
 .badge-noyau-inline {
-  font-size: 0.65rem;
-  padding: 1px 5px;
-  border-radius: 4px;
+  font-size: 0.58rem;
+  padding: 1px 4px;
+  border-radius: 3px;
   background: rgba(168, 85, 247, 0.3);
   color: #e9d5ff;
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
 .modal-view-only {
@@ -1189,6 +1406,7 @@ const specBModifierText = computed(() =>
   font-size: 0.9rem;
   line-height: 1.4;
   color: #cbd5e1;
+  white-space: pre-line;
 }
 
 .skill-cd-badge {

@@ -17,6 +17,9 @@
         </div>
       </form>
       <p v-if="error" class="error">{{ error }}</p>
+      <p class="auth-extra">
+        <router-link to="/news" class="auth-news-link">📰 Actualités &amp; patch notes</router-link>
+      </p>
     </div>
   </section>
 </template>
@@ -123,6 +126,22 @@ button {
   color: #f97373;
   font-size: 0.9rem;
   margin: 0;
+}
+
+.auth-extra {
+  margin: 1rem 0 0;
+  text-align: center;
+  font-size: 0.88rem;
+}
+
+.auth-news-link {
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-news-link:hover {
+  color: #bae6fd;
 }
 
 @media (max-width: 768px) {

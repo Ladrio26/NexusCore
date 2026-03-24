@@ -30,7 +30,6 @@
               >
                 <span class="mode-flame" aria-hidden="true">{{ hardModeUnlocked ? '🔥' : '🔒' }}</span>
                 Difficile
-                <span v-if="mode === 'hard'" class="badge-unstable">Instable ce mois-ci</span>
               </button>
               <div v-if="!hardModeUnlocked" class="mode-lock-tooltip" role="tooltip">
                 {{ hardModeLockedReason }}
@@ -83,15 +82,18 @@
       :stage-info="selectedStage.stageInfo"
       :campaign-team="campaignTeam"
       :pending-battle="pendingBattle"
-      @close="selectedStage = null; pendingBattle = null"
+      :auto-start-on-open="autoStartOnOpen"
+      @close="handleClose"
       @campaign-updated="refreshCampaign"
+      @go-next="handleGoNext"
+      @abandon="handleAbandon"
     />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { getHardChapterModifierLabelsFr } from '../../../core/campaignHardModifiers.js';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { getHardChapterModifierLabelsFr } from '@engine/campaignHardModifiers.js';
 import api from '../api';
 import ChapterMap from './ChapterMap.vue';
 import StageModal from './StageModal.vue';
@@ -131,6 +133,7 @@ const pendingBattle = ref<{
 } | null>(null);
 const hardModeUnlocked = ref(false);
 const hardModeLockedReason = ref('Bats le boss du chapitre 5 en mode normal pour débloquer le mode difficile.');
+const autoStartOnOpen = ref(false);
 const CHAPTER_BACKGROUNDS: Record<number, string> = {
   1: '/images/campaign/plaine.png',
   2: '/images/campaign/plage.png',
@@ -203,6 +206,42 @@ function openStage(payload: { chapter: number; stage: number; stageInfo: any }) 
     stage: payload.stage,
     stageInfo: payload.stageInfo
   };
+}
+
+function handleClose() {
+  selectedStage.value = null;
+  pendingBattle.value = null;
+  autoStartOnOpen.value = false;
+}
+
+/** Abandonne le combat en attente et débloque l'utilisateur (en cas de boucle ou blocage). */
+async function handleAbandon() {
+  try {
+    await api.post('/battle/abandon');
+  } catch { /* ignore */ }
+  handleClose();
+}
+
+async function handleGoNext(payload: { chapter: number; stage: number }) {
+  const ch = payload.chapter;
+  const st = payload.stage;
+  // Rafraîchir le statut avant d'ouvrir le stage suivant (important après victoire boss :
+  // le chapitre était lock et vient d'être débloqué côté backend)
+  await refreshCampaign();
+  const chapterData = status.value?.chapters?.[ch];
+  const stageInfo = chapterData?.stages?.find((s) => s.stage === st) ?? {
+    stage: st,
+    isBoss: st === 10,
+    cleared: false,
+    rewardClaimed: false,
+    available: true
+  };
+  chapter.value = ch; /* Onglet du chapitre débloqué */
+  await nextTick(); /* Laisse Vue mettre à jour la carte avant d'ouvrir la modale */
+  selectedStage.value = null;
+  pendingBattle.value = null;
+  autoStartOnOpen.value = true;
+  selectedStage.value = { chapter: ch, stage: st, stageInfo };
 }
 
 async function refreshCampaign() {

@@ -67,7 +67,7 @@ async function loadPity() {
   }
 }
 
-async function pull() {
+async function pull(_count?: number) {
   loading.value = true;
   pullError.value = '';
   lastResult.value = null;

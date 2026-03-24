@@ -43,18 +43,17 @@ function computePvpEloDeltas(attackerElo, defenderElo, attackerWon) {
   }
   return { attackerDelta, defenderDelta };
 }
-const XP_NORMAL_TRASH = 1600;
-const PVP_XP_WIN = Math.floor(XP_NORMAL_TRASH / 2);
-const PVP_XP_LOSS = Math.floor(XP_NORMAL_TRASH / 4);
+const PVP_XP_WIN = 1000;
+const PVP_XP_LOSS = 0;
 const PVP_FATIGUE_ATTACKER = 3;
 const PVP_RANK_REWARDS = Object.freeze([
-  { key: 'SILVER_3', label: 'Argent 3', threshold: 300, credits: 50, cores: 1, fragments: 0, ascension_essence: 0 },
-  { key: 'GOLD_3', label: 'Or 3', threshold: 600, credits: 100, cores: 3, fragments: 10, ascension_essence: 0 },
-  { key: 'PLATINUM_3', label: 'Platine 3', threshold: 900, credits: 150, cores: 6, fragments: 30, ascension_essence: 0 },
-  { key: 'DIAMOND_3', label: 'Diamant 3', threshold: 1200, credits: 200, cores: 10, fragments: 50, ascension_essence: 0 },
-  { key: 'MASTER', label: 'Master', threshold: 1500, credits: 300, cores: 20, fragments: 100, ascension_essence: 0 },
-  { key: 'GRAND_MASTER', label: 'Grand Master', threshold: 1600, credits: 400, cores: 30, fragments: 150, ascension_essence: 0 },
-  { key: 'CHALLENGER', label: 'Challenger', threshold: 1700, credits: 500, cores: 40, fragments: 200, ascension_essence: 1 }
+  { key: 'SILVER_3', label: 'Argent 3', threshold: 300, credits: 50, cores: 1, fragments: 0, ascension_essence: 0, divine_credits: 0, divine_cores: 0, divine_fragments: 0 },
+  { key: 'GOLD_3', label: 'Or 3', threshold: 600, credits: 100, cores: 3, fragments: 10, ascension_essence: 0, divine_credits: 10, divine_cores: 1, divine_fragments: 1 },
+  { key: 'PLATINUM_3', label: 'Platine 3', threshold: 900, credits: 150, cores: 6, fragments: 30, ascension_essence: 0, divine_credits: 15, divine_cores: 1, divine_fragments: 3 },
+  { key: 'DIAMOND_3', label: 'Diamant 3', threshold: 1200, credits: 200, cores: 10, fragments: 50, ascension_essence: 0, divine_credits: 20, divine_cores: 1, divine_fragments: 5 },
+  { key: 'MASTER', label: 'Master', threshold: 1500, credits: 300, cores: 20, fragments: 100, ascension_essence: 0, divine_credits: 30, divine_cores: 2, divine_fragments: 10 },
+  { key: 'GRAND_MASTER', label: 'Grand Master', threshold: 1600, credits: 400, cores: 30, fragments: 150, ascension_essence: 0, divine_credits: 40, divine_cores: 3, divine_fragments: 15 },
+  { key: 'CHALLENGER', label: 'Challenger', threshold: 1700, credits: 500, cores: 40, fragments: 200, ascension_essence: 1, divine_credits: 50, divine_cores: 4, divine_fragments: 20 }
 ]);
 
 function getCurrentMonthKey() {
@@ -68,6 +67,9 @@ function formatRewardSummary(reward) {
   if (reward.cores) parts.push(`${reward.cores} cores`);
   if (reward.fragments) parts.push(`${reward.fragments} fragments`);
   if (reward.ascension_essence) parts.push(`${reward.ascension_essence} essence`);
+  if (reward.divine_credits) parts.push(`${reward.divine_credits} crédits divins`);
+  if (reward.divine_cores) parts.push(`${reward.divine_cores} cores divines`);
+  if (reward.divine_fragments) parts.push(`${reward.divine_fragments} fragments divins`);
   return parts.join(', ');
 }
 
@@ -85,15 +87,19 @@ async function getWallet(userId, executor = null) {
   const runQuery = executor?.query ?? query;
   await ensureWallet(userId, executor);
   const rows = await runQuery(
-    'SELECT credits, cores, fragments, ascension_essence, gold FROM user_wallet WHERE user_id = ?',
+    'SELECT credits, cores, fragments, ascension_essence, gold, divine_cores, divine_credits, divine_fragments FROM user_wallet WHERE user_id = ?',
     [userId]
   );
+  const r = rows[0];
   return {
-    credits: Number(rows[0]?.credits ?? 0),
-    cores: Number(rows[0]?.cores ?? 0),
-    fragments: Number(rows[0]?.fragments ?? 0),
-    ascension_essence: Number(rows[0]?.ascension_essence ?? 0),
-    gold: Number(rows[0]?.gold ?? 0)
+    credits: Number(r?.credits ?? 0),
+    cores: Number(r?.cores ?? 0),
+    fragments: Number(r?.fragments ?? 0),
+    ascension_essence: Number(r?.ascension_essence ?? 0),
+    gold: Number(r?.gold ?? 0),
+    divine_cores: Number(r?.divine_cores ?? 0),
+    divine_credits: Number(r?.divine_credits ?? 0),
+    divine_fragments: Number(r?.divine_fragments ?? 0)
   };
 }
 
@@ -122,12 +128,26 @@ async function grantRankRewardsForSeason(userId, previousElo, newElo, executor =
       continue;
     }
 
-    await runQuery(
-      `UPDATE user_wallet
-       SET credits = credits + ?, cores = cores + ?, fragments = fragments + ?, ascension_essence = ascension_essence + ?
-       WHERE user_id = ?`,
-      [reward.credits, reward.cores, reward.fragments, reward.ascension_essence, userId]
-    );
+    const divineCredits = reward.divine_credits ?? 0;
+    const divineCores = reward.divine_cores ?? 0;
+    const divineFragments = reward.divine_fragments ?? 0;
+    const hasDivine = divineCredits > 0 || divineCores > 0 || divineFragments > 0;
+    if (hasDivine) {
+      await runQuery(
+        `UPDATE user_wallet
+         SET credits = credits + ?, cores = cores + ?, fragments = fragments + ?, ascension_essence = ascension_essence + ?,
+             divine_credits = divine_credits + ?, divine_cores = divine_cores + ?, divine_fragments = divine_fragments + ?
+         WHERE user_id = ?`,
+        [reward.credits, reward.cores, reward.fragments, reward.ascension_essence, divineCredits, divineCores, divineFragments, userId]
+      );
+    } else {
+      await runQuery(
+        `UPDATE user_wallet
+         SET credits = credits + ?, cores = cores + ?, fragments = fragments + ?, ascension_essence = ascension_essence + ?
+         WHERE user_id = ?`,
+        [reward.credits, reward.cores, reward.fragments, reward.ascension_essence, userId]
+      );
+    }
     grantedRewards.push(reward);
   }
 
@@ -205,12 +225,24 @@ export async function updateElo(userId, currentElo, delta, executor = null) {
 }
 
 /**
+ * Vérifie si un preset existe et contient au moins une unité.
+ */
+function isPresetValid(slotsData) {
+  return slotsData && slotsData.slots && slotsData.slots.length > 0;
+}
+
+/**
  * Définit la défense PvP du joueur (preset_id = preset_index 1-10).
+ * Le preset doit exister et contenir au moins une unité.
  */
 export async function setDefense(userId, presetId) {
   const presetIndex = Number(presetId);
   if (!Number.isInteger(presetIndex) || presetIndex < 1 || presetIndex > 10) {
     throw new Error('INVALID_PRESET_ID');
+  }
+  const slotsData = await getPresetSlots(userId, presetIndex);
+  if (!isPresetValid(slotsData)) {
+    throw new Error('PRESET_EMPTY_OR_NOT_FOUND');
   }
   await query(
     'REPLACE INTO pvp_defenses (user_id, preset_id) VALUES (?, ?)',
@@ -221,6 +253,7 @@ export async function setDefense(userId, presetId) {
 
 /**
  * Récupère la défense PvP du joueur (preset_id et slots).
+ * Retourne null si le preset n'existe pas ou est vide.
  */
 export async function getDefense(userId) {
   const rows = await query(
@@ -228,7 +261,10 @@ export async function getDefense(userId) {
     [userId]
   );
   if (!rows.length) return null;
-  return { preset_id: rows[0].preset_id };
+  const presetId = rows[0].preset_id;
+  const slotsData = await getPresetSlots(userId, presetId);
+  if (!isPresetValid(slotsData)) return null;
+  return { preset_id: presetId };
 }
 
 /**
@@ -260,8 +296,23 @@ export async function getPresetSlots(userId, presetIndex) {
  * Trouve un adversaire : joueur dans la fourchette Elo ±100, ou PNJ.
  * excludeDefenderId : éviter de retomber deux fois d'affilée sur le même joueur (alterner joueur / PNJ si un seul dispo).
  */
+/** ELO minimum pour accéder au matchmaking contre de vrais joueurs (Argent 3). */
+const ELO_BRONZE_MAX = 299;
+
 export async function findOpponent(attackerId, excludeDefenderId = null) {
   const elo = await getPlayerElo(attackerId);
+
+  // En rang Bronze (ELO ≤ 299), uniquement des PNJ.
+  if (elo <= ELO_BRONZE_MAX) {
+    return {
+      defender_type: 'npc',
+      defender_id: null,
+      display_name: 'Adversaire PNJ',
+      pvp_elo: elo,
+      preset_id: null
+    };
+  }
+
   const low = Math.max(ELO_MIN, elo - ELO_MATCHMAKING_RANGE);
   const high = elo + ELO_MATCHMAKING_RANGE;
   const params = [attackerId];
@@ -275,8 +326,10 @@ export async function findOpponent(attackerId, excludeDefenderId = null) {
     `SELECT u.id, u.display_name, u.pvp_elo, d.preset_id
      FROM users u
      INNER JOIN pvp_defenses d ON d.user_id = u.id
+     INNER JOIN user_team_presets utp ON utp.user_id = u.id AND utp.preset_index = d.preset_id
      WHERE ${excludeClause}
      AND u.pvp_elo BETWEEN ? AND ?
+     AND (JSON_LENGTH(COALESCE(utp.front_slots, '[]')) + JSON_LENGTH(COALESCE(utp.back_slots, '[]'))) > 0
      ORDER BY RAND()
      LIMIT 1`,
     params
@@ -444,11 +497,15 @@ export async function recordPvpBattle(attackerId, defenderId, defenderType, atta
 
 /**
  * Donne l'XP PvP aux unités survivantes de l'attaquant (victoire ou défaite).
+ * +50 % XP pour les unités avec l'artefact xp_boost équipé.
  */
 export async function grantPvpXp(attackerUserUnitIds, attackerWon) {
-  const amount = attackerWon ? PVP_XP_WIN : PVP_XP_LOSS;
+  const baseAmount = attackerWon ? PVP_XP_WIN : PVP_XP_LOSS;
+  const { getUnitIdsWithXpBoost } = await import('./artifactService.js');
+  const xpBoostIds = await getUnitIdsWithXpBoost(attackerUserUnitIds);
   const results = [];
   for (const id of attackerUserUnitIds) {
+    const amount = xpBoostIds.has(id) ? Math.floor(baseAmount * 1.5) : baseAmount;
     try {
       const r = await addXp(id, amount);
       results.push({ userUnitId: id, ...r });

@@ -96,12 +96,18 @@ export interface InvokeAnimationController {
   resetInvokeScene?: () => void;
 }
 
+/** Timings calibrés : montée en tension ~1,2 s + flash court + reveal. */
 const DURATIONS = {
-  portal: 700,
-  vortex: 600,
-  orbSpawn: 500,
-  orbSuspense: 1000,
-  explosion: 400,
+  /** Fond + portail (avant l’apparition du noyau). */
+  portal: 520,
+  /** Spirale d’accroche (gardée courte — le gros du show est sur l’orb). */
+  vortex: 280,
+  /** Noyau qui apparaît (scale-in CSS côté vue). */
+  orbSpawn: 420,
+  /** Charge d’énergie / tension avant l’explosion. */
+  orbSuspense: 1200,
+  /** Flash + disparition du noyau. */
+  explosion: 480,
   reveal: 0
 };
 

@@ -13,7 +13,7 @@ export function registerUnitsRoutes(fastify, authenticate) {
               traits, skill_data, specA_bonus_stat, specB_bonus_stat,
               specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
        FROM units
-       WHERE code NOT LIKE 'BOSS_CH%'
+       WHERE COALESCE(is_boss, 0) = 0 AND code NOT LIKE 'BOSS_CH%'
        ORDER BY rarity, name`
     );
     const owned = await query(

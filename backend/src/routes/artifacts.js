@@ -19,7 +19,7 @@ export function registerArtifactRoutes(fastify, authenticate) {
       });
     } catch (err) {
       const message = err?.message || 'ARTIFACT_EQUIP_FAILED';
-      const status = ['INVALID_ARTIFACT_ID', 'INVALID_USER_UNIT_ID', 'ARTIFACT_SLOTS_FULL', 'DUPLICATE_ARTIFACT_STAT', 'ARTIFACT_NOT_FOUND', 'USER_UNIT_NOT_FOUND', 'ARTIFACT_ALREADY_EQUIPPED'].includes(message)
+      const status = ['INVALID_ARTIFACT_ID', 'INVALID_USER_UNIT_ID', 'ARTIFACT_SLOTS_FULL', 'DUPLICATE_ARTIFACT_STAT', 'ARTIFACT_NOT_FOUND', 'USER_UNIT_NOT_FOUND', 'ARTIFACT_ALREADY_EQUIPPED', 'ARTIFACT_CANNOT_EQUIP_ON_TRAIT'].includes(message)
         ? 400
         : 500;
       return reply.code(status).send({ error: message });
@@ -41,7 +41,7 @@ export function registerArtifactRoutes(fastify, authenticate) {
       return await enhanceArtifactById(request.user.id, request.body?.artifact_id);
     } catch (err) {
       const message = err?.message || 'ARTIFACT_ENHANCE_FAILED';
-      const status = ['INVALID_ARTIFACT_ID', 'ARTIFACT_NOT_FOUND', 'INSUFFICIENT_GOLD'].includes(message) ? 400 : 500;
+      const status = ['INVALID_ARTIFACT_ID', 'ARTIFACT_NOT_FOUND', 'INSUFFICIENT_GOLD', 'ARTIFACT_NOT_UPGRADABLE'].includes(message) ? 400 : 500;
       return reply.code(status).send({ error: message });
     }
   });
@@ -51,7 +51,7 @@ export function registerArtifactRoutes(fastify, authenticate) {
       return await destroyArtifactById(request.user.id, request.body?.artifact_id);
     } catch (err) {
       const message = err?.message || 'ARTIFACT_DESTROY_FAILED';
-      const status = ['INVALID_ARTIFACT_ID', 'ARTIFACT_NOT_FOUND'].includes(message) ? 400 : 500;
+      const status = ['INVALID_ARTIFACT_ID', 'ARTIFACT_NOT_FOUND', 'ARTIFACT_EQUIPPED'].includes(message) ? 400 : 500;
       return reply.code(status).send({ error: message });
     }
   });

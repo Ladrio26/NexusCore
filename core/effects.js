@@ -195,27 +195,46 @@ export function applyStatus(target, effectConfig, sourceId) {
   applyEffect(target, normalized);
 }
 
+/**
+ * Fin d’action : décrémente les durées de tous les buffs/debuffs **sauf** REGEN (buff) et DOT (débuff).
+ * REGEN et DOT sont gérés séparément : décrément juste après leur proc au début du tour (moteur combat).
+ */
 export function onUnitActionEnd(unit) {
-  // La durée est exprimée en "actions de la cible".
-  // Chaque buff/debuff a sa propre durée (ex. chaque stack DOT a son remainingActions).
-  // On décrémente de 1 la durée de chaque entrée ; on retire uniquement celles dont la durée tombe à 0
-  // (tous les stacks qui n’avaient plus qu’un tour disparaissent, les autres perdent 1 tour).
-  decrementBucket(unit.buffs);
-  decrementBucket(unit.debuffs);
+  decrementBucketExcluding(unit.buffs, (e) => (e.type || e.key || '').toUpperCase() === 'REGEN');
+  decrementBucketExcluding(unit.debuffs, (e) => (e.type || e.key || '').toUpperCase() === 'DOT');
 }
 
-function decrementBucket(bucket) {
+/**
+ * Après proc REGEN (soin) et DOT (déjà appliqués) au début du tour de l’unité : décrémente uniquement
+ * les remainingActions des stacks REGEN / DOT sur cette unité.
+ */
+export function decrementRegenAndDotDurationsAfterProc(unit) {
+  decrementBucketMatching(unit.buffs, (e) => (e.type || e.key || '').toUpperCase() === 'REGEN');
+  decrementBucketMatching(unit.debuffs, (e) => (e.type || e.key || '').toUpperCase() === 'DOT');
+}
+
+/** Décrémente les durées des entrées pour lesquelles exclude(e) est faux ; retire les durées ≤ 0. */
+function decrementBucketExcluding(bucket, exclude) {
   if (!bucket) return;
   for (const e of bucket) {
-    if (e.remainingActions > 0) {
-      e.remainingActions -= 1;
+    if (exclude(e)) continue;
+    const r = typeof e.remainingActions === 'number' ? e.remainingActions : 0;
+    if (r > 0) {
+      e.remainingActions = r - 1;
     }
   }
   for (let i = bucket.length - 1; i >= 0; i -= 1) {
-    if (bucket[i].remainingActions <= 0) {
+    if (exclude(bucket[i])) continue;
+    const r = bucket[i].remainingActions;
+    if (r == null || (typeof r === 'number' && r <= 0)) {
       bucket.splice(i, 1);
     }
   }
+}
+
+/** Décrémente uniquement les entrées qui matchent `match(e)`. */
+function decrementBucketMatching(bucket, match) {
+  decrementBucketExcluding(bucket, (e) => !match(e));
 }
 
 export function getStatModifiers(unit) {

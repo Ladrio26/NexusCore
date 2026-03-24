@@ -8,7 +8,7 @@
 // - DRUIDS
 // - TACTICIANS
 
-import { EffectType, applyShield } from './effects.js';
+import { EffectType, applyShield, applyEffect } from './effects.js';
 
 export function computeSynergyLevels(units) {
   const counts = new Map();
@@ -113,9 +113,10 @@ function applyArcanistBonuses(state) {
       if (lvl >= 2) {
         u.mastery = Math.round((u.mastery || 0) * 1.1);
       }
-      if (lvl >= 6 && Array.isArray(u.skills)) {
-        // Réduction CD de 1 action (min 1)
-        for (const skill of u.skills) {
+      if (lvl >= 6 && u.skill) {
+        // Réduction CD de 1 action (min 1) — u.skill (pas u.skills)
+        const skill = u.skill?.skill ?? u.skill;
+        if (skill && typeof skill === 'object') {
           const baseCd = skill.cd_actions ?? 1;
           skill.cd_actions = Math.max(1, baseCd - 1);
         }
@@ -181,6 +182,28 @@ export function applyStartOfBattleRuntimeEffects(state, logEvent) {
     });
   });
 
+  // Artefact IMMUNE : l'unité équipée commence avec le buff IMMUNITE pour 1 tour
+  for (const u of state.units) {
+    if (!u.alive) continue;
+    const artifacts = u.equipped_artifacts || [];
+    const hasImmuneArtifact = artifacts.some((a) => String(a?.stat_key || a?.statKey || '').toLowerCase() === 'immune');
+    if (hasImmuneArtifact) {
+      applyEffect(u, {
+        type: EffectType.IMMUNITY,
+        buffType: EffectType.IMMUNITY,
+        remainingActions: 1,
+        sourceId: 'artifact_immune'
+      });
+      logEvent({
+        type: 'ARTIFACT_TRIGGER',
+        artifact: 'immune',
+        unit: u.combatIndex,
+        buffType: EffectType.IMMUNITY,
+        duration: 1
+      });
+    }
+  }
+
   // TACTICIANS 6 : +20% ATB à toute l'équipe (après init ATB)
   ['A', 'B'].forEach((side) => {
     const lvl = getLevels(state, side, 'TACTICIANS');
@@ -236,8 +259,8 @@ export function onUnitActionEndSynergies(state, actor, logEvent) {
   const side = actor.side;
   const druidLevel = actor.druidLevel || 0;
 
-  // DRUIDS 4 : regen X% PV max à chaque action du druide
-  if (druidLevel >= 4) {
+  // DRUIDS 4 : regen X% PV max à chaque action du druide (uniquement si l'acteur est druide)
+  if (druidLevel >= 4 && actor.traits?.includes('DRUIDS')) {
     const regenPct = 0.03;
     const base = Math.round(actor.maxHp * regenPct);
     if (base > 0) {
@@ -306,7 +329,7 @@ export function onUnitActionEndSynergies(state, actor, logEvent) {
 export function onSkillUsedSynergies(state, actor, logEvent) {
   const side = actor.side;
   const lvl = getLevels(state, side, 'ARCANISTS');
-  if (lvl < 4) return;
+  if (lvl < 4 || !actor.traits?.includes('ARCANISTS')) return;
 
   const shieldPct = 0.08;
   const base = actor.maxHp * shieldPct;
@@ -328,8 +351,8 @@ export function onSkillUsedSynergies(state, actor, logEvent) {
 
 export function onKillSynergies(state, killer, victim, logEvent) {
   const side = killer.side;
-  // EXECUTIONERS 6 : à chaque élimination par un Bourreau → +40 ATB au tueur
-  if (killer.executionerLevel >= 6) {
+  // EXECUTIONERS 6 : à chaque élimination par un Bourreau → +40 ATB au tueur (uniquement si le tueur est bourreau)
+  if (killer.executionerLevel >= 6 && killer.traits?.includes('EXECUTIONERS')) {
     const before = killer.atb;
     killer.atb = Math.min(before + 40, 150);
     logEvent({

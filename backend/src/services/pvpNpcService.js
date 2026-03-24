@@ -68,12 +68,17 @@ function shuffle(array) {
   return a;
 }
 
+/** True si l'unité DB est considérée comme CAC (même règle que la composition d'équipe joueur). */
+function isMeleeRow(row) {
+  return (row?.attack_type || '').toLowerCase() === 'melee';
+}
+
 /** Compte CAC vs Distance dans une liste d'unités (rows). */
 function countAttackTypes(rows) {
   let cac = 0;
   let ranged = 0;
   for (const r of rows) {
-    if ((r.attack_type || '').toLowerCase() === 'melee') cac++;
+    if (isMeleeRow(r)) cac++;
     else ranged++;
   }
   return { cac, ranged };
@@ -87,7 +92,10 @@ function isValidTeamComposition(rows) {
 
 import { applySpecModifier } from './battleTeamService.js';
 
-function buildCombatUnitFromRowSync(unitRow, level, specialization, index) {
+/**
+ * @param {'front'|'back'} battlePosition - Ligne combat : CAC uniquement devant, distance uniquement derrière.
+ */
+function buildCombatUnitFromRowSync(unitRow, level, specialization, index, battlePosition) {
   const skillData = parseJson(unitRow.skill_data);
   let finalSkillData = skillData;
   if (specialization != null && String(specialization).trim() !== '') {
@@ -100,11 +108,12 @@ function buildCombatUnitFromRowSync(unitRow, level, specialization, index) {
       } catch (_) {}
     }
   }
+  const pos = battlePosition === 'back' ? 'back' : 'front';
   const unit = {
     id: `npc-${index}`,
     user_unit_id: `npc-${index}`,
-    position: index < 3 ? 'front' : 'back',
-    rangeType: (unitRow.attack_type || 'melee') === 'melee' ? 'melee' : 'ranged',
+    position: pos,
+    rangeType: isMeleeRow(unitRow) ? 'melee' : 'ranged',
     name: unitRow.name,
     code: unitRow.code,
     rarity: unitRow.rarity,
@@ -118,13 +127,17 @@ function buildCombatUnitFromRowSync(unitRow, level, specialization, index) {
     base_speed: unitRow.base_speed,
     mastery: unitRow.mastery ?? 0,
     level: level ?? 1,
+    /** Pas de système de puissance joueur pour les PNJ (évite tout héritage erroné). */
+    power_level: 1,
     specialization: specialization ?? null,
     fatigue: 0,
     traits: parseJson(unitRow.traits),
     skill_data: finalSkillData,
     skillData: finalSkillData,
     basic_targeting: 'NO_FOCUS',
-    skill_targeting: 'NO_FOCUS'
+    skill_targeting: 'NO_FOCUS',
+    /** Les PNJ n’ont jamais d’artefacts joueur (buildTeamFromDb n’est pas utilisé ici). */
+    equipped_artifacts: []
   };
   const userUnit = { level: unit.level, specialization: unit.specialization };
   const stats = computeScaledStats(unit, userUnit);
@@ -139,6 +152,11 @@ function buildCombatUnitFromRowSync(unitRow, level, specialization, index) {
 /**
  * Simule un bonus d'artefacts agrégé sur toutes les stats.
  * Le score provient de la grille de difficulté PNJ PvP.
+ * Aligné sur les artefacts joueurs : maxHp = 50 + level*50 par artefact (≈2 par point de score).
+ */
+/**
+ * Simule un léger bonus de stats type « difficulté » (pas des artefacts réels).
+ * Au max (score 200) : +400 PV, +200 ATK/DEF, etc. — insuffisant pour expliquer des centaines de milliers de PV.
  */
 function applyNpcArtifactBonus(unit, artifactBonusScore) {
   const score = Math.max(0, Number(artifactBonusScore) || 0);
@@ -147,7 +165,23 @@ function applyNpcArtifactBonus(unit, artifactBonusScore) {
   unit.defense = Math.max(1, Math.round((unit.defense ?? 0) + score));
   unit.speed = Math.max(1, Math.round((unit.speed ?? 0) + score * 0.5));
   unit.mastery = Math.max(0, Math.round((unit.mastery ?? 0) + score * 0.75));
-  unit.maxHp = Math.max(1, Math.round((unit.maxHp ?? 0) + score * 6));
+  unit.maxHp = Math.max(1, Math.round((unit.maxHp ?? 0) + score * 2));
+}
+
+/** PV max plausibles pour un PNJ PvP après scaling (alerte logs si dépassé — bug ou données corrompues). */
+const WARN_NPC_MAX_HP = 25000;
+
+function warnIfAbnormalNpcStats(unit, context) {
+  const maxHp = Number(unit?.maxHp);
+  if (!Number.isFinite(maxHp) || maxHp <= WARN_NPC_MAX_HP) return;
+  console.warn('[pvpNpc] PV PNJ anormalement élevés (pas causés par les artefacts simulés)', {
+    code: unit?.code,
+    name: unit?.name,
+    maxHp,
+    base_hp: unit?.base_hp,
+    level: unit?.level,
+    ...context
+  });
 }
 
 /** Codes d'unités qui sont des boss de chapitre (campagne). À exclure des équipes PNJ PvP. */
@@ -177,7 +211,7 @@ export async function generateNpcDefense(elo) {
     `SELECT id, code, name, rarity, role, attack_type, element, archetype,
             base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url,
             specA_bonus_stat, specB_bonus_stat, specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
-     FROM units WHERE rarity IN (${placeholders})${excludeBossClause} ORDER BY RAND()`,
+     FROM units WHERE COALESCE(is_boss, 0) = 0 AND rarity IN (${placeholders})${excludeBossClause} ORDER BY RAND()`,
     params
   );
   if (!rows || rows.length < 6) {
@@ -186,7 +220,7 @@ export async function generateNpcDefense(elo) {
       `SELECT id, code, name, rarity, role, attack_type, element, archetype,
               base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url,
               specA_bonus_stat, specB_bonus_stat, specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
-       FROM units WHERE 1=1${excludeBossClause} ORDER BY RAND() LIMIT 20`,
+       FROM units WHERE COALESCE(is_boss, 0) = 0${excludeBossClause} ORDER BY RAND() LIMIT 20`,
       fallbackParams
     );
     if (!fallback || fallback.length === 0) return [];
@@ -218,12 +252,19 @@ function buildNpcTeamFromPool(pool, tier, targetSize = 6) {
     while (specIndices.size < specCount) {
       specIndices.add(Math.floor(Math.random() * desiredSize));
     }
+    const melees = selected.filter((r) => isMeleeRow(r));
+    const rangeds = selected.filter((r) => !isMeleeRow(r));
+    const orderedRows = [...melees, ...rangeds];
+
     const team = [];
     for (let i = 0; i < desiredSize; i++) {
-      const row = selected[i];
+      const row = orderedRows[i];
+      const battlePosition = isMeleeRow(row) ? 'front' : 'back';
       const spec = specIndices.has(i) ? (Math.random() < 0.5 ? 'A' : 'B') : null;
-      const unit = buildCombatUnitFromRowSync(row, tier.level, spec, i);
+      const unit = buildCombatUnitFromRowSync(row, tier.level, spec, i, battlePosition);
       applyNpcArtifactBonus(unit, tier.artifactBonus);
+      unit.equipped_artifacts = [];
+      warnIfAbnormalNpcStats(unit, { eloTier: `${tier.min}-${tier.max}`, artifactBonus: tier.artifactBonus });
       team.push(unit);
     }
     return team;

@@ -1,5 +1,11 @@
 import { applyHardChapterPlayerStatModifiers } from '../../../core/campaignHardModifiers.js';
-import { buildTeamFromDb, validateTeamSlots, getSelectedNoyau, applyNoyauBonus } from '../services/battleTeamService.js';
+import {
+  buildTeamFromDb,
+  validateTeamSlots,
+  getSelectedNoyau,
+  applyNoyauBonus,
+  teamHasUnfitUnits
+} from '../services/battleTeamService.js';
 import {
   getSeasonKey,
   getHardVariantKey,
@@ -205,6 +211,14 @@ export function registerCampaignRoutes(fastify, authenticate) {
       applyHardChapterPlayerStatModifiers(playerTeam, ch);
     }
 
+    if (teamHasUnfitUnits(playerTeam)) {
+      return reply.code(400).send({
+        error: 'UNIT_CANNOT_FIGHT',
+        message:
+          "Impossible de lancer le combat : au moins une unité du preset a des PV à zéro ou est blessée. Soigne tes unités dans la collection."
+      });
+    }
+
     let enemyData;
     try {
       enemyData = await buildEnemyTeamFromStage(ch, st, m, seasonKey);
@@ -237,7 +251,11 @@ export function registerCampaignRoutes(fastify, authenticate) {
         defense: u.defense,
         speed: u.speed,
         traits: Array.isArray(u.traits) ? u.traits : [],
-        skillDescription: getSkillDescriptionForTooltip(u)
+        skillDescription: getSkillDescriptionForTooltip(u),
+        rarity: (u.rarity || 'common').toLowerCase(),
+        archetype: u.archetype ?? null,
+        role: u.role ?? null,
+        fatigue: u.fatigue ?? 0
       })),
       ...enemyTeam.map((u, i) => ({
         id: `B-${i}`,
@@ -252,7 +270,10 @@ export function registerCampaignRoutes(fastify, authenticate) {
         defense: u.defense,
         speed: u.speed,
         traits: Array.isArray(u.traits) ? u.traits : [],
-        skillDescription: getSkillDescriptionForTooltip(u)
+        skillDescription: getSkillDescriptionForTooltip(u),
+        rarity: (u.rarity || 'common').toLowerCase(),
+        archetype: u.archetype ?? null,
+        role: u.role ?? null
       }))
     ];
 

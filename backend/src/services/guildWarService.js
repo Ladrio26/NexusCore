@@ -200,7 +200,9 @@ export async function getWarDefenses(warId) {
     const placeholders = [...unitIds].map(() => '?').join(',');
     const metaRows = await query(
       `SELECT uu.id AS user_unit_id, u.name AS unit_name, uu.level, uu.specialization, uu.power_level,
-              u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery
+              uu.ascension_count, uu.fatigue,
+              u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery,
+              u.role, u.rarity, u.archetype, u.image_url, u.skill_data
        FROM user_units uu
        JOIN units u ON u.id = uu.unit_id
        WHERE uu.id IN (${placeholders})`,
@@ -226,6 +228,13 @@ export async function getWarDefenses(warId) {
         level,
         specialization,
         power_level: powerLevel,
+        role: m.role ?? null,
+        archetype: m.archetype ?? null,
+        rarity: (m.rarity ?? 'common').toLowerCase(),
+        image_url: m.image_url ?? null,
+        skill_data: typeof m.skill_data === 'string' ? (m.skill_data ? JSON.parse(m.skill_data) : null) : m.skill_data,
+        ascension_count: Number(m.ascension_count ?? 0),
+        fatigue: Math.min(100, Math.max(0, Number(m.fatigue ?? 0))),
         stats: {
           maxHp: Number(stats.maxHp ?? 0),
           attack: Number(stats.attack ?? 0),
@@ -246,7 +255,14 @@ export async function getWarDefenses(warId) {
         level: meta?.level ?? u?.level ?? 1,
         specialization: meta?.specialization ?? (u?.specialization ?? null),
         power_level: meta?.power_level ?? (u?.power_level ?? 1),
-        stats: meta?.stats ?? (u?.stats ?? null)
+        stats: meta?.stats ?? (u?.stats ?? null),
+        role: meta?.role ?? u?.role ?? null,
+        archetype: meta?.archetype ?? u?.archetype ?? null,
+        rarity: meta?.rarity ?? (u?.rarity ?? 'common'),
+        image_url: meta?.image_url ?? u?.image_url ?? null,
+        skill_data: meta?.skill_data ?? u?.skill_data ?? null,
+        ascension_count: meta?.ascension_count ?? (u?.ascension_count ?? 0),
+        fatigue: 0
       };
     });
     return {
@@ -260,6 +276,122 @@ export async function getWarDefenses(warId) {
       is_destroyed: Boolean(r.is_destroyed),
       destroyed_at: r.destroyed_at ?? null,
       preset_id: r.preset_id ? Number(r.preset_id) : null
+    };
+  });
+}
+
+/** Nombre de slots occupés (lignes de défense) pour une guilde sur une guerre. */
+async function countFilledDefenseSlotsForWar(warId, guildId) {
+  const rows = await query(
+    'SELECT COUNT(*) AS cnt FROM guild_war_defenses WHERE war_id = ? AND guild_id = ?',
+    [Number(warId), Number(guildId)]
+  );
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+async function upsertGuildSavedDefense(guildId, slotIndex, defenderUserId, units, presetId) {
+  await query(
+    `INSERT INTO guild_war_saved_defenses (guild_id, slot_index, defender_user_id, units_json, preset_id)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       defender_user_id = VALUES(defender_user_id),
+       units_json = VALUES(units_json),
+       preset_id = VALUES(preset_id)`,
+    [
+      Number(guildId),
+      Number(slotIndex),
+      defenderUserId != null ? Number(defenderUserId) : null,
+      JSON.stringify(units ?? []),
+      presetId != null ? Number(presetId) : null
+    ]
+  );
+}
+
+async function deleteGuildSavedDefenseSlot(guildId, slotIndex) {
+  await query('DELETE FROM guild_war_saved_defenses WHERE guild_id = ? AND slot_index = ?', [
+    Number(guildId),
+    Number(slotIndex)
+  ]);
+}
+
+/** Copie la lineup sauvegardée vers une guerre nouvellement créée (pré-remplissage). */
+async function copySavedLineupToWar(warId, guildId) {
+  const saved = await query(
+    'SELECT slot_index, defender_user_id, units_json, preset_id FROM guild_war_saved_defenses WHERE guild_id = ? ORDER BY slot_index',
+    [Number(guildId)]
+  );
+  for (const row of saved) {
+    const uj =
+      typeof row.units_json === 'string'
+        ? row.units_json
+        : JSON.stringify(row.units_json ?? []);
+    await query(
+      `INSERT INTO guild_war_defenses (war_id, guild_id, slot_index, defender_user_id, units_json, is_destroyed, preset_id)
+       VALUES (?, ?, ?, ?, ?, 0, ?)`,
+      [
+        Number(warId),
+        Number(guildId),
+        Number(row.slot_index),
+        row.defender_user_id != null ? Number(row.defender_user_id) : null,
+        uj,
+        row.preset_id != null ? Number(row.preset_id) : null
+      ]
+    );
+  }
+}
+
+/**
+ * Unités du joueur pour composer des presets / propositions (hors contexte guerre).
+ * Même format que GET /guild-war/available-units (used: false pour toutes).
+ */
+export async function getUnitsForGuildWarPresets(userId) {
+  const unitRows = await query(
+    `SELECT uu.id AS user_unit_id, uu.specialization, u.name, u.code, u.rarity, u.element, u.role, u.archetype,
+            u.image_url, uu.level, uu.power_level, uu.ascension_count, uu.fatigue,
+            u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery, u.skill_data
+     FROM user_units uu
+     JOIN units u ON u.id = uu.unit_id
+     WHERE uu.user_id = ?
+     ORDER BY u.rarity DESC, uu.level DESC`,
+    [Number(userId)]
+  );
+  return unitRows.map((r) => {
+    const level = Number(r.level ?? 1);
+    const specializationRaw = r.specialization == null ? null : String(r.specialization || '').trim().toUpperCase();
+    const specialization = specializationRaw === 'A' || specializationRaw === 'B' ? specializationRaw : null;
+    const powerLevel = Number(r.power_level ?? 1);
+    const stats = computeScaledStats(
+      {
+        base_hp: Number(r.base_hp ?? 0),
+        base_attack: Number(r.base_attack ?? 0),
+        base_defense: Number(r.base_defense ?? 0),
+        base_speed: Number(r.base_speed ?? 0),
+        mastery: Number(r.mastery ?? 0)
+      },
+      { level, specialization, power_level: powerLevel }
+    );
+    return {
+      user_unit_id: Number(r.user_unit_id),
+      name: r.name,
+      code: r.code,
+      rarity: r.rarity,
+      element: r.element,
+      role: r.role,
+      archetype: r.archetype,
+      image_url: r.image_url ?? null,
+      level,
+      power_level: powerLevel,
+      ascension_count: Number(r.ascension_count ?? 0),
+      fatigue: 0,
+      skill_data: typeof r.skill_data === 'string' ? (r.skill_data ? JSON.parse(r.skill_data) : null) : r.skill_data,
+      stats: {
+        maxHp: Number(stats.maxHp ?? 0),
+        attack: Number(stats.attack ?? 0),
+        defense: Number(stats.defense ?? 0),
+        speed: Number(stats.speed ?? 0),
+        mastery: Number(stats.mastery ?? 0)
+      },
+      used: false
     };
   });
 }
@@ -375,6 +507,8 @@ export async function placeDefense(actorUserId, warId, slotIndex, defenderUserId
     [warId, guildId, slot, Number(defenderUserId), JSON.stringify(units)]
   );
 
+  await upsertGuildSavedDefense(guildId, slot, Number(defenderUserId), units, null);
+
   return { success: true };
 }
 
@@ -412,6 +546,7 @@ export async function placeDefenseFromPreset(actorUserId, warId, slotIndex, pres
       'DELETE FROM guild_war_defenses WHERE war_id = ? AND guild_id = ? AND slot_index = ?',
       [warId, guildId, slot]
     );
+    await deleteGuildSavedDefenseSlot(guildId, slot);
     return { success: true };
   }
 
@@ -452,10 +587,89 @@ export async function placeDefenseFromPreset(actorUserId, warId, slotIndex, pres
     [warId, guildId, slot, Number(preset.user_id), JSON.stringify(units), Number(presetId)]
   );
 
+  await upsertGuildSavedDefense(guildId, slot, Number(preset.user_id), units, Number(presetId));
+
   return { success: true };
 }
 
 // ── Presets de défense ────────────────────────────────────────────────────────
+
+/**
+ * Enrichit les unités d'un preset (user_unit_id, position) avec les métadonnées complètes
+ * depuis la table units (image_url liée à la création) pour affichage cercles + tooltips.
+ */
+async function enrichPresetUnits(rawUnits, ownerUserId) {
+  if (!Array.isArray(rawUnits) || rawUnits.length === 0) return rawUnits;
+  const unitIds = [...new Set(rawUnits.map((u) => u?.user_unit_id).filter(Boolean))].map(Number);
+  if (unitIds.length === 0) return rawUnits;
+
+  const placeholders = unitIds.map(() => '?').join(',');
+  const metaRows = await query(
+    `SELECT uu.id AS user_unit_id, u.name AS unit_name, uu.level, uu.specialization, uu.power_level,
+            uu.ascension_count, uu.fatigue,
+            u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery,
+            u.role, u.rarity, u.archetype, u.image_url, u.skill_data
+     FROM user_units uu
+     JOIN units u ON u.id = uu.unit_id
+     WHERE uu.id IN (${placeholders}) AND uu.user_id = ?`,
+    [...unitIds, Number(ownerUserId)]
+  );
+  const metaByUserUnitId = new Map();
+  for (const m of metaRows) {
+    const level = Number(m.level ?? 1);
+    const specializationRaw = m.specialization == null ? null : String(m.specialization).trim().toUpperCase();
+    const specialization = specializationRaw === 'A' || specializationRaw === 'B' ? specializationRaw : null;
+    const powerLevel = Number(m.power_level ?? 1);
+    const stats = computeScaledStats(
+      {
+        base_hp: Number(m.base_hp ?? 0),
+        base_attack: Number(m.base_attack ?? 0),
+        base_defense: Number(m.base_defense ?? 0),
+        base_speed: Number(m.base_speed ?? 0),
+        mastery: Number(m.mastery ?? 0)
+      },
+      { level, specialization, power_level: powerLevel }
+    );
+    metaByUserUnitId.set(Number(m.user_unit_id), {
+      name: m.unit_name ?? '?',
+      level,
+      specialization,
+      power_level: powerLevel,
+      role: m.role ?? null,
+      archetype: m.archetype ?? null,
+      rarity: (m.rarity ?? 'common').toLowerCase(),
+      image_url: m.image_url ?? null,
+      skill_data: typeof m.skill_data === 'string' ? (m.skill_data ? JSON.parse(m.skill_data) : null) : m.skill_data,
+      ascension_count: Number(m.ascension_count ?? 0),
+      fatigue: Math.min(100, Math.max(0, Number(m.fatigue ?? 0))),
+      stats: {
+        maxHp: Number(stats.maxHp ?? 0),
+        attack: Number(stats.attack ?? 0),
+        defense: Number(stats.defense ?? 0),
+        speed: Number(stats.speed ?? 0),
+        mastery: Number(stats.mastery ?? 0)
+      }
+    });
+  }
+  return rawUnits.map((u) => {
+    const meta = u?.user_unit_id ? metaByUserUnitId.get(Number(u.user_unit_id)) : null;
+    return {
+      ...u,
+      name: meta?.name ?? u?.name ?? '?',
+      level: meta?.level ?? u?.level ?? 1,
+      specialization: meta?.specialization ?? (u?.specialization ?? null),
+      power_level: meta?.power_level ?? (u?.power_level ?? 1),
+      stats: meta?.stats ?? (u?.stats ?? null),
+      role: meta?.role ?? u?.role ?? null,
+      archetype: meta?.archetype ?? u?.archetype ?? null,
+      rarity: meta?.rarity ?? (u?.rarity ?? 'common'),
+      image_url: meta?.image_url ?? u?.image_url ?? null,
+      skill_data: meta?.skill_data ?? u?.skill_data ?? null,
+      ascension_count: meta?.ascension_count ?? (u?.ascension_count ?? 0),
+      fatigue: 0
+    };
+  });
+}
 
 /** Tous les presets de la guilde (tous les membres) — pour leader/officer */
 export async function getGuildDefensePresets(guildId) {
@@ -467,14 +681,20 @@ export async function getGuildDefensePresets(guildId) {
      ORDER BY u.display_name ASC, p.name ASC`,
     [Number(guildId)]
   );
-  return rows.map((r) => ({
-    id: Number(r.id),
-    user_id: Number(r.user_id),
-    name: r.name,
-    units_json: typeof r.units_json === 'string' ? JSON.parse(r.units_json || '[]') : (r.units_json ?? []),
-    created_at: r.created_at,
-    creator_name: r.creator_name ?? 'Joueur'
-  }));
+  const result = [];
+  for (const r of rows) {
+    const rawUnits = typeof r.units_json === 'string' ? JSON.parse(r.units_json || '[]') : (r.units_json ?? []);
+    const units_json = await enrichPresetUnits(rawUnits, Number(r.user_id));
+    result.push({
+      id: Number(r.id),
+      user_id: Number(r.user_id),
+      name: r.name,
+      units_json,
+      created_at: r.created_at,
+      creator_name: r.creator_name ?? 'Joueur'
+    });
+  }
+  return result;
 }
 
 export async function getMyDefensePresets(userId) {
@@ -488,12 +708,18 @@ export async function getMyDefensePresets(userId) {
     'SELECT id, name, units_json, created_at FROM guild_defense_presets WHERE user_id = ? AND guild_id = ? ORDER BY id ASC',
     [Number(userId), Number(membership[0].guild_id)]
   );
-  return rows.map((r) => ({
-    id: Number(r.id),
-    name: r.name,
-    units_json: typeof r.units_json === 'string' ? JSON.parse(r.units_json || '[]') : (r.units_json ?? []),
-    created_at: r.created_at
-  }));
+  const result = [];
+  for (const r of rows) {
+    const rawUnits = typeof r.units_json === 'string' ? JSON.parse(r.units_json || '[]') : (r.units_json ?? []);
+    const units_json = await enrichPresetUnits(rawUnits, Number(userId));
+    result.push({
+      id: Number(r.id),
+      name: r.name,
+      units_json,
+      created_at: r.created_at
+    });
+  }
+  return result;
 }
 
 export async function saveDefensePreset(userId, name, units) {
@@ -842,6 +1068,9 @@ export async function getWarNotifications(warId, guildId) {
  * Crée les guerres pour la journée suivante.
  */
 export async function runDailyMatchmaking() {
+  const now = new Date();
+  const dateKey = getParisDateKey(now);
+
   // Récupérer toutes les guildes qui ont au moins 1 membre
   const guilds = await query(
     `SELECT g.id, COALESCE(e.elo, ?) AS elo,
@@ -862,7 +1091,15 @@ export async function runDailyMatchmaking() {
   // Ignorer les guildes déjà en guerre
   const available = guilds.filter((g) => !g.active_war_id);
 
-  if (available.length < 2) return { matched: 0 };
+  if (available.length < 2) {
+    for (const g of available) {
+      await query('INSERT IGNORE INTO guild_war_unmatched (date_key, guild_id) VALUES (?, ?)', [
+        dateKey,
+        g.id
+      ]);
+    }
+    return { matched: 0 };
+  }
 
   // Trier par Elo
   available.sort((a, b) => a.elo - b.elo);
@@ -889,7 +1126,6 @@ export async function runDailyMatchmaking() {
   }
 
   // Créer les guerres (heure de Paris : minuit, midi, minuit suivant)
-  const now = new Date();
   const startTime = getParisMidnightDate(now);
   const attackStart = getParisNoonDate(now);
   const endTime = getParisMidnightDate(new Date(now.getTime() + 24 * 60 * 60 * 1000));
@@ -901,10 +1137,24 @@ export async function runDailyMatchmaking() {
     await getOrCreateGuildElo(gA);
     await getOrCreateGuildElo(gB);
 
-    await query(
+    const ins = await query(
       `INSERT INTO guild_wars (guild_a_id, guild_b_id, start_time, attack_phase_start, end_time, status)
        VALUES (?, ?, ?, ?, ?, 'preparation')`,
       [gA, gB, toMysql(startTime), toMysql(attackStart), toMysql(endTime)]
+    );
+    const warId = Number(ins.insertId);
+    if (warId) {
+      await copySavedLineupToWar(warId, gA);
+      await copySavedLineupToWar(warId, gB);
+    }
+  }
+
+  // Enregistrer les guildes non matchées (nombre impair) pour récompense à la fin de la période
+  const unmatched = available.filter((g) => !used.has(g.id));
+  for (const g of unmatched) {
+    await query(
+      'INSERT IGNORE INTO guild_war_unmatched (date_key, guild_id) VALUES (?, ?)',
+      [dateKey, g.id]
     );
   }
 
@@ -924,36 +1174,68 @@ export async function resolveFinishedWars() {
   );
 
   let resolved = 0;
+  const warDateKeys = new Set();
   for (const warRow of wars) {
     await resolveWar(warRow);
+    const startTime = parseSqlUtcDate(warRow.start_time);
+    if (startTime) warDateKeys.add(getParisDateKey(startTime));
     resolved++;
   }
+  // Si aucune guerre à résoudre, les guildes non matchées d'hier doivent quand même être récompensées
+  if (warDateKeys.size === 0) {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    warDateKeys.add(getParisDateKey(yesterday));
+  }
+  await grantUnmatchedGuildRewards([...warDateKeys]);
   return { resolved };
+}
+
+/**
+ * Distribue 75 pièces (REWARD_DRAW) aux membres des guildes non matchées
+ * pour les date_key donnés, puis supprime les entrées traitées.
+ */
+async function grantUnmatchedGuildRewards(dateKeys) {
+  if (dateKeys.length === 0) return;
+  const placeholders = dateKeys.map(() => '?').join(',');
+  const rows = await query(
+    `SELECT id, date_key, guild_id FROM guild_war_unmatched WHERE date_key IN (${placeholders})`,
+    dateKeys
+  );
+  if (rows.length === 0) return;
+  for (const row of rows) {
+    await getOrCreateGuildElo(Number(row.guild_id));
+  }
+  await withTransaction(async (tx) => {
+    for (const row of rows) {
+      const gid = Number(row.guild_id);
+      await tx.query('UPDATE guild_elo SET draws = draws + 1 WHERE guild_id = ?', [gid]);
+      const members = await tx.query('SELECT user_id FROM guild_members WHERE guild_id = ?', [row.guild_id]);
+      for (const m of members) {
+        await addGuildCurrency(Number(m.user_id), REWARD_DRAW, tx);
+      }
+      await tx.query('DELETE FROM guild_war_unmatched WHERE id = ?', [row.id]);
+    }
+  });
 }
 
 async function resolveWar(warRow) {
   const war = normalizeWar(warRow);
   const { id: warId, guild_a_id: gA, guild_b_id: gB } = war;
 
-  // Compter les slots vides comme score automatique
-  const defenses = await getWarDefenses(warId);
-  const gADefenses = defenses.filter((d) => d.guild_id === gA);
-  const gBDefenses = defenses.filter((d) => d.guild_id === gB);
-
-  // Slots vides = point automatique pour l'adversaire
+  /** Points slots vides : normalement appliqués au passage en phase d'attaque (attack_gap_applied). */
   let scoreA = war.guild_a_score;
   let scoreB = war.guild_b_score;
 
-  for (let slot = 1; slot <= MAX_DEFENSE_SLOTS; slot++) {
-    const gASlot = gADefenses.find((d) => d.slot_index === slot);
-    const gBSlot = gBDefenses.find((d) => d.slot_index === slot);
-
-    // Si slot vide côté A → point pour B (sauf si déjà compté)
-    if (!gASlot || gASlot.is_destroyed) {
-      // Ne pas recalculer si déjà détruit (score déjà incrémenté en temps réel)
+  const gapRaw = warRow.attack_gap_applied ?? warRow.ATTACK_GAP_APPLIED;
+  const gapApplied = Number(gapRaw ?? 0) === 1;
+  if (!gapApplied) {
+    const defenses = await getWarDefenses(warId);
+    const gADefenses = defenses.filter((d) => d.guild_id === gA);
+    const gBDefenses = defenses.filter((d) => d.guild_id === gB);
+    for (let slot = 1; slot <= MAX_DEFENSE_SLOTS; slot++) {
+      const gASlot = gADefenses.find((d) => d.slot_index === slot);
+      const gBSlot = gBDefenses.find((d) => d.slot_index === slot);
       if (!gASlot) scoreB = Math.min(MAX_DEFENSE_SLOTS, scoreB + 1);
-    }
-    if (!gBSlot || gBSlot.is_destroyed) {
       if (!gBSlot) scoreA = Math.min(MAX_DEFENSE_SLOTS, scoreA + 1);
     }
   }
@@ -1017,15 +1299,39 @@ async function resolveWar(warRow) {
 
 /**
  * Met à jour le status des guerres qui doivent passer en phase d'attaque.
+ * Ajoute immédiatement au compteur : 1 point par slot de défense non configuré chez l'adversaire.
  */
 export async function transitionToAttackPhase() {
-  const result = await query(
-    `UPDATE guild_wars
-     SET status = 'attack'
+  const pending = await query(
+    `SELECT id, guild_a_id, guild_b_id FROM guild_wars
      WHERE status = 'preparation' AND attack_phase_start <= UTC_TIMESTAMP()`,
     []
   );
-  return { updated: result.affectedRows ?? 0 };
+  let updated = 0;
+  for (const w of pending) {
+    const warId = Number(w.id);
+    const gA = Number(w.guild_a_id);
+    const gB = Number(w.guild_b_id);
+    const [filledA, filledB] = await Promise.all([
+      countFilledDefenseSlotsForWar(warId, gA),
+      countFilledDefenseSlotsForWar(warId, gB)
+    ]);
+    const emptyA = Math.max(0, MAX_DEFENSE_SLOTS - filledA);
+    const emptyB = Math.max(0, MAX_DEFENSE_SLOTS - filledB);
+    const addToA = emptyB;
+    const addToB = emptyA;
+    const res = await query(
+      `UPDATE guild_wars
+       SET status = 'attack',
+           guild_a_score = guild_a_score + ?,
+           guild_b_score = guild_b_score + ?,
+           attack_gap_applied = 1
+       WHERE id = ? AND status = 'preparation'`,
+      [addToA, addToB, warId]
+    );
+    if (Number(res.affectedRows ?? 0) > 0) updated += 1;
+  }
+  return { updated };
 }
 
 // ── Vue complète pour un utilisateur ─────────────────────────────────────────

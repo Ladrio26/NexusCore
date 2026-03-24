@@ -203,8 +203,12 @@ const spot = ref<Spot | null>(null);
 const winW = ref(window.innerWidth);
 const winH = ref(window.innerHeight);
 const CARD_W = 340;
+const CARD_W_MOBILE = 320;
 const CARD_H_EST = 250;
 const GAP = 22;
+const MOBILE_BREAKPOINT = 768;
+
+const isMobile = computed(() => winW.value < MOBILE_BREAKPOINT);
 
 function updateSize() {
   winW.value = window.innerWidth;
@@ -227,10 +231,10 @@ async function loadStep(idx: number) {
     await wait(180);
   }
 
-  // Ouvrir le sidebar sur mobile si besoin
+  // Ouvrir le sidebar sur mobile si besoin (délai plus long pour l'animation)
   if (s.needsSidebar && window.innerWidth <= 768) {
     window.dispatchEvent(new CustomEvent('tutorial:open-sidebar'));
-    await wait(350);
+    await wait(450);
   }
 
   if (!s.target) return;
@@ -241,8 +245,10 @@ async function loadStep(idx: number) {
   const el = document.querySelector(s.target);
   if (!el) return;
 
-  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  await wait(200);
+  // Sur mobile, center pour mieux cadrer l'élément ; desktop nearest
+  const block = window.innerWidth <= 768 ? 'center' : 'nearest';
+  el.scrollIntoView({ behavior: 'smooth', block });
+  await wait(window.innerWidth <= 768 ? 350 : 200);
 
   const rect = el.getBoundingClientRect();
   const p = s.padding;
@@ -262,6 +268,20 @@ function wait(ms: number) {
 const cardStyle = computed((): Record<string, string> => {
   const w = winW.value;
   const h = winH.value;
+  const mobile = isMobile.value;
+
+  // Mobile : mode bottom-sheet (carte toujours en bas, pleine largeur)
+  if (mobile) {
+    const pad = w < 360 ? 8 : 12;
+    return {
+      position: 'fixed',
+      left: `${pad}px`,
+      right: `${pad}px`,
+      bottom: 'max(12px, env(safe-area-inset-bottom, 0px))',
+      width: 'auto',
+      maxWidth: 'none',
+    };
+  }
 
   if (!spot.value) {
     return {
@@ -321,7 +341,7 @@ const arrowDirection = computed(() => {
 });
 
 const arrowStyle = computed((): Record<string, string> | null => {
-  if (!spot.value) return null;
+  if (!spot.value || isMobile.value) return null; /* Pas de flèche sur mobile (carte en bas) */
   const s = spot.value;
   const dir = arrowDirection.value;
 
@@ -620,5 +640,78 @@ onUnmounted(() => window.removeEventListener('resize', updateSize));
 .tut-arrow-anim-enter-from,
 .tut-arrow-anim-leave-to {
   opacity: 0;
+}
+
+/* Mobile (< 768px) */
+@media (max-width: 767px) {
+  .tut-card {
+    border-radius: 20px 20px 0 0;
+    padding: 1rem 1.1rem 1.25rem;
+    padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+    max-width: none;
+    max-height: 70vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tut-card-progress {
+    margin-bottom: 0.85rem;
+    gap: 5px;
+  }
+
+  .tut-dot {
+    width: 6px;
+    height: 6px;
+  }
+
+  .tut-dot--done {
+    width: 8px;
+  }
+
+  .tut-dot--active {
+    width: 18px;
+  }
+
+  .tut-card-title {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+    line-height: 1.35;
+  }
+
+  .tut-card-text {
+    font-size: 0.82rem;
+    line-height: 1.6;
+    margin-bottom: 1rem;
+  }
+
+  .tut-card-actions {
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
+  .tut-btn-skip {
+    width: 100%;
+    order: 3;
+    padding: 0.5rem;
+    font-size: 0.8rem;
+    min-height: 44px;
+  }
+
+  .tut-btn-group {
+    flex: 1;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
+
+  .tut-btn-prev,
+  .tut-btn-next {
+    padding: 0.55rem 1rem;
+    min-height: 44px;
+    font-size: 0.9rem;
+  }
+
+  .tut-spotlight-ring {
+    border-radius: 10px;
+  }
 }
 </style>

@@ -34,6 +34,11 @@ Base technique du jeu Nexus Core Arena.
 
 Le backend utilise le port fixe configuré dans `backend/.env` (`3205` par défaut pour ce projet). Si tu veux des ports de secours en dev, ajoute explicitement `PORT_FALLBACKS=3001-3010,3100`. Le frontend peut suivre automatiquement via `VITE_API_TARGET=auto`.
 
+## Déploiement (front)
+
+- Le build produit `frontend/dist/build-id.json`. Pour que les joueurs voient vite une nouvelle version après déploiement, configure le serveur (ex. nginx) avec **`Cache-Control: no-store`** (ou équivalent) pour ce fichier, afin d’éviter un ancien `build-id` en cache navigateur.
+- **Détection de nouvelle version (bannière)** : en `npm run dev`, le contrôle est **désactivé** par défaut. Pour le tester en local, ajoute dans `frontend/.env.local` : `VITE_CLIENT_BUILD_CHECK_DEV=true` (puis redémarre Vite), ou utilise `npm run build && npm run preview`. Intervalle optionnel : `VITE_BUILD_CHECK_INTERVAL_MS` (minimum 15000).
+
 ## Structure
 
 - `database/schema.sql` : schéma MariaDB

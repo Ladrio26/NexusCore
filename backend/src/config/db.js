@@ -159,8 +159,53 @@ export async function ensureDatabaseSchema() {
       }
     }
 
+    for (const col of ['divine_cores', 'divine_credits', 'divine_fragments']) {
+      try {
+        await query(`ALTER TABLE user_wallet ADD COLUMN ${col} INT UNSIGNED NOT NULL DEFAULT 0`);
+      } catch (err) {
+        if (err?.code !== 'ER_DUP_FIELDNAME') {
+          lastError = err;
+          if (attempt < 10) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+
     try {
       await query('ALTER TABLE guild_war_defenses ADD COLUMN preset_id INT UNSIGNED NULL');
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    try {
+      await query(
+        'ALTER TABLE guild_wars ADD COLUMN attack_gap_applied TINYINT(1) NOT NULL DEFAULT 0'
+      );
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    try {
+      await query(
+        "ALTER TABLE units ADD COLUMN is_boss TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = boss (hors sanctuaire / bestiaire / tirages)'"
+      );
     } catch (err) {
       if (err?.code !== 'ER_DUP_FIELDNAME') {
         lastError = err;
@@ -185,12 +230,28 @@ export async function ensureDatabaseSchema() {
       }
     }
 
+    for (const col of ['combat_kills', 'combat_victories', 'combat_defeats', 'combat_damage_dealt', 'combat_healing_done']) {
+      try {
+        await query(`ALTER TABLE user_units ADD COLUMN ${col} INT UNSIGNED NOT NULL DEFAULT 0`);
+      } catch (err) {
+        if (err?.code !== 'ER_DUP_FIELDNAME') {
+          lastError = err;
+          if (attempt < 10) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+
     await query(
       "UPDATE users SET role = 'player' WHERE role IS NULL OR TRIM(role) = '' OR LOWER(role) NOT IN ('player', 'admin')"
     );
     await query('UPDATE user_units SET power_level = 1 WHERE power_level IS NULL OR power_level < 1');
     await query('UPDATE user_units SET power_openings = 1 WHERE power_openings IS NULL OR power_openings < 1');
     await query('UPDATE user_units SET fatigue_last_update = NOW() WHERE fatigue_last_update IS NULL');
+    await query("UPDATE units SET is_boss = 1 WHERE code LIKE 'BOSS_CH%'");
 
     await query(`
       CREATE TABLE IF NOT EXISTS pvp_rank_reward_claims (
@@ -219,9 +280,11 @@ export async function ensureDatabaseSchema() {
       CREATE TABLE IF NOT EXISTS user_artifacts (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         user_id INT UNSIGNED NOT NULL,
-        stat_key VARCHAR(16) NOT NULL,
+        stat_key VARCHAR(32) NOT NULL,
         level INT UNSIGNED NOT NULL DEFAULT 0,
         equipped_user_unit_id INT UNSIGNED DEFAULT NULL,
+        rarity VARCHAR(16) NOT NULL DEFAULT 'common',
+        extra_data JSON DEFAULT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         KEY idx_user_artifacts_user (user_id),
         KEY idx_user_artifacts_equipped_unit (equipped_user_unit_id),
@@ -229,6 +292,17 @@ export async function ensureDatabaseSchema() {
         FOREIGN KEY (equipped_user_unit_id) REFERENCES user_units(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    try {
+      await query('ALTER TABLE user_artifacts ADD COLUMN rarity VARCHAR(16) NOT NULL DEFAULT \'common\'');
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+    try {
+      await query('ALTER TABLE user_artifacts ADD COLUMN extra_data JSON DEFAULT NULL');
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+    await query("UPDATE user_artifacts SET rarity = 'uncommon' WHERE stat_key = 'immune'");
     await query(`
       CREATE TABLE IF NOT EXISTS guilds (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -370,6 +444,7 @@ export async function ensureDatabaseSchema() {
         end_time DATETIME NOT NULL,
         guild_a_score TINYINT UNSIGNED NOT NULL DEFAULT 0,
         guild_b_score TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        attack_gap_applied TINYINT(1) NOT NULL DEFAULT 0,
         status ENUM('preparation','attack','finished') NOT NULL DEFAULT 'preparation',
         winner_guild_id INT UNSIGNED NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -394,6 +469,20 @@ export async function ensureDatabaseSchema() {
         KEY idx_gwd_war (war_id),
         KEY idx_gwd_guild (guild_id),
         FOREIGN KEY (war_id) REFERENCES guild_wars(id) ON DELETE CASCADE,
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE,
+        FOREIGN KEY (defender_user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS guild_war_saved_defenses (
+        guild_id INT UNSIGNED NOT NULL,
+        slot_index TINYINT UNSIGNED NOT NULL,
+        defender_user_id INT UNSIGNED NULL,
+        units_json JSON NOT NULL,
+        preset_id INT UNSIGNED NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (guild_id, slot_index),
+        KEY idx_gwsd_guild (guild_id),
         FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE,
         FOREIGN KEY (defender_user_id) REFERENCES users(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -451,6 +540,17 @@ export async function ensureDatabaseSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     await query(`
+      CREATE TABLE IF NOT EXISTS guild_war_unmatched (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        date_key VARCHAR(10) NOT NULL,
+        guild_id INT UNSIGNED NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_unmatched_date_guild (date_key, guild_id),
+        KEY idx_gwu_date (date_key),
+        FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
       CREATE TABLE IF NOT EXISTS feedback_tickets (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         user_id INT UNSIGNED NOT NULL,
@@ -462,6 +562,119 @@ export async function ensureDatabaseSchema() {
         KEY idx_feedback_tickets_user (user_id),
         KEY idx_feedback_tickets_status (status),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS user_guaranteed_next_mythic (
+        user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+        used TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS user_guaranteed_next_legendary_standard (
+        user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+        used TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      INSERT IGNORE INTO user_guaranteed_next_mythic (user_id, used)
+      SELECT id, 0 FROM users WHERE LOWER(TRIM(display_name)) IN ('lzdalpha', 'hixxy', 'klinx')
+    `);
+    await query(
+      `INSERT IGNORE INTO user_guaranteed_next_legendary_standard (user_id, used)
+       SELECT id, 0 FROM users WHERE display_name = ?`,
+      ["Minipoucce l'oméga gentil (ou l'oméga sympa si vous voulez ^_^)"]
+    );
+    try {
+      await query(
+        "ALTER TABLE users ADD COLUMN rest_center_slots JSON DEFAULT NULL COMMENT 'Centre de Repos: max 6 user_unit_id'"
+      );
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+    await query(`
+      CREATE TABLE IF NOT EXISTS user_dungeon_progress (
+        user_id INT UNSIGNED NOT NULL,
+        element VARCHAR(16) NOT NULL,
+        max_unlocked_level TINYINT UNSIGNED NOT NULL DEFAULT 1,
+        PRIMARY KEY (user_id, element),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS user_dungeon_run (
+        user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+        element VARCHAR(16) NOT NULL,
+        level TINYINT UNSIGNED NOT NULL,
+        combats_cleared TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0=début série, 1=après combat1, 2=après combat2',
+        team_json JSON NOT NULL,
+        selected_noyau_index INT NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    try {
+      await query('ALTER TABLE user_dungeon_run DROP COLUMN next_combat_index');
+    } catch {
+      /* colonne absente ou déjà migrée */
+    }
+    try {
+      await query(
+        'ALTER TABLE user_dungeon_run ADD COLUMN combats_cleared TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER level'
+      );
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        /* ignore */
+      }
+    }
+    await query(`
+      CREATE TABLE IF NOT EXISTS user_dungeon_floor_clear (
+        user_id INT UNSIGNED NOT NULL,
+        element VARCHAR(16) NOT NULL,
+        level TINYINT UNSIGNED NOT NULL,
+        cleared_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, element, level),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS dungeon_encounters (
+        element VARCHAR(16) NOT NULL,
+        level TINYINT UNSIGNED NOT NULL,
+        combat_index TINYINT UNSIGNED NOT NULL,
+        enemy_template_json JSON NULL COMMENT 'Même forme que campaign enemy_template: { units: [{ code, position, level, specialization }] }',
+        PRIMARY KEY (element, level, combat_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS gacha_sanctuary_pull_log (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED NOT NULL,
+        pull_type VARCHAR(32) NOT NULL,
+        banner_key VARCHAR(64) NOT NULL,
+        cost_currency VARCHAR(32) NOT NULL,
+        cost_amount INT UNSIGNED NOT NULL DEFAULT 0,
+        unit_id INT UNSIGNED NOT NULL,
+        unit_rarity VARCHAR(32) NOT NULL,
+        is_new_unit TINYINT(1) NOT NULL DEFAULT 0,
+        duplicate_credits INT UNSIGNED NOT NULL DEFAULT 0,
+        duplicate_fragments INT UNSIGNED NOT NULL DEFAULT 0,
+        batch_id CHAR(36) DEFAULT NULL,
+        batch_index TINYINT UNSIGNED DEFAULT NULL,
+        batch_size TINYINT UNSIGNED DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_gacha_sanctuary_pull_user_created (user_id, created_at),
+        KEY idx_gacha_sanctuary_pull_batch (batch_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE RESTRICT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     return;

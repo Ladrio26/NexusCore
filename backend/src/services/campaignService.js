@@ -2,6 +2,13 @@ import { query, getPool } from '../config/db.js';
 import { computeScaledStats } from '../../../core/combatEngine.js';
 import { addXp } from './xpService.js';
 import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
+import {
+  getRestCenterUserUnitIdSet,
+  getRestCenterSetsForUserIds,
+  REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE,
+  DEFAULT_FATIGUE_RECOVERY_PER_MINUTE
+} from './restCenterService.js';
+import { getUnitIdsWithXpBoost } from './artifactService.js';
 
 const MIN_UNITS_TO_UNLOCK = 5;
 const HARD_MODE_UNLOCK_NORMAL_CHAPTER = 5;
@@ -181,15 +188,13 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
 
     const unit = await getUnitByCode(row.boss_unit_code);
     if (!unit) throw new Error('BOSS_UNIT_NOT_FOUND');
-    const modRows = await query('SELECT normal_modifier, hard_modifier FROM campaign_boss_modifiers WHERE chapter = ? AND stage = ?', [chapter, stage]);
-    const mod = mode === 'hard' && modRows[0]?.hard_modifier
-      ? (typeof modRows[0].hard_modifier === 'string' ? JSON.parse(modRows[0].hard_modifier) : modRows[0].hard_modifier)
-      : (modRows[0]?.normal_modifier ? (typeof modRows[0].normal_modifier === 'string' ? JSON.parse(modRows[0].normal_modifier) : modRows[0].normal_modifier) : null);
-    if (mode === 'hard' && seasonKey) {
-      const variantKey = getHardVariantKey(seasonKey, chapter);
-      if (mod && typeof mod === 'object') mod.variantKey = variantKey;
+    // Boss chapitre 10 : résurrection unique à 100% HP (normal + hard)
+    // En hard uniquement : après résurrection, applique DOT 1 tour à tous les ennemis à chaque action du boss
+    if (chapter === 10 && stage === 10) {
+      bossModifier = mode === 'hard'
+        ? { resurrectOnce: true, resurrectThenDot: true }
+        : { resurrectOnce: true };
     }
-    bossModifier = mod || null;
     const bossLevel = mode === 'hard' ? (template?.boss_hard_level ?? template?.boss_level ?? null) : (template?.boss_level ?? null);
     const bossSpec = mode === 'hard' ? (template?.boss_hard_specialization ?? 'A') : (template?.boss_specialization ?? 'A');
     const enemy = buildUnitForCombat(unit, mult, team.length + 1, true, bossLevel, bossSpec);
@@ -236,6 +241,7 @@ function buildUnitForCombat(unitRow, multiplier, index, isBoss, levelOverride, s
     id: unitRow.id,
     name: unitRow.name,
     code: unitRow.code,
+    rarity: (unitRow.rarity || 'common').toLowerCase(),
     image_url: unitRow.image_url ?? null,
     element: unitRow.element,
     archetype: unitRow.archetype,
@@ -297,10 +303,17 @@ export async function computeStageRewards(userId, chapter, stage, mode, seasonKe
 
 export async function applyRewardsTransaction(userId, rewards) {
   if (!rewards) return;
+  const credits = rewards.credits ?? 0;
+  const cores = rewards.cores ?? 0;
+  const fragments = rewards.fragments ?? 0;
+  const divineCredits = Math.ceil(credits * 0.1);
+  const divineCores = Math.ceil(cores * 0.1);
+  const divineFragments = Math.ceil(fragments * 0.1);
   await query(
-    `UPDATE user_wallet SET credits = credits + ?, cores = cores + ?, fragments = fragments + ?, ascension_essence = ascension_essence + ?
+    `UPDATE user_wallet SET credits = credits + ?, cores = cores + ?, fragments = fragments + ?, ascension_essence = ascension_essence + ?,
+     divine_credits = divine_credits + ?, divine_cores = divine_cores + ?, divine_fragments = divine_fragments + ?
      WHERE user_id = ?`,
-    [rewards.credits ?? 0, rewards.cores ?? 0, rewards.fragments ?? 0, rewards.ascension_essence ?? 0, userId]
+    [credits, cores, fragments, rewards.ascension_essence ?? 0, divineCredits, divineCores, divineFragments, userId]
   );
 }
 
@@ -343,28 +356,45 @@ export async function grantCampaignXp(userId, teamSlots, survivors, isBoss, mode
   } catch (err) {
     const msg = (err?.message || err?.code || '').toString();
     if (msg.includes('fatigue_last_update') || err?.code === 'ER_BAD_FIELD_ERROR') {
-      rows = await query(`SELECT id, fatigue FROM user_units WHERE id IN (${placeholders})`, ids);
+      rows = await query(`SELECT id, user_id, fatigue FROM user_units WHERE id IN (${placeholders})`, ids);
     } else {
       throw err;
+    }
+  }
+  let restSet = new Set();
+  if (useComputedFatigue) {
+    try {
+      restSet = await getRestCenterUserUnitIdSet(userId);
+    } catch (e) {
+      if (!(e?.message || '').includes('rest_center_slots')) throw e;
     }
   }
   const fatigueById = new Map(
     rows.map((r) => {
       const fatigue = useComputedFatigue
-        ? computeCurrentFatigue({
-            fatigue: r.fatigue ?? 0,
-            fatigue_last_update: r.fatigue_last_update,
-            fatigue_last_update_ts: r.fatigue_last_update_ts
-          }).fatigue
+        ? computeCurrentFatigue(
+            {
+              fatigue: r.fatigue ?? 0,
+              fatigue_last_update: r.fatigue_last_update,
+              fatigue_last_update_ts: r.fatigue_last_update_ts
+            },
+            {
+              fatigueRecoveryPerMinute: restSet.has(Number(r.id))
+                ? REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE
+                : DEFAULT_FATIGUE_RECOVERY_PER_MINUTE
+            }
+          ).fatigue
         : (r.fatigue ?? 0);
       return [r.id, fatigue];
     })
   );
+  const xpBoostIds = await getUnitIdsWithXpBoost(ids);
   const results = [];
   for (const id of ids) {
     const fatigue = fatigueById.get(id) ?? 0;
     let amount = baseXp;
     if (fatigue > FATIGUE_XP_HALF_THRESHOLD) amount = Math.floor(amount / 2);
+    if (xpBoostIds.has(id)) amount = Math.floor(amount * 1.5);
     try {
       const r = await addXp(id, amount);
       results.push({ userUnitId: id, ...r });
@@ -386,7 +416,7 @@ export async function applyCampaignFatigue(userUnitIds) {
   let hasFatigueLastUpdate = false;
   try {
     rows = await query(
-      `SELECT id, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
+      `SELECT id, user_id, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
       userUnitIds
     );
     hasFatigueLastUpdate = true;
@@ -401,13 +431,27 @@ export async function applyCampaignFatigue(userUnitIds) {
     }
     throw err;
   }
+  let restMap = new Map();
+  try {
+    const ownerIds = [...new Set(rows.map((row) => Number(row.user_id)).filter((n) => Number.isInteger(n) && n > 0))];
+    restMap = await getRestCenterSetsForUserIds(ownerIds);
+  } catch (e) {
+    if (!(e?.message || '').includes('rest_center_slots')) throw e;
+  }
   for (const r of rows) {
+    const restSet = restMap.get(Number(r.user_id)) ?? new Set();
+    const recoveryRate = restSet.has(Number(r.id))
+      ? REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE
+      : DEFAULT_FATIGUE_RECOVERY_PER_MINUTE;
     const { fatigue: current, minutesPassed } = hasFatigueLastUpdate
-      ? computeCurrentFatigue({
-          fatigue: r.fatigue ?? 0,
-          fatigue_last_update: r.fatigue_last_update,
-          fatigue_last_update_ts: r.fatigue_last_update_ts
-        })
+      ? computeCurrentFatigue(
+          {
+            fatigue: r.fatigue ?? 0,
+            fatigue_last_update: r.fatigue_last_update,
+            fatigue_last_update_ts: r.fatigue_last_update_ts
+          },
+          { fatigueRecoveryPerMinute: recoveryRate }
+        )
       : { fatigue: r.fatigue ?? 0, minutesPassed: 0 };
     const newFatigue = Math.min(100, current + FATIGUE_PER_COMBAT);
     await query(

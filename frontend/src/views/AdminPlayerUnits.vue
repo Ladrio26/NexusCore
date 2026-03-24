@@ -39,6 +39,11 @@
             <th>XP</th>
             <th>Spé</th>
             <th>Fatigue</th>
+            <th>KO</th>
+            <th>V.</th>
+            <th>D.</th>
+            <th>Dégâts</th>
+            <th>Soins</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -63,6 +68,11 @@
             <td>
               <input v-model.number="row.editFatigue" type="number" min="0" max="100" class="nx-input cell-input" />
             </td>
+            <td class="cell-stat" :title="'Éliminations'">{{ row.combat_kills ?? 0 }}</td>
+            <td class="cell-stat cell-victory" :title="'Victoires'">{{ row.combat_victories ?? 0 }}</td>
+            <td class="cell-stat cell-defeat" :title="'Défaites'">{{ row.combat_defeats ?? 0 }}</td>
+            <td class="cell-stat" :title="'Dégâts infligés'">{{ (row.combat_damage_dealt ?? 0).toLocaleString('fr-FR') }}</td>
+            <td class="cell-stat" :title="'Soins effectués'">{{ (row.combat_healing_done ?? 0).toLocaleString('fr-FR') }}</td>
             <td>
               <button
                 type="button"
@@ -104,6 +114,11 @@ type UnitRow = {
   xp: number;
   specialization?: string | null;
   fatigue: number;
+  combat_kills?: number;
+  combat_victories?: number;
+  combat_defeats?: number;
+  combat_damage_dealt?: number;
+  combat_healing_done?: number;
   editLevel: number;
   editXp: number;
   editSpec: string;
@@ -161,20 +176,28 @@ async function loadUnits() {
   try {
     const { data } = await api.get<{ units: unknown[] }>('/collection', { params: { userId } });
     const list = Array.isArray(data.units) ? data.units : [];
-    units.value = list.map((u: Record<string, unknown>) => ({
-      user_unit_id: Number(u.user_unit_id),
-      unit_id: Number(u.unit_id ?? 0),
-      name: String(u.name ?? ''),
-      rarity: String(u.rarity ?? 'common'),
-      level: Number(u.level ?? 1),
-      xp: Number(u.xp ?? 0),
-      specialization: u.specialization != null && u.specialization !== '' ? String(u.specialization) : null,
-      fatigue: Number(u.fatigue ?? 0),
-      editLevel: Number(u.level ?? 1),
-      editXp: Number(u.xp ?? 0),
-      editSpec: u.specialization != null && u.specialization !== '' ? String(u.specialization) : '',
-      editFatigue: Number(u.fatigue ?? 0)
-    }));
+    units.value = list.map((u) => {
+      const r = u as Record<string, unknown>;
+      return {
+      user_unit_id: Number(r.user_unit_id),
+      unit_id: Number(r.unit_id ?? 0),
+      name: String(r.name ?? ''),
+      rarity: String(r.rarity ?? 'common'),
+      level: Number(r.level ?? 1),
+      xp: Number(r.xp ?? 0),
+      specialization: r.specialization != null && r.specialization !== '' ? String(r.specialization) : null,
+      fatigue: Number(r.fatigue ?? 0),
+      combat_kills: Number(r.combat_kills ?? 0),
+      combat_victories: Number(r.combat_victories ?? 0),
+      combat_defeats: Number(r.combat_defeats ?? 0),
+      combat_damage_dealt: Number(r.combat_damage_dealt ?? 0),
+      combat_healing_done: Number(r.combat_healing_done ?? 0),
+      editLevel: Number(r.level ?? 1),
+      editXp: Number(r.xp ?? 0),
+      editSpec: r.specialization != null && r.specialization !== '' ? String(r.specialization) : '',
+      editFatigue: Number(r.fatigue ?? 0)
+    };
+    });
   } catch (err) {
     errorMessage.value = 'Impossible de charger les unités de ce joueur.';
     units.value = [];
@@ -377,6 +400,32 @@ onMounted(() => {
 .badge.rarity-epic { background: rgba(168, 85, 247, 0.3); color: #e9d5ff; }
 .badge.rarity-legendary { background: rgba(245, 158, 11, 0.3); color: #fde68a; }
 .badge.rarity-mythic { background: rgba(239, 68, 68, 0.25); color: #fecaca; }
+
+.cell-stat {
+  text-align: center;
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+.cell-stat.cell-victory { color: #4ade80; }
+.cell-stat.cell-defeat { color: #f87171; }
+
+.cell-stat {
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.9);
+}
+.cell-stat.cell-victory { color: #4ade80; }
+.cell-stat.cell-defeat { color: #f87171; }
+
+.cell-stat {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+}
+
+.cell-stat.cell-victory { color: #4ade80; }
+.cell-stat.cell-defeat { color: #f87171; }
 
 .nx-btn-small {
   padding: 6px 12px;

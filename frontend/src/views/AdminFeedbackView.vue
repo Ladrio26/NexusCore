@@ -80,7 +80,7 @@
           <select
             :value="selectedTicket.status"
             class="nx-input ticket-status-select"
-            @change="(e) => { updateStatus(selectedTicket.id, (e.target as HTMLSelectElement).value); }"
+            @change="(e) => { const t = selectedTicket; if (!t) return; updateStatus(t.id, (e.target as HTMLSelectElement).value); }"
           >
             <option value="proposes">Proposé</option>
             <option value="non_prio">Non Prio</option>

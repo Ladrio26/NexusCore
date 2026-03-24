@@ -1,7 +1,12 @@
 <template>
   <section class="feedback-page page-content">
     <div class="feedback-header">
-      <h1 class="page-title nx-title">Feedback</h1>
+      <div>
+        <h1 class="page-title nx-title">Feedback</h1>
+        <p v-if="isAdmin" class="feedback-admin-hint">
+          Espace admin : ouvre un ticket et change son statut depuis le menu déroulant.
+        </p>
+      </div>
       <button type="button" class="nx-btn nx-glow-blue btn-new-ticket" @click="showForm = true">
         <span class="btn-icon">+</span> Nouveau
       </button>
@@ -84,7 +89,30 @@
         <div class="detail-meta">
           <span class="detail-author">{{ selectedTicket.author_name || 'Anonyme' }}</span>
           <span class="detail-date">{{ formatDate(selectedTicket.created_at) }}</span>
-          <span class="detail-status" :class="`badge-${selectedTicket.status}`">{{ statusLabel(selectedTicket.status) }}</span>
+          <template v-if="isAdmin">
+            <label class="admin-status-wrap">
+              <span class="admin-status-label">Statut</span>
+              <select
+                class="nx-input admin-status-select"
+                :value="selectedTicket.status"
+                :disabled="statusUpdating"
+                @change="
+                  updateTicketStatus(
+                    selectedTicket!.id,
+                    ($event.target as HTMLSelectElement).value
+                  )
+                "
+              >
+                <option v-for="opt in ADMIN_STATUS_OPTIONS" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </label>
+            <p v-if="statusUpdateError" class="feedback-error admin-status-err">{{ statusUpdateError }}</p>
+          </template>
+          <span v-else class="detail-status" :class="`badge-${selectedTicket.status}`">{{
+            statusLabel(selectedTicket.status)
+          }}</span>
         </div>
         <pre class="detail-content">{{ selectedTicket.content }}</pre>
         <button type="button" class="nx-btn" @click="selectedTicket = null">Fermer</button>
@@ -94,9 +122,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import api from '../api';
-import { getCurrentUserFromToken } from '../api';
+import { ref, computed, onMounted, watch } from 'vue';
+import api, { getCurrentUserFromToken, isAdminUser } from '../api';
 
 type Ticket = {
   id: number;
@@ -142,8 +169,11 @@ const formContent = ref('');
 const submitLoading = ref(false);
 const submitError = ref('');
 const submitSuccess = ref('');
+const statusUpdateError = ref('');
+const statusUpdating = ref(false);
 
 const currentUserId = computed(() => (getCurrentUserFromToken() as { id?: number } | null)?.id ?? null);
+const isAdmin = computed(() => isAdminUser());
 
 function statusLabel(s: string): string {
   return STATUS_LABELS[s] ?? s;
@@ -175,6 +205,46 @@ async function loadTickets() {
   }
 }
 
+const ADMIN_STATUS_OPTIONS = [
+  { value: 'proposes', label: 'Proposé' },
+  { value: 'non_prio', label: 'Non Prio' },
+  { value: 'acceptes', label: 'Accepté' },
+  { value: 'en_cours', label: 'En cours' },
+  { value: 'realises', label: 'Réalisé' },
+  { value: 'disponibles', label: 'Disponible' },
+  { value: 'refuser', label: 'Refuser' }
+] as const;
+
+async function updateTicketStatus(ticketId: number, status: string) {
+  statusUpdateError.value = '';
+  statusUpdating.value = true;
+  try {
+    const { data } = await api.patch<Ticket>(`/admin/feedback/tickets/${ticketId}/status`, { status });
+    const idx = tickets.value.findIndex((t) => t.id === ticketId);
+    const prev = idx >= 0 ? tickets.value[idx] : null;
+    const merged: Ticket = {
+      ...(prev || ({} as Ticket)),
+      ...data,
+      author_name: data.author_name ?? prev?.author_name
+    };
+    if (status === 'refuser') {
+      tickets.value = tickets.value.filter((t) => t.id !== ticketId);
+    } else {
+      if (idx >= 0) tickets.value[idx] = merged;
+    }
+    if (selectedTicket.value?.id === ticketId) {
+      selectedTicket.value = status === 'refuser' ? null : merged;
+    }
+  } catch {
+    statusUpdateError.value = 'Impossible de mettre à jour le statut.';
+    await loadTickets();
+    const fresh = tickets.value.find((t) => t.id === ticketId);
+    if (selectedTicket.value?.id === ticketId && fresh) selectedTicket.value = fresh;
+  } finally {
+    statusUpdating.value = false;
+  }
+}
+
 async function submitTicket() {
   submitError.value = '';
   submitSuccess.value = '';
@@ -199,6 +269,10 @@ async function submitTicket() {
     submitLoading.value = false;
   }
 }
+
+watch(selectedTicket, () => {
+  statusUpdateError.value = '';
+});
 
 onMounted(loadTickets);
 </script>
@@ -395,6 +469,36 @@ onMounted(loadTickets);
 .badge-en_cours { background: rgba(168, 85, 247, 0.3); color: #e9d5ff; }
 .badge-realises { background: rgba(34, 197, 94, 0.3); color: #86efac; }
 .badge-disponibles { background: rgba(236, 72, 153, 0.3); color: #f9a8d4; }
+
+.feedback-admin-hint {
+  margin: 6px 0 0 0;
+  font-size: 0.85rem;
+  color: #c4b5fd;
+}
+
+.admin-status-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  flex-basis: 100%;
+}
+
+.admin-status-label {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.admin-status-select {
+  max-width: 220px;
+}
+
+.admin-status-err {
+  margin: 0;
+  flex-basis: 100%;
+}
 
 .detail-content {
   white-space: pre-wrap;

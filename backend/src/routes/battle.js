@@ -15,7 +15,8 @@ import {
   markProgress,
   grantCampaignXp,
   applyCampaignFatigue,
-  getSeasonKey
+  getSeasonKey,
+  getCampaignXpPerUnit
 } from '../services/campaignService.js';
 import { recordPvpBattle, grantPvpXp, applyPvpFatigue } from '../services/pvpService.js';
 import { deletePendingBattle, getPendingBattle, serializePendingBattle, updatePendingBattlePayload } from '../services/pendingBattleService.js';
@@ -26,6 +27,8 @@ import {
   GUILD_NOTIFICATION_TYPES
 } from '../services/guildNotificationService.js';
 import { finalizeWarAttack } from '../services/guildWarService.js';
+import { applyCombatStats, parseCombatStatsFromBattleLogBothTeams } from '../services/combatStatsService.js';
+import { finalizeDungeonBattle } from '../services/dungeonService.js';
 
 export function registerBattleRoutes(fastify, authenticate) {
   function recomputeInteractivePayload(payload) {
@@ -61,7 +64,7 @@ export function registerBattleRoutes(fastify, authenticate) {
     };
   }
 
-  async function finalizePendingBattleForUser(userId, pendingBattleId, clientWinner = null) {
+  async function finalizePendingBattleForUser(userId, pendingBattleId, clientWinner = null, clientCombatStats = null) {
     const pendingRow = await getPendingBattle(userId);
     if (!pendingRow || Number(pendingRow.id) !== Number(pendingBattleId)) {
       return null;
@@ -95,14 +98,19 @@ export function registerBattleRoutes(fastify, authenticate) {
       const stage = Number(pendingBattle.stage);
       const seasonKey = mode === 'hard' ? (pendingBattle.seasonKey || getSeasonKey()) : null;
       const finalizeData = pendingBattle.finalizeData || {};
-      const allUserUnitIds = Array.isArray(finalizeData.allUserUnitIds) ? finalizeData.allUserUnitIds.map(Number).filter(Boolean) : [];
+      let allUserUnitIds = Array.isArray(finalizeData.allUserUnitIds) ? finalizeData.allUserUnitIds.map(Number).filter(Boolean) : [];
+      if (allUserUnitIds.length === 0 && Array.isArray(finalizeData.team)) {
+        allUserUnitIds = finalizeData.team.map((s) => Number(s?.user_unit_id)).filter(Boolean);
+      }
       const isBoss = Boolean(finalizeData.isBoss);
       let rewardsGranted = null;
+      /** Premier clear du stage (récompenses first clear non encore claim) — activité guilde boss uniquement à ce moment-là */
+      let firstClearRewards = null;
 
       if (pendingBattle.success) {
         await grantCampaignXp(userId, finalizeData.team || [], allUserUnitIds.map((id) => ({ user_unit_id: id })), isBoss, mode, chapter);
         await applyCampaignFatigue(allUserUnitIds);
-        const firstClearRewards = await computeStageRewards(userId, chapter, stage, mode, seasonKey);
+        firstClearRewards = await computeStageRewards(userId, chapter, stage, mode, seasonKey);
         await markProgress(userId, chapter, stage, mode, seasonKey);
         if (firstClearRewards) {
           await applyRewardsTransaction(userId, firstClearRewards);
@@ -112,8 +120,18 @@ export function registerBattleRoutes(fastify, authenticate) {
 
       const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!pendingBattle.success, battleType: 'campaign' });
 
-      // Notification guilde pour boss vaincu (silencieuse, non-bloquante)
-      if (pendingBattle.success && isBoss) {
+      const winnerForStats = pendingBattle.result === 'win' ? 'win' : (pendingBattle.result === 'loss' ? 'loss' : 'draw');
+      if (allUserUnitIds.length === 0) {
+        console.warn('[Battle] campaign finalize: allUserUnitIds vide, finalizeData:', JSON.stringify(Object.keys(finalizeData || {})));
+      }
+      try {
+        await applyCombatStats({ userUnitIds: allUserUnitIds, winner: winnerForStats, combatStats: clientCombatStats || {} });
+      } catch (err) {
+        console.error('[Battle] applyCombatStats campaign error:', err?.message, { allUserUnitIds, winnerForStats });
+      }
+
+      // Notification guilde : une seule fois par joueur et par boss (premier clear)
+      if (pendingBattle.success && isBoss && firstClearRewards) {
         void resolveUserGuildId(userId).then((guildId) => {
           if (!guildId) return;
           return createGuildNotification(guildId, userId, GUILD_NOTIFICATION_TYPES.CAMPAIGN_BOSS_KILL, {
@@ -124,6 +142,9 @@ export function registerBattleRoutes(fastify, authenticate) {
       }
 
       await deletePendingBattle(userId, pendingBattleId);
+      const xpPerUnit = pendingBattle.success
+        ? getCampaignXpPerUnit(mode, isBoss, chapter)
+        : 0;
       return {
         battleType: 'campaign',
         success: !!pendingBattle.success,
@@ -131,7 +152,8 @@ export function registerBattleRoutes(fastify, authenticate) {
         progressUpdated: !!pendingBattle.success,
         gold_gained: artifactRewards.goldGained,
         artifact_drop: artifactRewards.artifactDrop,
-        wallet: artifactRewards.wallet
+        wallet: artifactRewards.wallet,
+        xp_per_unit: xpPerUnit
       };
     }
 
@@ -161,12 +183,17 @@ export function registerBattleRoutes(fastify, authenticate) {
       );
       const ids = Array.isArray(attackerUserUnitIds) ? attackerUserUnitIds.map(Number).filter(Boolean) : [];
       if (!isDraw) {
-        await grantPvpXp(ids, !!attackerWon);
+        if (attackerWon) await grantPvpXp(ids, true);
         await applyPvpFatigue(ids);
       }
-      const creditsBonus = attackerWon && !isDraw ? 1 : 0;
+      const creditsBonus = isDraw ? 0 : (attackerWon ? 3 : 0);
       const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!attackerWon, creditsBonus, battleType: 'pvp' });
+      const winnerForStats = attackerWon ? 'win' : (isDraw ? 'draw' : 'loss');
+      await applyCombatStats({ userUnitIds: ids, winner: winnerForStats, combatStats: clientCombatStats || {} });
       await deletePendingBattle(userId, pendingBattleId);
+      if (defenderType === 'player' && defenderId) {
+        await query('UPDATE users SET last_opponent_id = ? WHERE id = ?', [defenderId, userId]);
+      }
       return {
         battleType: 'pvp',
         elo_before: eloBefore,
@@ -176,9 +203,20 @@ export function registerBattleRoutes(fastify, authenticate) {
         gold_gained: artifactRewards.goldGained,
         artifact_drop: artifactRewards.artifactDrop,
         wallet: artifactRewards.wallet,
-        xp_granted: isDraw ? 0 : (attackerWon ? 800 : 400),
+        xp_granted: isDraw ? 0 : (attackerWon ? 1000 : 0),
         survivors: pendingBattle.result === 'win' ? ids : []
       };
+    }
+
+    if (pendingBattle.battleType === 'dungeon') {
+      const success = pendingBattle.success === true;
+      return finalizeDungeonBattle(
+        userId,
+        pendingBattleId,
+        pendingBattle,
+        success,
+        clientCombatStats
+      );
     }
 
     if (pendingBattle.battleType === 'guild_war') {
@@ -209,6 +247,8 @@ export function registerBattleRoutes(fastify, authenticate) {
         console.error('[Battle] guild_war finalizeWarAttack error:', err.message);
       }
 
+      const winnerForStats = attackerWon ? 'win' : 'loss';
+      await applyCombatStats({ userUnitIds: unitIds, winner: winnerForStats, combatStats: clientCombatStats || {} });
       await deletePendingBattle(userId, pendingBattleId);
       return {
         battleType: 'guild_war',
@@ -381,6 +421,21 @@ export function registerBattleRoutes(fastify, authenticate) {
         ]
       );
       battleId = res.insertId;
+
+      const battleLog = log?.battleLog ?? [];
+      const { teamA: statsA, teamB: statsB } = parseCombatStatsFromBattleLogBothTeams(
+        battleLog,
+        builtTeamA.length,
+        builtTeamA,
+        builtTeamB.length,
+        builtTeamB
+      );
+      const idsA = builtTeamA.map((u) => u.id ?? u.user_unit_id).filter(Boolean);
+      const idsB = builtTeamB.map((u) => u.id ?? u.user_unit_id).filter(Boolean);
+      const winnerA = winner === 'A' ? 'win' : winner === 'B' ? 'loss' : 'draw';
+      const winnerB = winner === 'B' ? 'win' : winner === 'A' ? 'loss' : 'draw';
+      await applyCombatStats({ userUnitIds: idsA, winner: winnerA, combatStats: statsA });
+      await applyCombatStats({ userUnitIds: idsB, winner: winnerB, combatStats: statsB });
     }
 
     return {
@@ -412,10 +467,11 @@ export function registerBattleRoutes(fastify, authenticate) {
       return reply.code(400).send({ error: 'INVALID_PENDING_BATTLE_ID' });
     }
 
-    // Le frontend envoie le résultat du combat calculé localement ('win' | 'loss' | 'draw').
+    // Le frontend envoie le résultat du combat calculé localement ('win' | 'loss' | 'draw') et optionnellement combatStats.
     const clientWinner = request.body?.winner ?? null;
+    const clientCombatStats = request.body?.combatStats ?? null;
 
-    const result = await finalizePendingBattleForUser(request.user.id, pendingBattleId, clientWinner);
+    const result = await finalizePendingBattleForUser(request.user.id, pendingBattleId, clientWinner, clientCombatStats);
     if (!result) {
       return reply.code(404).send({ error: 'PENDING_BATTLE_NOT_FOUND' });
     }
@@ -424,6 +480,13 @@ export function registerBattleRoutes(fastify, authenticate) {
       return reply.code(409).send({ error: 'BATTLE_IN_PROGRESS' });
     }
     return result;
+  });
+
+  /** Permet d'abandonner un combat en attente et de débloquer l'utilisateur (ex: boucle, bug). */
+  fastify.post('/battle/abandon', { preHandler: [authenticate] }, async (request, reply) => {
+    await query('DELETE FROM pending_battles WHERE user_id = ?', [request.user.id]);
+    await query('DELETE FROM user_dungeon_run WHERE user_id = ?', [request.user.id]);
+    return { success: true };
   });
 
   fastify.get('/battle/:id', async (request, reply) => {

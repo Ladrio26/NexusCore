@@ -71,10 +71,11 @@
                 v-else
                 type="button"
                 class="nx-btn preset-btn"
-                :disabled="savingPresetId === p.preset_index"
+                :disabled="savingPresetId === p.preset_index || !hasUnits(p)"
+                :title="!hasUnits(p) ? 'Ce preset est vide' : undefined"
                 @click="setDefense(p.preset_index)"
               >
-                {{ savingPresetId === p.preset_index ? 'Enregistrement…' : 'Définir comme défense' }}
+                {{ !hasUnits(p) ? 'Preset vide' : (savingPresetId === p.preset_index ? 'Enregistrement…' : 'Définir comme défense') }}
               </button>
             </div>
           </li>
@@ -128,6 +129,10 @@ function slotSummary(p: Preset): string {
   const back = p.back_slots?.length ?? 0;
   const total = front + back;
   return `${total} unité${total !== 1 ? 's' : ''} (${front} front, ${back} arrière)`;
+}
+
+function hasUnits(p: Preset): boolean {
+  return ((p.front_units?.length ?? 0) + (p.back_units?.length ?? 0)) > 0;
 }
 
 function unitImage(unit: PresetUnit): string {

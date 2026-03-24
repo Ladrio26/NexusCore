@@ -64,7 +64,10 @@
                 <span v-if="board === 'guild'" class="guild-name">{{ player.pseudo }}</span>
                 <router-link v-else :to="`/collection/${player.id}`" class="player-link">
                   <img :src="getAvatarUrl(player)" alt="" class="player-avatar" />
-                  <span class="player-name">{{ player.pseudo }}</span>
+                  <span class="player-name">
+                    {{ player.pseudo }}
+                    <span v-if="board === 'rank'" class="player-guild">{{ player.guild_name || '—' }}</span>
+                  </span>
                 </router-link>
               </td>
               <td>
@@ -74,8 +77,8 @@
                 <span v-else-if="board === 'guild'" class="guild-war-stats">
                   {{ player.wins ?? 0 }}V / {{ player.losses ?? 0 }}D / {{ player.draws ?? 0 }}N · {{ player.member_count ?? 0 }} membres
                 </span>
-                <span v-else class="league-badge compact" :class="leagueClass(player.elo, player.rank)">
-                  {{ leagueLabel(player.elo, player.rank) }}
+                <span v-else class="league-badge compact" :class="leagueClass(player.elo ?? 0, player.rank)">
+                  {{ leagueLabel(player.elo ?? 0, player.rank) }}
                 </span>
               </td>
               <td v-if="board !== 'campaign'" class="elo-cell">{{ player.elo }}</td>
@@ -98,6 +101,7 @@ type LeaderboardPlayer = {
   elo?: number;
   rank: number;
   avatar_url?: string | null;
+  guild_name?: string | null;
   campaign_label?: string;
   unlocked_score?: number;
   wins?: number;
@@ -374,6 +378,18 @@ onMounted(() => {
 
 .player-name {
   font-weight: 700;
+}
+.player-guild {
+  font-size: 0.75em;
+  font-weight: 500;
+  color: #94a3b8;
+  margin-left: 0.2em;
+}
+.player-guild::before {
+  content: '(';
+}
+.player-guild::after {
+  content: ')';
 }
 
 .guild-name {

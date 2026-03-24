@@ -28,9 +28,11 @@ import {
   finalizeWarAttack,
   getNextWarSchedule,
   getGuildWarHistory,
-  runDailyMatchmaking
+  runDailyMatchmaking,
+  getUnitsForGuildWarPresets
 } from '../services/guildWarService.js';
 import { query } from '../config/db.js';
+import { computeScaledStats } from '../../core/combatEngine.js';
 
 function sendWarError(reply, err) {
   const code = String(err?.code ?? '');
@@ -243,6 +245,11 @@ export function registerGuildWarRoutes(fastify, authenticate) {
       const noyauA = getSelectedNoyau(teamA, 0);
       applyNoyauBonus(teamA, noyauA);
 
+      // Guerre de guilde : pas de fatigue → vitesse à 100 % pour l'attaquant
+      for (const u of teamA) {
+        u.fatigue = 0;
+      }
+
       let teamB;
       if (!prepData.defenderUserId || !prepData.defenderSlots.length) {
         return reply.code(400).send({ error: 'DEFENSE_EMPTY', message: "Ce slot de défense est vide." });
@@ -258,6 +265,11 @@ export function registerGuildWarRoutes(fastify, authenticate) {
 
       const noyauB = getSelectedNoyau(teamB, 0);
       applyNoyauBonus(teamB, noyauB);
+
+      // Guerre de guilde : défense sans fatigue → vitesse à 100 %
+      for (const u of teamB) {
+        u.fatigue = 0;
+      }
 
       const seed = Date.now() % 2147483647;
 
@@ -275,7 +287,11 @@ export function registerGuildWarRoutes(fastify, authenticate) {
           defense: u.defense,
           speed: u.speed,
           traits: Array.isArray(u.traits) ? u.traits : [],
-          skillDescription: getSkillDescriptionForTooltip(u)
+          skillDescription: getSkillDescriptionForTooltip(u),
+          rarity: (u.rarity || 'common').toLowerCase(),
+          archetype: u.archetype ?? null,
+          role: u.role ?? null,
+          fatigue: u.fatigue ?? 0
         })),
         ...teamB.map((u, i) => ({
           id: `B-${i}`,
@@ -290,7 +306,10 @@ export function registerGuildWarRoutes(fastify, authenticate) {
           defense: u.defense,
           speed: u.speed,
           traits: Array.isArray(u.traits) ? u.traits : [],
-          skillDescription: getSkillDescriptionForTooltip(u)
+          skillDescription: getSkillDescriptionForTooltip(u),
+          rarity: (u.rarity || 'common').toLowerCase(),
+          archetype: u.archetype ?? null,
+          role: u.role ?? null
         }))
       ];
 
@@ -360,6 +379,19 @@ export function registerGuildWarRoutes(fastify, authenticate) {
   // ── Unités disponibles ──────────────────────────────────────────────────────
 
   /**
+   * GET /guild-war/units-for-presets
+   * Unités pour composer des propositions / presets hors guerre active.
+   */
+  fastify.get('/guild-war/units-for-presets', preAuth, async (request, reply) => {
+    try {
+      const units = await getUnitsForGuildWarPresets(Number(request.user.id));
+      return { success: true, units };
+    } catch (err) {
+      return sendWarError(reply, err);
+    }
+  });
+
+  /**
    * GET /guild-war/available-units/:warId
    * Retourne les unités de l'utilisateur non encore utilisées dans cette guerre.
    */
@@ -375,8 +407,9 @@ export function registerGuildWarRoutes(fastify, authenticate) {
       const usedIds = new Set(usedRows.map((r) => Number(r.user_unit_id)));
 
       const unitRows = await query(
-        `SELECT uu.id AS user_unit_id, u.name, u.code, u.rarity, u.element, u.role, u.archetype,
-                u.image_url, uu.level, uu.power_level
+        `SELECT uu.id AS user_unit_id, uu.specialization, u.name, u.code, u.rarity, u.element, u.role, u.archetype,
+                u.image_url, uu.level, uu.power_level, uu.ascension_count, uu.fatigue,
+                u.base_hp, u.base_attack, u.base_defense, u.base_speed, u.mastery, u.skill_data
          FROM user_units uu
          JOIN units u ON u.id = uu.unit_id
          WHERE uu.user_id = ?
@@ -384,9 +417,22 @@ export function registerGuildWarRoutes(fastify, authenticate) {
         [userId]
       );
 
-      return {
-        success: true,
-        units: unitRows.map((r) => ({
+      const units = unitRows.map((r) => {
+        const level = Number(r.level ?? 1);
+        const specializationRaw = r.specialization == null ? null : String(r.specialization || '').trim().toUpperCase();
+        const specialization = specializationRaw === 'A' || specializationRaw === 'B' ? specializationRaw : null;
+        const powerLevel = Number(r.power_level ?? 1);
+        const stats = computeScaledStats(
+          {
+            base_hp: Number(r.base_hp ?? 0),
+            base_attack: Number(r.base_attack ?? 0),
+            base_defense: Number(r.base_defense ?? 0),
+            base_speed: Number(r.base_speed ?? 0),
+            mastery: Number(r.mastery ?? 0)
+          },
+          { level, specialization, power_level: powerLevel }
+        );
+        return {
           user_unit_id: Number(r.user_unit_id),
           name: r.name,
           code: r.code,
@@ -395,11 +441,23 @@ export function registerGuildWarRoutes(fastify, authenticate) {
           role: r.role,
           archetype: r.archetype,
           image_url: r.image_url ?? null,
-          level: Number(r.level),
-          power_level: Number(r.power_level ?? 1),
+          level,
+          power_level: powerLevel,
+          ascension_count: Number(r.ascension_count ?? 0),
+          fatigue: 0,
+          skill_data: typeof r.skill_data === 'string' ? (r.skill_data ? JSON.parse(r.skill_data) : null) : r.skill_data,
+          stats: {
+            maxHp: Number(stats.maxHp ?? 0),
+            attack: Number(stats.attack ?? 0),
+            defense: Number(stats.defense ?? 0),
+            speed: Number(stats.speed ?? 0),
+            mastery: Number(stats.mastery ?? 0)
+          },
           used: usedIds.has(Number(r.user_unit_id))
-        }))
-      };
+        };
+      });
+
+      return { success: true, units };
     } catch (err) {
       return sendWarError(reply, err);
     }

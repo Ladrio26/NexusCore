@@ -13,9 +13,19 @@
             v-model.trim="searchQuery"
             type="text"
             class="nexus-input"
-            placeholder="Rechercher une unité, un élément ou un trait..."
+            placeholder="Rechercher par nom, élément ou trait (gardien...)"
             autocomplete="off"
           />
+          <select
+            v-model="selectedEffectFilter"
+            class="nexus-input effect-filter-select"
+            title="Filtrer par buff/débuff/effet"
+          >
+            <option value="">Tous les effets</option>
+            <option v-for="opt in EFFECT_FILTER_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
         </div>
         <div class="collection-columns">
           <div class="unit-column" id="cacColumn">
@@ -59,7 +69,8 @@
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
               <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
             </div>
-            <div v-if="skillSummary(unit)" class="unit-skill">{{ skillSummary(unit) }}</div>
+            <div v-if="getBaseSkillDescription(unit)" class="unit-skill">⚡ {{ getBaseSkillDescription(unit) }}</div>
+            <div v-if="getSpecDescription(unit)" class="unit-skill unit-spec">✨ {{ getSpecDescription(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
@@ -112,7 +123,8 @@
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
               <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
             </div>
-            <div v-if="skillSummary(unit)" class="unit-skill">{{ skillSummary(unit) }}</div>
+            <div v-if="getBaseSkillDescription(unit)" class="unit-skill">⚡ {{ getBaseSkillDescription(unit) }}</div>
+            <div v-if="getSpecDescription(unit)" class="unit-skill unit-spec">✨ {{ getSpecDescription(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
@@ -290,8 +302,11 @@
           <div v-if="traitsList(hoveredTeamUnit).length" class="tooltip-traits">
             Traits : {{ traitsList(hoveredTeamUnit).map(toTraitFr).join(', ') }}
           </div>
-          <div v-if="getDisplayedSkillDescription(hoveredTeamUnit)" class="tooltip-skill">
-            ⚡ {{ getDisplayedSkillDescription(hoveredTeamUnit) }}
+          <div v-if="getBaseSkillDescription(hoveredTeamUnit)" class="tooltip-skill">
+            ⚡ {{ getBaseSkillDescription(hoveredTeamUnit) }}
+          </div>
+          <div v-if="getSpecDescription(hoveredTeamUnit)" class="tooltip-spec">
+            ✨ {{ getSpecDescription(hoveredTeamUnit) }}
           </div>
         </div>
 
@@ -320,7 +335,7 @@
             v-for="trait in traitDisplay"
             :key="trait.name"
             class="trait-card"
-            :class="{ active: trait.isActive }"
+            :class="trait.frameTierClass"
             @mouseenter="onTraitCardEnter(trait.name, $event)"
             @mouseleave="hoveredTrait = null; hoveredTraitTarget = null"
             @click="onTraitCardEnter(trait.name, $event)"
@@ -330,10 +345,7 @@
                 {{ toTraitFr(trait.name) }}
               </div>
               <div class="trait-level">
-                {{ trait.count }} / {{ trait.thresholds[0] ?? '—' }}
-              </div>
-              <div v-if="trait.thresholds.length > 1" class="trait-paliers">
-                Paliers : {{ trait.thresholds.join(' · ') }}
+                {{ trait.progressNum }} / {{ trait.progressDen }}
               </div>
             </span>
           </div>
@@ -376,7 +388,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import api from '../api';
 import { normalizeSkillDescription } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
-import { toTraitFr } from '../utils/i18nFr';
+import { toTraitFr, resolveTraitFromSearch } from '../utils/i18nFr';
 
 const SLOT_COUNT = 5;
 const MAX_TEAM_UNITS = 6;
@@ -548,6 +560,7 @@ const selectedNoyauIndex = ref<number>(0);
 const FAVORITES_KEY = 'nexus_team_favorites';
 const favoriteIds = ref<Set<number>>(new Set());
 const searchQuery = ref('');
+const selectedEffectFilter = ref<string>('');
 const selectedUnitId = ref<number | null>(null);
 const showUnitsPanel = ref(true);
 const lastAddedSlot = ref<{ row: 'front' | 'back'; idx: number } | null>(null);
@@ -585,8 +598,77 @@ function traitsList(unit: CollectionUnit): string[] {
   return [];
 }
 
+/** Options pour le filtre déroulant buff/débuff/effet (clé → libellé FR). */
+const EFFECT_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: 'DOT', label: 'DOT (dégâts dans le temps)' },
+  { value: 'REGEN', label: 'Régénération' },
+  { value: 'HEAL', label: 'Soin' },
+  { value: 'ATK_UP', label: 'Bonus attaque' },
+  { value: 'ATK_DOWN', label: 'Malus attaque' },
+  { value: 'DEF_UP', label: 'Bonus défense' },
+  { value: 'DEF_DOWN', label: 'Malus défense' },
+  { value: 'SPEED_UP', label: 'Bonus vitesse' },
+  { value: 'SPD_UP', label: 'Bonus vitesse (SPD)' },
+  { value: 'SLOW', label: 'Ralentissement' },
+  { value: 'SPEED_DOWN', label: 'Malus vitesse' },
+  { value: 'SHIELD', label: 'Bouclier' },
+  { value: 'IMMUNITY', label: 'Immunité' },
+  { value: 'STUN', label: 'Étourdissement' },
+  { value: 'SILENCE', label: 'Silence' },
+  { value: 'BLIND', label: 'Aveuglement' },
+  { value: 'PROVOKE', label: 'Provocation' },
+  { value: 'ANTI_HEAL', label: 'Anti-soin' },
+  { value: 'ANTI_SHIELD', label: 'Anti-bouclier' },
+  { value: 'ANTI_BUFF', label: 'Anti-buff' },
+  { value: 'ATB_UP', label: 'Bonus ATB' },
+  { value: 'ATB_DOWN', label: 'Malus ATB' },
+  { value: 'DEFEND', label: 'Protection' },
+  { value: 'SPEED', label: 'Vitesse (générique)' }
+];
+
+/** Extrait les types de buff/debuff que l'unité peut appliquer (compétences + passifs). */
+function getUnitBuffDebuffTypes(unit: CollectionUnit): Set<string> {
+  const out = new Set<string>();
+  const raw = unit.skill_data;
+  if (raw == null) return out;
+  const data = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+  if (!data || typeof data !== 'object') return out;
+
+  function collectFromEffects(effects: unknown[]) {
+    if (!Array.isArray(effects)) return;
+    for (const e of effects) {
+      if (!e || typeof e !== 'object') continue;
+      const eff = e as Record<string, unknown>;
+      const type = String(eff.type ?? '').toUpperCase();
+      if (type === 'APPLY_BUFF') {
+        const bt = String(eff.buffType ?? eff.buff ?? '').toUpperCase();
+        if (bt && bt !== 'APPLY_BUFF') out.add(bt);
+      } else if (type === 'APPLY_DEBUFF') {
+        const dt = String(eff.debuffType ?? eff.debuff ?? eff.buffType ?? eff.buff ?? '').toUpperCase();
+        if (dt && dt !== 'APPLY_DEBUFF') out.add(dt);
+      } else if (type === 'HEAL' || type === 'HEALS') {
+        out.add('HEAL');
+      }
+    }
+  }
+
+  const skills = Array.isArray(data.skills) ? data.skills : [];
+  for (const s of skills) {
+    if (s && typeof s === 'object' && Array.isArray((s as Record<string, unknown>).effects)) {
+      collectFromEffects((s as Record<string, unknown>).effects as unknown[]);
+    }
+  }
+  if (data.skill && typeof data.skill === 'object' && Array.isArray((data.skill as Record<string, unknown>).effects)) {
+    collectFromEffects((data.skill as Record<string, unknown>).effects as unknown[]);
+  }
+  if (data.basic && typeof data.basic === 'object' && Array.isArray((data.basic as Record<string, unknown>).effects)) {
+    collectFromEffects((data.basic as Record<string, unknown>).effects as unknown[]);
+  }
+  return out;
+}
+
 function elementLabel(el: string | undefined): string {
-  const map: Record<string, string> = { water: 'Eau', fire: 'Feu', plant: 'Plante', neutral: 'Neutre' };
+  const map: Record<string, string> = { water: 'Eau', fire: 'Feu', plant: 'Plante', light: 'Lumière', dark: 'Ténèbres', neutral: 'Neutre' };
   return map[(el || 'neutral').toLowerCase()] || el || '—';
 }
 
@@ -618,31 +700,42 @@ function parseSkillData(skillData: CollectionUnit['skill_data']): Record<string,
   return null;
 }
 
-/** Description affichée selon la spé active : A → specA, B → specB, sinon skill de base. Une seule ligne, pas de blocs Spé A/B. */
-function getDisplayedSkillDescription(unit: CollectionUnit): string {
+/** Description de la compétence de base (toujours affichée). */
+function getBaseSkillDescription(unit: CollectionUnit): string {
   const data = parseSkillData(unit.skill_data);
   if (!data) return '';
   const desc = data.description;
   if (!desc || typeof desc !== 'object') {
-    const skill = data.skill ?? data;
-    if (!skill || typeof skill !== 'object') return '';
-    const s = skill as Record<string, unknown>;
-    const type = String(s.type || '');
-    const label = SKILL_TYPE_LABELS[type] || type;
-    const parts: string[] = [label];
-    if (s.mult != null) parts.push(`×${s.mult}`);
-    if (s.cd_actions != null) parts.push(`CD ${s.cd_actions}`);
-    return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : label;
+    return inferSkillLabel(data);
   }
   const d = desc as { skill?: string; specA?: string; specB?: string };
-  const activeSpec = unit.specialization != null && String(unit.specialization).trim() !== '' ? String(unit.specialization).toUpperCase() : null;
-  if (activeSpec === 'A' && typeof d.specA === 'string' && d.specA.trim()) return normalizeSkillDescription(d.specA);
-  if (activeSpec === 'B' && typeof d.specB === 'string' && d.specB.trim()) return normalizeSkillDescription(d.specB);
-  return typeof d.skill === 'string' && d.skill.trim() ? normalizeSkillDescription(d.skill) : '';
+  if (typeof d.skill === 'string' && d.skill.trim()) return normalizeSkillDescription(d.skill);
+  return inferSkillLabel(data);
 }
 
-function skillSummary(unit: CollectionUnit): string {
-  return getDisplayedSkillDescription(unit);
+function inferSkillLabel(data: Record<string, unknown>): string {
+  const skill = data.skill ?? data;
+  if (!skill || typeof skill !== 'object') return '';
+  const s = skill as Record<string, unknown>;
+  const type = String(s.type || '');
+  const label = SKILL_TYPE_LABELS[type] || type;
+  const parts: string[] = [label];
+  if (s.mult != null) parts.push(`×${s.mult}`);
+  if (s.cd_actions != null) parts.push(`CD ${s.cd_actions}`);
+  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : label;
+}
+
+/** Description de la spécialisation choisie (A ou B). Vide si pas de spé. */
+function getSpecDescription(unit: CollectionUnit): string {
+  const spec = unit.specialization != null && String(unit.specialization).trim() !== '' ? String(unit.specialization).toUpperCase() : null;
+  if (spec !== 'A' && spec !== 'B') return '';
+  const data = parseSkillData(unit.skill_data);
+  if (!data) return '';
+  const desc = data.description;
+  if (!desc || typeof desc !== 'object') return '';
+  const d = desc as { specA?: string; specB?: string };
+  const text = spec === 'A' ? d.specA : d.specB;
+  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : '';
 }
 
 function unitTooltip(unit: CollectionUnit): string {
@@ -802,15 +895,28 @@ const collectionNotInTeamSorted = computed(() => {
   return [...fav, ...rest];
 });
 
-/** Collection filtrée par la barre de recherche (nom, élément ou trait). */
+/** Collection filtrée par la barre de recherche (nom, élément, trait FR) et par le filtre effet (liste déroulante). */
 const collectionFiltered = computed(() => {
+  let list = collectionNotInTeamSorted.value;
+
+  // Filtre par effet (buff/débuff) via la liste déroulante
+  const effectFilter = selectedEffectFilter.value.trim();
+  if (effectFilter) {
+    list = list.filter((u) => getUnitBuffDebuffTypes(u).has(effectFilter));
+  }
+
+  // Filtre par recherche texte (nom, élément, trait)
   const q = searchQuery.value.toLowerCase().trim();
-  if (!q) return collectionNotInTeamSorted.value;
-  return collectionNotInTeamSorted.value.filter((u) => {
+  if (!q) return list;
+  const traitKeyFromFr = resolveTraitFromSearch(q);
+  return list.filter((u) => {
     const nameMatch = (u.name || '').toLowerCase().includes(q);
     const elementMatch = (elementLabel(u.element) || '').toLowerCase().includes(q) || (u.element || '').toLowerCase().includes(q);
-    const traits = traitsList(u).map((t) => t.toLowerCase());
-    const traitMatch = traits.some((t) => t.includes(q));
+    const traits = traitsList(u);
+    const traitMatch =
+      (traitKeyFromFr && traits.includes(traitKeyFromFr)) ||
+      traits.some((t) => t.toLowerCase().includes(q)) ||
+      traits.some((t) => toTraitFr(t).toLowerCase().includes(q));
     return nameMatch || elementMatch || traitMatch;
   });
 });
@@ -1047,6 +1153,22 @@ const traitTooltipStyle = computed(() => {
   return style;
 });
 
+/** Progression affichée : 0/2, 1/2 → 2/4, 3/4 → 4/6, 5/6, 6/6 (prochain palier de synergie). */
+function traitProgressFraction(count: number): { num: number; den: number } {
+  const c = Math.max(0, Math.min(6, count));
+  if (c < 2) return { num: c, den: 2 };
+  if (c < 4) return { num: c, den: 4 };
+  return { num: c, den: 6 };
+}
+
+/** Cadre coloré selon le plus haut palier atteint : 2 vert, 4 bleu, 6 jaune. */
+function traitFrameTierClass(count: number): string {
+  if (count >= 6) return 'trait-frame-tier-6';
+  if (count >= 4) return 'trait-frame-tier-4';
+  if (count >= 2) return 'trait-frame-tier-2';
+  return 'trait-frame-tier-0';
+}
+
 /** Liste affichable : tous les traits avec count, paliers et statut actif */
 const traitDisplay = computed(() => {
   const counts = traitCounts.value;
@@ -1056,11 +1178,15 @@ const traitDisplay = computed(() => {
     const count = counts[trait] || 0;
     const firstThreshold = thresholds[0] ?? 0;
     const isActive = count >= firstThreshold;
+    const { num, den } = traitProgressFraction(count);
     return {
       name: trait,
       count,
       thresholds,
-      isActive
+      isActive,
+      progressNum: num,
+      progressDen: den,
+      frameTierClass: traitFrameTierClass(count)
     };
   });
 });
@@ -1070,14 +1196,15 @@ async function loadCollection() {
   errorMessage.value = '';
   try {
     const { data } = await api.get('/collection');
-    const units = (data.units || []).map((u: Record<string, unknown>) => ({
+    type Row = Record<string, unknown> & { user_unit_id?: unknown; level?: unknown; fatigue?: unknown; ascension_count?: unknown };
+    const units = (data.units || []).map((u: Record<string, unknown>): Row => ({
       ...u,
       user_unit_id: Number(u.user_unit_id),
       level: Number(u.level ?? 1),
       fatigue: Number(u.fatigue ?? 0),
       ascension_count: Number(u.ascension_count ?? 0)
     }));
-    units.sort((a, b) => (b.level ?? 1) - (a.level ?? 1));
+    units.sort((a: Row, b: Row) => (Number(b.level ?? 1)) - (Number(a.level ?? 1)));
     collection.value = units;
     const map = new Map<number, CollectionUnit>();
     for (const u of units) map.set(u.user_unit_id, u);
@@ -1304,7 +1431,7 @@ onMounted(() => {
 .team-builder-page {
   position: relative;
   width: 100%;
-  padding: 10px 16px;
+  padding: 6px 10px;
   min-height: 80vh;
 }
 
@@ -1338,9 +1465,9 @@ onMounted(() => {
 .team-builder-layout {
   display: grid;
   grid-template-columns: 2fr 1.3fr;
-  gap: 10px;
+  gap: 6px;
   height: calc(100vh - 60px);
-  padding: 10px;
+  padding: 6px;
   align-items: stretch;
 }
 
@@ -1403,14 +1530,18 @@ onMounted(() => {
 }
 
 .collection-search {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .collection-search input {
-  width: 100%;
-  padding: 10px;
-  border-radius: 10px;
+  flex: 1;
+  min-width: 180px;
+  padding: 6px 8px;
+  border-radius: 8px;
   background: #0f1c2b;
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #f8fafc;
@@ -1426,10 +1557,27 @@ onMounted(() => {
   color: #64748b;
 }
 
+.collection-search .effect-filter-select {
+  min-width: 200px;
+  max-width: 280px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #0f1c2b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.collection-search .effect-filter-select:focus {
+  border-color: rgba(0, 255, 255, 0.35);
+  outline: none;
+}
+
 .collection-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 8px;
   flex: 1;
   overflow: hidden;
   min-height: 0;
@@ -1460,10 +1608,10 @@ onMounted(() => {
 .nexus-panel {
   background: rgba(10, 15, 30, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
+  border-radius: 12px;
   backdrop-filter: blur(12px);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-  padding: 10px;
+  padding: 6px 8px;
 }
 
 .preset-column {
@@ -1620,15 +1768,15 @@ onMounted(() => {
 }
 
 .unit-list .unit-card {
-  margin-bottom: 5px;
+  margin-bottom: 3px;
 }
 
 .unit-card {
   position: relative;
   overflow: hidden;
-  padding: 7px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  font-size: 11px;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1695,6 +1843,14 @@ onMounted(() => {
   box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
 }
 
+.unit-card.element-light:hover,
+.unit-card.element-lumiere:hover {
+  box-shadow: 0 0 20px rgba(234, 179, 8, 0.5);
+}
+.unit-card.element-dark:hover,
+.unit-card.element-tenebres:hover {
+  box-shadow: 0 0 20px rgba(88, 28, 135, 0.5);
+}
 .unit-card.element-water:hover {
   border-color: rgba(14, 165, 233, 0.8);
   box-shadow: 0 0 20px rgba(14, 165, 233, 0.35), 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -1788,22 +1944,22 @@ onMounted(() => {
 
 .unit-name {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
 }
 
 .unit-meta {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.25rem;
-  font-size: 0.8rem;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
   color: #94a3b8;
 }
 
 .badge {
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
-  font-size: 0.7rem;
+  padding: 0.06rem 0.28rem;
+  border-radius: 3px;
+  font-size: 0.62rem;
   font-weight: 600;
 }
 
@@ -1816,6 +1972,10 @@ onMounted(() => {
 .badge.element-water { background: #0ea5e9; color: #fff; }
 .badge.element-fire { background: #ef4444; color: #fff; }
 .badge.element-plant { background: #22c55e; color: #fff; }
+.badge.element-light,
+.badge.element-lumiere { background: #eab308; color: #1f2937; }
+.badge.element-dark,
+.badge.element-tenebres { background: #581c87; color: #fff; }
 .badge.element-neutral { background: #78716c; color: #fff; }
 .badge.archetype { font-weight: 600; }
 .badge.archetype-cac { background: #ea580c; color: #fff; }
@@ -1837,7 +1997,11 @@ onMounted(() => {
   color: #cbd5e1;
   margin-top: 0.25rem;
   font-style: italic;
-  line-height: 1.3;
+}
+.unit-skill.unit-spec {
+  color: #a5b4fc;
+  font-size: 0.72rem;
+  margin-top: 0.15rem;
 }
 
 .fatigue-row {
@@ -2310,6 +2474,14 @@ onMounted(() => {
   padding-top: 6px;
 }
 
+.unit-tooltip .tooltip-spec {
+  font-size: 11px;
+  color: #a5b4fc;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(165, 180, 252, 0.2);
+}
+
 .traits-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -2322,8 +2494,27 @@ onMounted(() => {
   padding: 5px 8px;
   border-radius: 8px;
   background: rgba(20, 30, 50, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/** Paliers atteints : encadrement (2 vert, 4 bleu, 6 jaune) */
+.trait-card.trait-frame-tier-0 {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+.trait-card.trait-frame-tier-2 {
+  border: 2px solid rgba(34, 197, 94, 0.8);
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.28);
+}
+.trait-card.trait-frame-tier-4 {
+  border: 2px solid rgba(59, 130, 246, 0.88);
+  box-shadow: 0 0 14px rgba(59, 130, 246, 0.38);
+}
+.trait-card.trait-frame-tier-6 {
+  border: 2px solid rgba(250, 204, 21, 0.92);
+  box-shadow: 0 0 16px rgba(250, 204, 21, 0.42);
 }
 
 .trait-card-content.inactive {
@@ -2392,27 +2583,15 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.trait-card.active {
-  opacity: 1;
-  border: 1px solid #3aa3ff;
-  box-shadow: 0 0 10px rgba(58, 163, 255, 0.4);
-}
-
-
 .trait-name {
   font-weight: 600;
 }
 
 .trait-level {
   font-size: 12px;
-  opacity: 0.8;
-}
-
-.trait-paliers {
-  font-size: 11px;
-  opacity: 0.7;
-  margin-top: 4px;
-  color: #94a3b8;
+  opacity: 0.9;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .synergies-block {

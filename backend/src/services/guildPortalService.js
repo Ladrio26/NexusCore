@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../config/db.js';
-import { STANDARD_PORTAL_WEIGHTS, getBossUnitCodes, rollRarity } from './gachaService.js';
+import { getSkillDescriptionForTooltip } from '../utils/skillDescription.js';
+import { STANDARD_PORTAL_WEIGHTS, getBossUnitCodes, rollRarity, hasGuaranteedMythic } from './gachaService.js';
 import { getBasicUnitRow, grantSummonedUnitToUser } from './unitGrantService.js';
 import { ensureGuildCurrency, getGuildCurrency, getGuildMembership } from './guildService.js';
 import {
@@ -146,7 +147,7 @@ async function getRotationCandidateUnitsByRarity(rarity, count, executor = null)
     return runQuery(
       `SELECT id, code, name, rarity, role, attack_type, element, image_url
        FROM units
-       WHERE rarity = ?
+       WHERE rarity = ? AND COALESCE(is_boss, 0) = 0
        ORDER BY RAND()
        LIMIT ?`,
       [rarity, count]
@@ -157,7 +158,7 @@ async function getRotationCandidateUnitsByRarity(rarity, count, executor = null)
   return runQuery(
     `SELECT id, code, name, rarity, role, attack_type, element, image_url
      FROM units
-     WHERE rarity = ? AND code NOT IN (${placeholders})
+     WHERE rarity = ? AND COALESCE(is_boss, 0) = 0 AND code NOT IN (${placeholders})
      ORDER BY RAND()
      LIMIT ?`,
     [rarity, ...bossCodes, count]
@@ -263,7 +264,8 @@ export async function summonFromGuildPortal(userId) {
   await ensureGuildCurrency(userId);
   const rotation = await ensureCurrentGuildPortalRotation();
   const rotationUnits = Array.isArray(rotation.units) ? rotation.units : [];
-  const rarity = rollGuildPortalRarity();
+  const forceMythic = await hasGuaranteedMythic(userId);
+  const rarity = forceMythic ? 'mythic' : rollGuildPortalRarity();
   const rarityPool = rotationUnits.filter((unit) => String(unit.rarity).toLowerCase() === rarity);
   if (rarityPool.length === 0) {
     throw buildGuildPortalError('GUILD_PORTAL_ROTATION_INVALID', 'Aucune unité disponible pour cette rareté dans la rotation active.');
@@ -273,6 +275,12 @@ export async function summonFromGuildPortal(userId) {
   let grantMeta = null;
 
   await withTransaction(async (tx) => {
+    if (forceMythic) {
+      await tx.query(
+        'INSERT INTO user_guaranteed_next_mythic (user_id, used) VALUES (?, 1) ON DUPLICATE KEY UPDATE used = 1',
+        [userId]
+      );
+    }
     const membershipInTx = await getGuildMembership(userId, tx);
     if (!membershipInTx) {
       throw buildGuildPortalError('NOT_IN_GUILD', "Vous devez être dans une guilde pour invoquer.");
@@ -300,7 +308,8 @@ export async function summonFromGuildPortal(userId) {
     );
   });
 
-  const unit = await getBasicUnitRow(Number(pickedUnit.unit_id));
+  const unitRow = await getBasicUnitRow(Number(pickedUnit.unit_id));
+  const unit = unitRow ? { ...unitRow, skill_description: getSkillDescriptionForTooltip(unitRow) } : null;
   const guildCurrency = await getGuildCurrency(userId);
 
   // Notification guilde pour mythic / legendary (silencieuse, non-bloquante)
@@ -309,7 +318,7 @@ export async function summonFromGuildPortal(userId) {
       ? GUILD_NOTIFICATION_TYPES.SUMMON_MYTHIC
       : GUILD_NOTIFICATION_TYPES.SUMMON_LEGENDARY;
     void createGuildNotification(membership.guild_id, userId, notifType, {
-      unit_name: unit?.name ?? 'Unité inconnue',
+      unit_name: unitRow?.name ?? unit?.name ?? 'Unité inconnue',
       rarity
     });
   }

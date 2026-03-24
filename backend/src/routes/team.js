@@ -1,4 +1,6 @@
 import { query } from '../config/db.js';
+import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
+import { getRestCenterUserUnitIdSet, REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE, DEFAULT_FATIGUE_RECOVERY_PER_MINUTE } from '../services/restCenterService.js';
 import { TARGETING_RULES } from '../../../core/constants/targeting.js';
 
 export function registerTeamRoutes(fastify, authenticate) {
@@ -164,23 +166,71 @@ export function registerTeamRoutes(fastify, authenticate) {
       normalizedRows.flatMap((row) => [...row.front_slots, ...row.back_slots])
     )];
 
+    let restCenterUnitIds = new Set();
+    try {
+      restCenterUnitIds = await getRestCenterUserUnitIdSet(userId);
+    } catch (e) {
+      if (!(e?.message || '').includes('rest_center_slots')) throw e;
+    }
+
     const unitById = new Map();
     if (allUnitIds.length > 0) {
       const placeholders = allUnitIds.map(() => '?').join(',');
-      const unitRows = await query(
-        `SELECT uu.id AS user_unit_id, uu.level, u.name, u.image_url, u.archetype
-         FROM user_units uu
-         JOIN units u ON u.id = uu.unit_id
-         WHERE uu.user_id = ? AND uu.id IN (${placeholders})`,
-        [userId, ...allUnitIds]
-      );
+      let unitRows;
+      try {
+        unitRows = await query(
+          `SELECT uu.id AS user_unit_id, uu.level, uu.fatigue, uu.fatigue_last_update,
+                  UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts,
+                  uu.injury_level, uu.is_injured,
+                  u.name, u.image_url, u.archetype, u.base_hp
+           FROM user_units uu
+           JOIN units u ON u.id = uu.unit_id
+           WHERE uu.user_id = ? AND uu.id IN (${placeholders})`,
+          [userId, ...allUnitIds]
+        );
+      } catch (err) {
+        const msg = (err?.message || '').toString();
+        if (msg.includes('fatigue_last_update') || err?.code === 'ER_BAD_FIELD_ERROR') {
+          unitRows = await query(
+            `SELECT uu.id AS user_unit_id, uu.level, uu.fatigue, uu.injury_level, uu.is_injured,
+                    u.name, u.image_url, u.archetype, u.base_hp
+             FROM user_units uu
+             JOIN units u ON u.id = uu.unit_id
+             WHERE uu.user_id = ? AND uu.id IN (${placeholders})`,
+            [userId, ...allUnitIds]
+          );
+        } else {
+          throw err;
+        }
+      }
       for (const row of unitRows) {
+        let fatigue;
+        if (row.fatigue_last_update_ts != null || row.fatigue_last_update != null) {
+          const uid = Number(row.user_unit_id);
+          const recoveryRate = restCenterUnitIds.has(uid)
+            ? REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE
+            : DEFAULT_FATIGUE_RECOVERY_PER_MINUTE;
+          fatigue = computeCurrentFatigue(
+            {
+              fatigue: row.fatigue ?? 0,
+              fatigue_last_update: row.fatigue_last_update,
+              fatigue_last_update_ts: row.fatigue_last_update_ts
+            },
+            { fatigueRecoveryPerMinute: recoveryRate }
+          ).fatigue;
+        } else {
+          fatigue = Math.max(0, Number(row.fatigue ?? 0));
+        }
         unitById.set(Number(row.user_unit_id), {
           user_unit_id: Number(row.user_unit_id),
           name: String(row.name ?? 'Unité'),
           level: Number(row.level ?? 1),
           image_url: row.image_url ?? null,
-          archetype: row.archetype ?? null
+          archetype: row.archetype ?? null,
+          fatigue: Math.min(100, Math.max(0, fatigue)),
+          injury_level: row.injury_level != null ? Math.max(0, Number(row.injury_level)) : 0,
+          is_injured: row.is_injured != null ? Number(row.is_injured) : 0,
+          base_hp: row.base_hp != null ? Number(row.base_hp) : 0
         });
       }
     }

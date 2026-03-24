@@ -118,7 +118,18 @@
 import { computed } from 'vue';
 import UnitCircle from './UnitCircle.vue';
 
-type UIUnit = Record<string, unknown> & { id: string; team?: string; role?: string };
+/** Unité telle que construite pour l’UI combat (snake / champs moteur). */
+type UIUnit = Record<string, unknown> & {
+  id: string;
+  team?: string;
+  role?: string;
+  combatIndex?: number | string;
+  isDead?: boolean;
+};
+
+function isUIUnit(v: unknown): v is UIUnit {
+  return typeof v === 'object' && v !== null && 'id' in v && typeof (v as { id: unknown }).id === 'string';
+}
 
 const props = withDefaults(
   defineProps<{
@@ -158,32 +169,28 @@ function registerUnitRef(id: string, el: unknown) {
   else unitRefs.delete(id);
 }
 
-const allies = computed(() =>
-  Array.from(props.uiUnits.values()).filter(
-    (u) => String((u as UIUnit).team ?? '').toUpperCase() === 'ALLY'
-  )
+const allies = computed((): UIUnit[] =>
+  Array.from(props.uiUnits.values()).filter((u): u is UIUnit => isUIUnit(u) && String(u.team ?? '').toUpperCase() === 'ALLY')
 );
 
-const enemies = computed(() =>
-  Array.from(props.uiUnits.values()).filter(
-    (u) => String((u as UIUnit).team ?? '').toUpperCase() === 'ENEMY'
-  )
+const enemies = computed((): UIUnit[] =>
+  Array.from(props.uiUnits.values()).filter((u): u is UIUnit => isUIUnit(u) && String(u.team ?? '').toUpperCase() === 'ENEMY')
 );
 
-const alliesFront = computed(() =>
-  allies.value.filter((u) => String((u as UIUnit).role ?? '').toUpperCase() === 'CAC')
+const alliesFront = computed((): UIUnit[] =>
+  allies.value.filter((u) => String(u.role ?? '').toUpperCase() === 'CAC')
 );
 
-const alliesBack = computed(() =>
-  allies.value.filter((u) => String((u as UIUnit).role ?? '').toUpperCase() === 'DISTANCE')
+const alliesBack = computed((): UIUnit[] =>
+  allies.value.filter((u) => String(u.role ?? '').toUpperCase() === 'DISTANCE')
 );
 
-const enemiesFront = computed(() =>
-  enemies.value.filter((u) => String((u as UIUnit).role ?? '').toUpperCase() === 'CAC')
+const enemiesFront = computed((): UIUnit[] =>
+  enemies.value.filter((u) => String(u.role ?? '').toUpperCase() === 'CAC')
 );
 
-const enemiesBack = computed(() =>
-  enemies.value.filter((u) => String((u as UIUnit).role ?? '').toUpperCase() === 'DISTANCE')
+const enemiesBack = computed((): UIUnit[] =>
+  enemies.value.filter((u) => String(u.role ?? '').toUpperCase() === 'DISTANCE')
 );
 
 defineExpose({
@@ -202,7 +209,14 @@ defineExpose({
   min-height: 0;
   align-items: center;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow: clip;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.battlefield-outer::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .team-label {
@@ -314,12 +328,29 @@ defineExpose({
   .battlefield-outer {
     height: auto;
     min-height: 200px;
-    gap: 2px 4px;
+    gap: 6px 8px;
     grid-template-columns: 1fr;
   }
 
   .battle-row {
-    gap: 2px;
+    gap: 6px;
+    flex-wrap: nowrap;
+    justify-content: center;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    padding: 2px 0;
+  }
+
+  .battle-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .unit-slot {
+    flex: 0 0 auto;
+    min-width: 28px;
   }
 
   .team-label,
@@ -336,10 +367,9 @@ defineExpose({
   }
 
   .unit-slot.unit-targetable {
-    /* Zone tactile plus grande (44px min recommandé) + pas de délai 300ms sur mobile */
     touch-action: manipulation;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 28px;
+    min-height: 28px;
   }
 
   .unit-slot.unit-targetable::after {

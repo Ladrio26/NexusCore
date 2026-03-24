@@ -38,25 +38,44 @@ export async function getWalletSnapshot(userId, executor = null) {
   const runQuery = getRunner(executor);
   await ensureWalletRow(userId, executor);
   const rows = await runQuery(
-    'SELECT credits, cores, fragments, ascension_essence, gold FROM user_wallet WHERE user_id = ? LIMIT 1',
+    'SELECT credits, cores, fragments, ascension_essence, gold, divine_cores, divine_credits, divine_fragments FROM user_wallet WHERE user_id = ? LIMIT 1',
     [userId]
   );
+  const r = rows[0];
   return {
-    credits: Number(rows[0]?.credits ?? 0),
-    cores: Number(rows[0]?.cores ?? 0),
-    fragments: Number(rows[0]?.fragments ?? 0),
-    ascension_essence: Number(rows[0]?.ascension_essence ?? 0),
-    gold: Number(rows[0]?.gold ?? 0)
+    credits: Number(r?.credits ?? 0),
+    cores: Number(r?.cores ?? 0),
+    fragments: Number(r?.fragments ?? 0),
+    ascension_essence: Number(r?.ascension_essence ?? 0),
+    gold: Number(r?.gold ?? 0),
+    divine_cores: Number(r?.divine_cores ?? 0),
+    divine_credits: Number(r?.divine_credits ?? 0),
+    divine_fragments: Number(r?.divine_fragments ?? 0)
   };
+}
+
+function parseJson(v) {
+  if (v == null) return null;
+  if (typeof v === 'object') return v;
+  try {
+    return typeof v === 'string' ? JSON.parse(v || 'null') : v;
+  } catch {
+    return null;
+  }
 }
 
 export async function getBasicUnitRow(unitId, executor = null) {
   const runQuery = getRunner(executor);
   const rows = await runQuery(
-    'SELECT id, code, name, rarity, role, attack_type, element, image_url FROM units WHERE id = ? LIMIT 1',
+    'SELECT id, code, name, rarity, role, attack_type, element, image_url, skill_data FROM units WHERE id = ? LIMIT 1',
     [unitId]
   );
-  return rows[0] ?? null;
+  const row = rows[0] ?? null;
+  if (!row) return null;
+  return {
+    ...row,
+    skill_data: parseJson(row.skill_data)
+  };
 }
 
 export async function grantSummonedUnitToUser(userId, unitId, rarity, executor = null) {
@@ -82,10 +101,17 @@ export async function grantSummonedUnitToUser(userId, unitId, rarity, executor =
     : { credits: 0, fragments: 0 };
 
   if (isNewUnit) {
+    const countRows = await runQuery(
+      'SELECT COUNT(*) AS cnt FROM user_units WHERE user_id = ?',
+      [userId]
+    );
+    const existingUnitCount = Number(countRows[0]?.cnt ?? 0);
+    const initialLevel = existingUnitCount < 5 ? 5 : 1;
+
     await runQuery(
       `INSERT INTO user_units (user_id, unit_id, level, xp, fatigue, fatigue_last_update, injury_level, is_injured, power_level, power_openings)
-       VALUES (?, ?, 1, 0, 0, NOW(), 0, 0, 1, 1)`,
-      [userId, unitId]
+       VALUES (?, ?, ?, 0, 0, NOW(), 0, 0, 1, 1)`,
+      [userId, unitId, initialLevel]
     );
   } else {
     await runQuery(

@@ -23,7 +23,7 @@ export const TOOLTIP_SPD =
   'VIT : Vitesse de l\'équipe, sert à décider l\'ordre d\'attaque des unités.';
 
 export const TOOLTIP_MASTERY =
-  "Maîtrise : Augmente les dégâts des compétences de l'unité.";
+  "Maîtrise : influence la réussite des effets négatifs que tu appliques et la résistance quand ton unité est la cible.";
 
 export const TOOLTIP_CD =
   'CD : Cooldown de la compétence : Nombre d\'actions de l\'unité à faire avant de pouvoir relancer la compétence.';

@@ -103,7 +103,7 @@ function timeAgo(dateStr: string): string {
 
 function formatDateFull(dateStr: string): string {
   if (!dateStr) return '';
-  return new Date(dateStr).toLocaleString('fr-FR');
+  return new Date(dateStr).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
 }
 </script>
 

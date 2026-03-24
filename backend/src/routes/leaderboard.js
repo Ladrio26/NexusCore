@@ -138,19 +138,30 @@ export function registerLeaderboardRoutes(fastify, authenticate) {
 
       const [rows, countRows] = await Promise.all([
         query(
-          'SELECT id, display_name, pvp_elo, avatar_url FROM users ORDER BY pvp_elo DESC, display_name ASC LIMIT ? OFFSET ?',
+          `SELECT u.id, u.display_name, u.pvp_elo, u.avatar_url,
+                  (SELECT g.name FROM guild_members gm
+                   JOIN guilds g ON g.id = gm.guild_id
+                   WHERE gm.user_id = u.id
+                   LIMIT 1) AS guild_name
+           FROM users u
+           ORDER BY u.pvp_elo DESC, u.display_name ASC
+           LIMIT ? OFFSET ?`,
           [limit, offset]
         ),
         query('SELECT COUNT(*) AS total FROM users')
       ]);
 
-      const players = rows.map((r, idx) => ({
-        id: Number(r.id),
-        pseudo: r.display_name,
-        elo: Number(r.pvp_elo ?? 0),
-        rank: offset + idx + 1,
-        avatar_url: r.avatar_url ?? null
-      }));
+      const players = rows.map((r, idx) => {
+        const rawGuild = r.guild_name ?? r.Guild_name ?? r.GUILD_NAME;
+        return {
+          id: Number(r.id),
+          pseudo: r.display_name,
+          elo: Number(r.pvp_elo ?? 0),
+          rank: offset + idx + 1,
+          avatar_url: r.avatar_url ?? null,
+          guild_name: rawGuild != null && rawGuild !== '' ? String(rawGuild).trim() : null
+        };
+      });
 
       const total = Number(countRows[0]?.total ?? 0);
       const totalPages = total > 0 ? Math.ceil(total / limit) : 1;

@@ -2,6 +2,7 @@ import { query } from '../config/db.js';
 import { getXpRequired } from '../services/xpService.js';
 import { computeScaledStats } from '../../../core/combatEngine.js';
 import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
+import { getRestCenterUserUnitIdSet, REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE, DEFAULT_FATIGUE_RECOVERY_PER_MINUTE } from '../services/restCenterService.js';
 import { applyArtifactBonusesToUnit } from '../../../core/artifacts.js';
 import { getEquippedArtifactsForUnitIds } from '../services/artifactService.js';
 
@@ -91,6 +92,11 @@ async function handleCollection(request, reply) {
               UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts,
               uu.injury_level,
               uu.is_injured,
+              uu.combat_kills,
+              uu.combat_victories,
+              uu.combat_defeats,
+              uu.combat_damage_dealt,
+              uu.combat_healing_done,
               uu.basic_targeting,
               uu.skill_targeting,
               u.id AS unit_id,
@@ -130,6 +136,11 @@ async function handleCollection(request, reply) {
               UNIX_TIMESTAMP(uu.fatigue_last_update) AS fatigue_last_update_ts,
               uu.injury_level,
               uu.is_injured,
+              uu.combat_kills,
+              uu.combat_victories,
+              uu.combat_defeats,
+              uu.combat_damage_dealt,
+              uu.combat_healing_done,
               u.id AS unit_id,
               u.code,
               u.name,
@@ -165,6 +176,11 @@ async function handleCollection(request, reply) {
               uu.fatigue,
               uu.injury_level,
               uu.is_injured,
+              uu.combat_kills,
+              uu.combat_victories,
+              uu.combat_defeats,
+              uu.combat_damage_dealt,
+              uu.combat_healing_done,
               uu.basic_targeting,
               uu.skill_targeting,
               u.id AS unit_id,
@@ -232,6 +248,12 @@ async function handleCollection(request, reply) {
     const toSafeNumber = (v) => (typeof v === 'bigint' ? Number(v) : v);
 
     const unitIds = rows.map((row) => Number(row.user_unit_id)).filter((id) => Number.isInteger(id) && id > 0);
+    let restCenterUnitIds = new Set();
+    try {
+      restCenterUnitIds = await getRestCenterUserUnitIdSet(userId);
+    } catch (e) {
+      if (!(e?.message || '').includes('rest_center_slots')) throw e;
+    }
     const equippedArtifactsByUnit = await getEquippedArtifactsForUnitIds(userId, unitIds);
     const units = [];
     for (const r of rows) {
@@ -240,11 +262,18 @@ async function handleCollection(request, reply) {
       let fatigue;
       let minutesPassed = 0;
       if (hasFatigueLastUpdate) {
-        const computed = computeCurrentFatigue({
-          fatigue: r.fatigue ?? 0,
-          fatigue_last_update: r.fatigue_last_update,
-          fatigue_last_update_ts: r.fatigue_last_update_ts
-        });
+        const uid = Number(r.user_unit_id);
+        const recoveryRate = restCenterUnitIds.has(uid)
+          ? REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE
+          : DEFAULT_FATIGUE_RECOVERY_PER_MINUTE;
+        const computed = computeCurrentFatigue(
+          {
+            fatigue: r.fatigue ?? 0,
+            fatigue_last_update: r.fatigue_last_update,
+            fatigue_last_update_ts: r.fatigue_last_update_ts
+          },
+          { fatigueRecoveryPerMinute: recoveryRate }
+        );
         fatigue = computed.fatigue;
         minutesPassed = computed.minutesPassed;
         if (minutesPassed > 0) {
@@ -300,7 +329,13 @@ async function handleCollection(request, reply) {
         mastery: stats.mastery ?? 0,
         equipped_artifacts: equippedArtifacts,
         basic_targeting: hasTargeting && r.basic_targeting != null ? String(r.basic_targeting).trim() || 'NO_FOCUS' : 'NO_FOCUS',
-        skill_targeting: hasTargeting && r.skill_targeting != null ? String(r.skill_targeting).trim() || 'NO_FOCUS' : 'NO_FOCUS'
+        skill_targeting: hasTargeting && r.skill_targeting != null ? String(r.skill_targeting).trim() || 'NO_FOCUS' : 'NO_FOCUS',
+        combat_kills: toSafeNumber(r.combat_kills ?? 0),
+        combat_victories: toSafeNumber(r.combat_victories ?? 0),
+        combat_defeats: toSafeNumber(r.combat_defeats ?? 0),
+        combat_damage_dealt: toSafeNumber(r.combat_damage_dealt ?? 0),
+        combat_healing_done: toSafeNumber(r.combat_healing_done ?? 0),
+        in_rest_center: restCenterUnitIds.has(toSafeNumber(r.user_unit_id))
       };
       applyArtifactBonusesToUnit(unitPayload, equippedArtifacts);
       units.push(unitPayload);

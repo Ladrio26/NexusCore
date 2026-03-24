@@ -6,9 +6,11 @@
  * @param {{ fatigue: number, fatigue_last_update?: Date|string|null, fatigue_last_update_ts?: number|null }} unit
  *   - fatigue_last_update_ts : préféré si fourni (Unix secondes, de UNIX_TIMESTAMP())
  *   - fatigue_last_update : fallback (Date ou string)
+ * @param {{ fatigueRecoveryPerMinute?: number }} [options] — défaut 1 ; Centre de repos = 2 (×2 récupération).
  * @returns {{ fatigue: number, minutesPassed: number }}
  */
-export function computeCurrentFatigue(unit) {
+export function computeCurrentFatigue(unit, options = {}) {
+  const perMinute = Math.max(0, Number(options.fatigueRecoveryPerMinute ?? 1)) || 1;
   const nowSeconds = Math.floor(Date.now() / 1000);
   let lastSeconds = null;
 
@@ -32,6 +34,7 @@ export function computeCurrentFatigue(unit) {
   }
 
   const previous = Math.max(0, Number(unit.fatigue) || 0);
-  const newFatigue = Math.max(0, previous - minutesPassed);
+  const decremented = minutesPassed * perMinute;
+  const newFatigue = Math.max(0, previous - decremented);
   return { fatigue: newFatigue, minutesPassed };
 }

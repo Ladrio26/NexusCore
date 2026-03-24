@@ -290,7 +290,7 @@ function triggerAtbTick() {
 }
 
 .unit-name {
-  font-size: 11px;
+  font-size: 9px;
   margin-top: 4px;
   text-align: center;
 }
@@ -301,16 +301,16 @@ function triggerAtbTick() {
   }
 
   .unit-circle-wrap.unit {
-    width: 30px;
-    height: 28px;
+    width: 28px;
+    height: 26px;
   }
 
-  /* Centrer correctement dans le wrap 30x28 : (30-22)/2=4, (28-22)/2=3 */
+  /* Taille réduite pour tenir 4-6 unités par ligne sur mobile */
   .unit-ring,
   .unit-circle.unit-portrait,
   .buff-container {
-    top: 3px;
-    left: 4px;
+    top: 2px;
+    left: 3px;
     width: 22px;
     height: 22px;
   }
@@ -320,13 +320,13 @@ function triggerAtbTick() {
   }
 
   .buff-orb {
-    transform: rotate(var(--orbit-offset, 0deg)) translateX(12px) rotate(calc(-1 * var(--orbit-offset, 0deg)));
+    transform: rotate(var(--orbit-offset, 0deg)) translateX(9px) rotate(calc(-1 * var(--orbit-offset, 0deg)));
   }
 
   .buff-orb-icon {
-    width: 8px;
-    height: 8px;
-    font-size: 6px;
+    width: 6px;
+    height: 6px;
+    font-size: 5px;
   }
 
   .buff-orb-duration {
@@ -336,6 +336,11 @@ function triggerAtbTick() {
   .unit-name {
     font-size: 6px;
     margin-top: 1px;
+    max-width: 28px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.1;
   }
 
   /* Masquer la barre ATB en responsive (trop grosse) */
@@ -424,10 +429,18 @@ function triggerAtbTick() {
   pointer-events: none;
 }
 
-/* ---- Conteneur d'icônes en orbite (désactivé — interférait avec les clics sur mobile) ---- */
+/* ---- Conteneur d'icônes en orbite (désactivé uniquement sur mobile) ---- */
 .buff-container {
-  display: none;
+  position: absolute;
+  top: 18px;
+  left: 12px;
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: orbit 12s linear infinite;
 }
+
 .buff-container--legacy {
   position: absolute;
   top: 18px;

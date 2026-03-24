@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
   last_daily_reward_claim_at DATETIME DEFAULT NULL,
   last_opponent_id INT UNSIGNED DEFAULT NULL,
   avatar_url VARCHAR(512) DEFAULT NULL,
+  rest_center_slots JSON DEFAULT NULL COMMENT 'Centre de Repos: max 6 user_unit_id',
   UNIQUE KEY uq_users_email (email),
   UNIQUE KEY uq_users_display_name (display_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS units (
   specB_skill_modifier JSON DEFAULT NULL,
   specA_passive JSON DEFAULT NULL,
   specB_passive JSON DEFAULT NULL,
+  is_boss TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = boss (hors sanctuaire / bestiaire / tirages)',
   UNIQUE KEY uq_units_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -262,6 +264,29 @@ CREATE TABLE IF NOT EXISTS gacha_pity (
   pity_mythic INT UNSIGNED NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, banner_key),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Historique des invocations sanctuaire (audit / support)
+CREATE TABLE IF NOT EXISTS gacha_sanctuary_pull_log (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL,
+  pull_type VARCHAR(32) NOT NULL,
+  banner_key VARCHAR(64) NOT NULL,
+  cost_currency VARCHAR(32) NOT NULL,
+  cost_amount INT UNSIGNED NOT NULL DEFAULT 0,
+  unit_id INT UNSIGNED NOT NULL,
+  unit_rarity VARCHAR(32) NOT NULL,
+  is_new_unit TINYINT(1) NOT NULL DEFAULT 0,
+  duplicate_credits INT UNSIGNED NOT NULL DEFAULT 0,
+  duplicate_fragments INT UNSIGNED NOT NULL DEFAULT 0,
+  batch_id CHAR(36) DEFAULT NULL,
+  batch_index TINYINT UNSIGNED DEFAULT NULL,
+  batch_size TINYINT UNSIGNED DEFAULT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_gacha_sanctuary_pull_user_created (user_id, created_at),
+  KEY idx_gacha_sanctuary_pull_batch (batch_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- File de matchmaking

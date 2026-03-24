@@ -1,11 +1,20 @@
 <template>
   <section class="pvp">
     <div class="card nx-panel">
-      <h1 class="nx-title">PvP</h1>
-
-      <div class="pvp-elo">
-        <span class="pvp-elo-label">Elo actuel</span>
-        <span class="pvp-elo-value">{{ pvpMe?.pvp_elo ?? 0 }}</span>
+      <div class="pvp-header-row">
+        <h1 class="nx-title">PvP</h1>
+        <div class="pvp-elo">
+          <span class="pvp-elo-label">Elo actuel</span>
+          <span class="pvp-elo-value">{{ pvpMe?.pvp_elo ?? 0 }}</span>
+        </div>
+        <div class="pvp-rewards-summary">
+          <span class="pvp-rewards-label">Récompenses en cas de victoire / défaite</span>
+          <div class="pvp-rewards-content">
+            <p><strong>Victoire :</strong> +3 crédits, 1000 XP par unité, mise à jour de l’Elo. Aucun or ni artefact en fin de combat.</p>
+            <p><strong>Défaite :</strong> aucun or ni artefact ; fatigue d’équipe (+3).</p>
+            <p class="pvp-rewards-note">En atteignant un nouveau palier Elo (Argent, Or, Platine, etc.), tu débloques des récompenses : crédits, cores, fragments, essence d’ascension.</p>
+          </div>
+        </div>
       </div>
 
       <div v-if="!pvpMe?.defense" class="pvp-alert">
@@ -14,18 +23,19 @@
       </div>
 
       <template v-else>
-        <div class="pvp-defense-link">
-          <span class="pvp-defense-label">Défense :</span>
-          <router-link to="/pvp/defense" class="pvp-defense-edit">Configurer la défense</router-link>
-        </div>
-
-        <div class="pvp-preset-row">
-          <label class="pvp-label">Preset d'attaque</label>
-          <select v-model.number="attackerPresetId" class="pvp-select" :disabled="loading">
+        <div class="pvp-setup-row">
+          <div class="pvp-defense-link">
+            <span class="pvp-defense-label">Défense :</span>
+            <router-link to="/pvp/defense" class="pvp-defense-edit">Configurer</router-link>
+          </div>
+          <div class="pvp-preset-row">
+            <label class="pvp-label">Attaque</label>
+            <select v-model.number="attackerPresetId" class="pvp-select" :disabled="loading">
             <option v-for="p in presets" :key="p.preset_index" :value="p.preset_index">
               {{ p.preset_name || `Preset ${p.preset_index}` }}
             </option>
           </select>
+          </div>
         </div>
 
         <div v-if="selectedAttackPreset" class="pvp-team-preview nx-panel">
@@ -33,7 +43,7 @@
           <div class="pvp-unit-row">
             <span class="pvp-unit-row-label">CAC</span>
             <div class="pvp-unit-list">
-              <div v-for="unit in selectedAttackPreset.front_units" :key="`att-front-${unit.user_unit_id}`" class="pvp-unit-card">
+              <div v-for="unit in selectedAttackPreset.front_units" :key="`att-front-${unit.user_unit_id}`" class="pvp-unit-card" :title="`Fatigue : ${unit.fatigue ?? 0}`">
                 <img :src="unitImage(unit)" :alt="unit.name" class="pvp-unit-avatar" />
                 <span class="pvp-unit-name">{{ unit.name }}</span>
                 <span class="pvp-unit-level">Nv.{{ unit.level }}</span>
@@ -44,7 +54,7 @@
           <div class="pvp-unit-row">
             <span class="pvp-unit-row-label">Distance</span>
             <div class="pvp-unit-list">
-              <div v-for="unit in selectedAttackPreset.back_units" :key="`att-back-${unit.user_unit_id}`" class="pvp-unit-card">
+              <div v-for="unit in selectedAttackPreset.back_units" :key="`att-back-${unit.user_unit_id}`" class="pvp-unit-card" :title="`Fatigue : ${unit.fatigue ?? 0}`">
                 <img :src="unitImage(unit)" :alt="unit.name" class="pvp-unit-avatar" />
                 <span class="pvp-unit-name">{{ unit.name }}</span>
                 <span class="pvp-unit-level">Nv.{{ unit.level }}</span>
@@ -58,13 +68,14 @@
           <button
             type="button"
             class="nx-btn nx-glow-blue pvp-btn-find"
-            :disabled="loading || !attackerPresetId"
+            :disabled="loading || !attackerPresetId || !!pendingBattle || attackPresetHasUnfitUnits"
             @click="findAndFight"
           >
             {{ loading ? 'Recherche & combat…' : 'Trouver un adversaire' }}
           </button>
         </div>
 
+        <p v-if="attackPresetHasUnfitUnits && !battleError" class="pvp-preset-unfit">{{ PRESET_UNFIT_MSG }}</p>
         <div v-if="battleError" class="pvp-error">{{ battleError }}</div>
       </template>
     </div>
@@ -78,8 +89,9 @@
       :stage-info="{ stage: 0, isBoss: false, cleared: false, rewardClaimed: false, available: true }"
       :campaign-team="[]"
       :pending-battle="pendingBattle"
-      @close="closeResult"
+      @close="handleModalClose"
       @battle-finalized="handleBattleFinalized"
+      @abandon="handleAbandon"
     />
     <Teleport to="body">
       <Transition name="rank-reward-popup">
@@ -135,7 +147,20 @@ type PresetUnit = {
   name: string;
   level: number;
   image_url?: string | null;
+  fatigue?: number;
+  injury_level?: number;
+  is_injured?: number;
+  base_hp?: number;
 };
+
+const PRESET_UNFIT_MSG =
+  'Impossible de lancer le combat : au moins une unité du preset a des PV à zéro ou est blessée. Soigne tes unités dans la collection.';
+
+function presetUnitUnfit(u: PresetUnit): boolean {
+  const inj = Number(u.injury_level ?? 0);
+  const ko = Number(u.is_injured ?? 0);
+  return ko === 1 || inj > 0;
+}
 
 type Preset = {
   preset_index: number;
@@ -202,8 +227,20 @@ const selectedAttackPreset = computed(() =>
   presets.value.find((p) => p.preset_index === attackerPresetId.value) ?? null
 );
 
+const attackPresetHasUnfitUnits = computed(() => {
+  const p = selectedAttackPreset.value;
+  if (!p) return false;
+  return [...p.front_units, ...p.back_units].some((u) => presetUnitUnfit(u));
+});
+
 async function findAndFight() {
   if (!attackerPresetId.value) return;
+  if (attackPresetHasUnfitUnits.value) {
+    battleError.value = PRESET_UNFIT_MSG;
+    return;
+  }
+  // Empêche un clic "traversant" (modal fermée) de relancer un combat
+  if (Date.now() < closeCooldownUntil) return;
   battleError.value = '';
   loading.value = true;
   try {
@@ -242,8 +279,48 @@ watch(presets, (list) => {
   }
 }, { deep: true });
 
+let closeResultTimeout: ReturnType<typeof setTimeout> | null = null;
+let closeCooldownUntil = 0;
+
 function closeResult() {
   pendingBattle.value = null;
+}
+
+function scheduleCloseResult() {
+  if (closeResultTimeout) clearTimeout(closeResultTimeout);
+  closeResultTimeout = setTimeout(() => {
+    closeResultTimeout = null;
+    closeResult();
+    // Cooldown : empêche un clic "traversant" de relancer findAndFight en boucle
+    closeCooldownUntil = Date.now() + 500;
+  }, 250);
+}
+
+/** Gère la fermeture : un seul événement avec payload, évite les émissions parasites find-opponent */
+function handleModalClose(payload?: { findOpponent?: boolean }) {
+  if (payload?.findOpponent) {
+    if (closeResultTimeout) {
+      clearTimeout(closeResultTimeout);
+      closeResultTimeout = null;
+    }
+    pendingBattle.value = null;
+    void findAndFight();
+  } else {
+    scheduleCloseResult();
+  }
+}
+
+/** Abandonne le combat en attente (déblocage en cas de boucle/bug). */
+async function handleAbandon() {
+  if (closeResultTimeout) {
+    clearTimeout(closeResultTimeout);
+    closeResultTimeout = null;
+  }
+  try {
+    await api.post('/battle/abandon');
+  } catch { /* ignore */ }
+  pendingBattle.value = null;
+  closeCooldownUntil = Date.now() + 500;
 }
 
 async function loadPendingBattle() {
@@ -290,21 +367,66 @@ onMounted(() => {
 
 <style scoped>
 .pvp {
-  padding: 1rem;
+  padding: 1rem 0;
 }
 .card {
-  max-width: 520px;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
   background: rgba(15, 23, 42, 0.95);
   border-radius: 1rem;
-  padding: 1.5rem 2rem;
+  padding: 1rem 1.5rem;
   border: 1px solid rgba(148, 163, 184, 0.4);
+}
+.pvp-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.pvp-header-row .nx-title { margin: 0; }
+.pvp-header-row .pvp-elo { margin-bottom: 0; }
+.pvp-rewards-summary {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+.pvp-rewards-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 0.35rem;
+}
+.pvp-rewards-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+.pvp-rewards-content p {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+.pvp-rewards-content p:first-of-type,
+.pvp-rewards-content p:nth-of-type(2) {
+  margin-bottom: 0;
+}
+.pvp-rewards-note {
+  width: 100%;
+  margin: 0.3rem 0 0 !important;
+  font-size: 0.75rem !important;
+  color: #94a3b8 !important;
 }
 .pvp-elo {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
+  gap: 0.5rem;
+  margin-bottom: 0;
 }
 .pvp-elo-label { color: rgba(148, 163, 184, 0.9); }
 .pvp-elo-value { font-size: 1.5rem; font-weight: 700; }
@@ -315,8 +437,15 @@ onMounted(() => {
   margin-top: 0.5rem;
 }
 .pvp-alert p { margin-bottom: 0.75rem; }
-.pvp-defense-link {
+.pvp-setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.5rem;
   margin-bottom: 1rem;
+}
+.pvp-setup-row .pvp-preset-row { margin-bottom: 0; }
+.pvp-defense-link {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -339,12 +468,22 @@ onMounted(() => {
   border-radius: 0.5rem;
   color: #e2e8f0;
 }
-.pvp-actions { margin: 1.25rem 0; }
+.pvp-actions { margin: 1rem 0; }
 .pvp-btn-find { margin-right: 0.5rem; }
 .pvp-error { color: #f87171; margin-top: 0.75rem; font-size: 0.9rem; }
+.pvp-preset-unfit {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(120, 53, 15, 0.35);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fde68a;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
 .pvp-team-preview {
-  margin-top: 0.9rem;
-  padding: 0.85rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
   border-radius: 0.75rem;
   border: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(15, 23, 42, 0.45);

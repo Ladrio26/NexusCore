@@ -31,7 +31,7 @@
             }"
           >
             <span class="notification-item-text">{{ formatPvpMessage(n) }}</span>
-            <span class="notification-item-date">{{ formatDate(n.created_at) }}</span>
+            <span class="notification-item-date" :title="formatDateFull(n.created_at)">{{ formatDate(n.created_at) }}</span>
           </li>
         </ul>
       </div>
@@ -41,8 +41,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
-import api from '@/api';
-import { authToken } from '@/api';
+import api, { authToken } from '@/api';
 
 type Notification = {
   id: number;
@@ -82,7 +81,12 @@ function formatDate(raw: string): string {
   if (diffHours < 24) return `Il y a ${diffHours}h`;
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `Il y a ${diffDays} j`;
-  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', timeZone: 'Europe/Paris' });
+}
+
+function formatDateFull(raw: string): string {
+  if (!raw) return '';
+  return new Date(raw).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Paris' });
 }
 
 async function fetchNotifications() {
@@ -131,17 +135,24 @@ function onDocumentClick(e: MouseEvent) {
   }
 }
 
+const clickOutsideByEl = new WeakMap<HTMLElement, (event: MouseEvent) => void>();
+
 const vClickOutside = {
   mounted(el: HTMLElement, binding: { value?: () => void }) {
-    el._clickOutside = (event: MouseEvent) => {
+    const handler = (event: MouseEvent) => {
       if (!el.contains(event.target as Node)) {
         binding.value?.();
       }
     };
-    document.addEventListener('click', el._clickOutside);
+    clickOutsideByEl.set(el, handler);
+    document.addEventListener('click', handler);
   },
   unmounted(el: HTMLElement) {
-    document.removeEventListener('click', (el as any)._clickOutside);
+    const handler = clickOutsideByEl.get(el);
+    if (handler) {
+      document.removeEventListener('click', handler);
+      clickOutsideByEl.delete(el);
+    }
   }
 };
 

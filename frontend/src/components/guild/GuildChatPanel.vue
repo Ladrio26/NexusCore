@@ -91,7 +91,11 @@ function handleKeydown(event: KeyboardEvent) {
 
 function formatTime(value: string | null) {
   if (!value) return '--:--';
-  return new Date(value).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  return new Date(value).toLocaleTimeString('fr-FR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Paris'
+  });
 }
 
 async function scrollToBottom(smooth = false) {

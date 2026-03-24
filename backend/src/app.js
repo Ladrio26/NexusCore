@@ -24,6 +24,8 @@ import { registerGuildRoutes } from './routes/guild.js';
 import { registerGuildWarRoutes } from './routes/guildWar.js';
 import { registerFeedbackRoutes } from './routes/feedback.js';
 import { registerNotificationsRoutes } from './routes/notifications.js';
+import { registerRestCenterRoutes } from './routes/restCenter.js';
+import { registerDungeonRoutes } from './routes/dungeon.js';
 import { startGuildWarCron } from './services/guildWarCronService.js';
 
 export async function buildApp({ logger = true } = {}) {
@@ -51,6 +53,11 @@ export async function buildApp({ logger = true } = {}) {
     return { status: 'ok' };
   });
 
+  // Ops / debug uniquement : identifie le process (redémarrage ≠ nouveau build du SPA).
+  // Les clients utilisent `build-id.json` servi avec le front, pas cette route.
+  const appVersion = String(process.env.APP_VERSION || Date.now());
+  fastify.get('/version', async () => ({ version: appVersion }));
+
   registerAuthRoutes(fastify);
   registerProfileRoutes(fastify, authMiddleware);
   registerRankedRoutes(fastify, authMiddleware);
@@ -69,6 +76,8 @@ export async function buildApp({ logger = true } = {}) {
   registerAdminRoutes(fastify, authMiddleware, requireAdminUser);
   registerFeedbackRoutes(fastify, authMiddleware, requireAdminUser);
   registerNotificationsRoutes(fastify, authMiddleware);
+  registerRestCenterRoutes(fastify, authMiddleware);
+  registerDungeonRoutes(fastify, authMiddleware);
 
   startGuildWarCron();
 

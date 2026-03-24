@@ -202,7 +202,18 @@ const guildRequests = ref<GuildRequest[]>([]);
 const guildMessages = ref<GuildChatMessage[]>([]);
 const guildNotifications = ref<GuildNotification[]>([]);
 const portalState = ref<PortalState | null>(null);
-const summonResult = ref<{ rarity: string; guild_coins: number; unit: { name?: string | null; image_url?: string | null; element?: string | null; role?: string | null } | null } | null>(null);
+const summonResult = ref<{
+  rarity: string;
+  guild_coins: number;
+  unit: {
+    name?: string | null;
+    image_url?: string | null;
+    element?: string | null;
+    role?: string | null;
+    skill_description?: string | null;
+    skill_data?: unknown;
+  } | null;
+} | null>(null);
 const chatDraft = ref('');
 const feedback = ref({ success: true, message: '' });
 const activeTab = ref<'members' | 'requests' | 'portal' | 'chat' | 'activity' | 'war' | 'faq'>('members');
@@ -640,7 +651,9 @@ async function handleGuildPortalSummon() {
         name: data.unit.name ?? null,
         image_url: data.unit.image_url ?? null,
         element: data.unit.element ?? null,
-        role: data.unit.role ?? null
+        role: data.unit.role ?? null,
+        skill_description: data.unit.skill_description ?? null,
+        skill_data: data.unit.skill_data ?? null
       } : null
     };
     if (portalState.value) {

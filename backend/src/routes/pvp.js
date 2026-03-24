@@ -6,7 +6,8 @@ import {
   buildTeamFromDb,
   getSelectedNoyau,
   applyNoyauBonus,
-  validateTeamSlots
+  validateTeamSlots,
+  teamHasUnfitUnits
 } from '../services/battleTeamService.js';
 import {
   getPlayerElo,
@@ -49,11 +50,17 @@ export function registerPvpRoutes(fastify, authenticate) {
       if (err.message === 'INVALID_PRESET_ID') {
         return reply.code(400).send({ error: 'INVALID_PRESET_ID', message: 'preset_id invalide (1-10).' });
       }
+      if (err.message === 'PRESET_EMPTY_OR_NOT_FOUND') {
+        return reply.code(400).send({
+          error: 'PRESET_EMPTY_OR_NOT_FOUND',
+          message: 'Ce preset n\'existe pas ou est vide. Choisissez un preset avec au moins une unité.'
+        });
+      }
       throw err;
     }
   });
 
-  /** GET /api/pvp/find-opponent - Matchmaking : joueur ±50 Elo ou PNJ. Query: exclude_defender_id pour ne pas retomber sur le même joueur. */
+  /** GET /api/pvp/find-opponent - Matchmaking : joueur ±100 Elo ou PNJ. Exclut le dernier adversaire (pas deux fois d'affilée). */
   fastify.get('/pvp/find-opponent', { preHandler: [authenticate] }, async (request, reply) => {
     const userId = request.user.id;
     const defense = await getDefense(userId);
@@ -63,7 +70,11 @@ export function registerPvpRoutes(fastify, authenticate) {
         message: 'Configurez une défense (preset) pour accéder au PvP.'
       });
     }
-    const excludeDefenderId = request.query?.exclude_defender_id != null ? Number(request.query.exclude_defender_id) : null;
+    let excludeDefenderId = request.query?.exclude_defender_id != null ? Number(request.query.exclude_defender_id) : null;
+    if (excludeDefenderId == null) {
+      const userRows = await query('SELECT last_opponent_id FROM users WHERE id = ?', [userId]);
+      excludeDefenderId = userRows[0]?.last_opponent_id != null ? Number(userRows[0].last_opponent_id) : null;
+    }
     const opponent = await findOpponent(userId, excludeDefenderId);
     return opponent;
   });
@@ -105,41 +116,82 @@ export function registerPvpRoutes(fastify, authenticate) {
     const noyauA = getSelectedNoyau(teamA, attackerSlotsData.selected_noyau_index || 0);
     applyNoyauBonus(teamA, noyauA);
 
+    if (teamHasUnfitUnits(teamA)) {
+      return reply.code(400).send({
+        error: 'UNIT_CANNOT_FIGHT',
+        message:
+          "Impossible de lancer le combat : au moins une unité du preset a des PV à zéro ou est blessée. Soigne tes unités dans la collection."
+      });
+    }
+
     let teamB;
     let defenderIdResolved = defenderId ? Number(defenderId) : null;
-    const isNpc = defenderType === 'npc' || !defenderIdResolved;
+    // En rang Bronze (ELO ≤ 299), seuls les PNJ sont autorisés comme adversaires.
+    const attackerEloForCheck = await getPlayerElo(userId);
+    const forcedNpc = attackerEloForCheck <= 299;
+    let isNpc = forcedNpc || defenderType === 'npc' || !defenderIdResolved;
 
     if (isNpc) {
-      const elo = await getPlayerElo(userId);
+      const elo = attackerEloForCheck;
       teamB = await generateNpcDefense(elo);
       if (!teamB || teamB.length === 0) {
         return reply.code(500).send({ error: 'NPC_GENERATION_FAILED' });
       }
     } else {
       const defenseRows = await getDefense(defenderIdResolved);
-      if (!defenseRows) {
-        return reply.code(400).send({ error: 'DEFENDER_NO_DEFENSE' });
+      const defenderSlotsData = defenseRows
+        ? await getPresetSlots(defenderIdResolved, defenseRows.preset_id)
+        : null;
+      const defenderHasValidDefense = defenseRows && defenderSlotsData && defenderSlotsData.slots.length > 0;
+      if (!defenderHasValidDefense) {
+        request.log.info(
+          { defenderId: defenderIdResolved, reason: !defenseRows ? 'no_defense' : 'preset_empty' },
+          'Défenseur sans défense valide, repli sur PNJ'
+        );
+        teamB = await generateNpcDefense(attackerEloForCheck);
+        if (!teamB || teamB.length === 0) {
+          return reply.code(500).send({ error: 'NPC_GENERATION_FAILED' });
+        }
+        defenderIdResolved = null;
+        isNpc = true;
+      } else {
+        try {
+          teamB = await buildTeamFromDb(defenderIdResolved, defenderSlotsData.slots);
+        } catch (err) {
+          request.log.error(err);
+          return reply.code(500).send({ error: 'TEAM_BUILD_FAILED', message: 'Impossible de charger la défense.' });
+        }
+        if (teamB.length === 0) {
+          request.log.info({ defenderId: defenderIdResolved }, 'Défenseur équipe vide (unités supprimées ?), repli sur PNJ');
+          teamB = await generateNpcDefense(attackerEloForCheck);
+          if (!teamB || teamB.length === 0) {
+            return reply.code(500).send({ error: 'NPC_GENERATION_FAILED' });
+          }
+          defenderIdResolved = null;
+          isNpc = true;
+        }
       }
-      const defenderSlotsData = await getPresetSlots(defenderIdResolved, defenseRows.preset_id);
-      if (!defenderSlotsData || !defenderSlotsData.slots.length) {
-        return reply.code(400).send({ error: 'DEFENDER_PRESET_EMPTY' });
+      const isNpcFallback = !defenderIdResolved;
+      if (!isNpcFallback) {
+        const noyauB = getSelectedNoyau(teamB, defenderSlotsData.selected_noyau_index || 0);
+        applyNoyauBonus(teamB, noyauB);
+        // Défense PvP : pas de fatigue → vitesse à 100 %
+        for (const u of teamB) {
+          u.fatigue = 0;
+        }
       }
-      try {
-        teamB = await buildTeamFromDb(defenderIdResolved, defenderSlotsData.slots);
-      } catch (err) {
-        request.log.error(err);
-        return reply.code(500).send({ error: 'TEAM_BUILD_FAILED', message: 'Impossible de charger la défense.' });
+    }
+
+    // PNJ (y compris repli défense vide) : aucun artefact joueur sur l’équipe B.
+    if (isNpc && Array.isArray(teamB)) {
+      for (const u of teamB) {
+        if (u && typeof u === 'object') u.equipped_artifacts = [];
       }
-      if (teamB.length === 0) {
-        return reply.code(400).send({ error: 'DEFENDER_TEAM_EMPTY' });
-      }
-      const noyauB = getSelectedNoyau(teamB, defenderSlotsData.selected_noyau_index || 0);
-      applyNoyauBonus(teamB, noyauB);
     }
 
     const seed = Date.now() % 2147483647;
 
-    const attackerElo = await getPlayerElo(userId);
+    const attackerElo = attackerEloForCheck;
     let defenderEloBefore = null;
     let defenderDisplayName = null;
     if (!isNpc && defenderIdResolved) {
@@ -163,7 +215,11 @@ export function registerPvpRoutes(fastify, authenticate) {
         defense: u.defense,
         speed: u.speed,
         traits: Array.isArray(u.traits) ? u.traits : [],
-        skillDescription: getSkillDescriptionForTooltip(u)
+        skillDescription: getSkillDescriptionForTooltip(u),
+        rarity: (u.rarity || 'common').toLowerCase(),
+        archetype: u.archetype ?? null,
+        role: u.role ?? null,
+        fatigue: u.fatigue ?? 0
       })),
       ...teamB.map((u, i) => ({
         id: `B-${i}`,
@@ -178,7 +234,10 @@ export function registerPvpRoutes(fastify, authenticate) {
         defense: u.defense,
         speed: u.speed,
         traits: Array.isArray(u.traits) ? u.traits : [],
-        skillDescription: getSkillDescriptionForTooltip(u)
+        skillDescription: getSkillDescriptionForTooltip(u),
+        rarity: (u.rarity || 'common').toLowerCase(),
+        archetype: u.archetype ?? null,
+        role: u.role ?? null
       }))
     ];
 

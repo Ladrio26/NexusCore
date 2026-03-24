@@ -29,6 +29,77 @@
         </div>
         <p class="gw-schedule-hint">Heure de Paris : matchmaking à minuit, phase d'attaque à 12h.</p>
 
+        <!-- Propositions de défense (même sans guerre du jour) -->
+        <div v-if="!notInGuild" class="gw-defense-section nx-panel gw-my-presets-section gw-my-presets-standalone">
+          <h3 class="gw-section-title">📋 Mes défenses proposées</h3>
+          <p class="gw-defense-hint">
+            Proposez des équipes <strong>n'importe quand</strong>. Seuls le chef et les officiers les placent sur la grille pendant la
+            <strong>phase du matin</strong> (minuit–12h Paris), pas pendant les attaques.
+          </p>
+          <button
+            v-if="myPresets.length < 3"
+            type="button"
+            class="nx-btn nx-btn-primary gw-propose-btn"
+            @click="openProposeModal"
+          >
+            + Proposer une défense
+          </button>
+          <div v-if="myPresets.length === 0" class="gw-my-presets-empty">
+            Aucune défense proposée. Cliquez sur « Proposer une défense » pour en créer (max. 3).
+          </div>
+          <div v-else class="gw-my-presets-list">
+            <div v-for="preset in myPresets" :key="preset.id" class="gw-my-preset-card">
+              <div class="gw-my-preset-header">
+                <span class="gw-my-preset-name">{{ preset.name }}</span>
+                <span v-if="preset.units_json?.length" class="gw-my-preset-power">{{ computePresetPower(preset).toLocaleString('fr-FR') }}</span>
+                <button
+                  type="button"
+                  class="gw-my-preset-delete"
+                  title="Supprimer"
+                  :disabled="deletePresetId === preset.id"
+                  @click="deleteMyPreset(preset.id)"
+                >
+                  {{ deletePresetId === preset.id ? '…' : '✕' }}
+                </button>
+              </div>
+              <div class="gw-my-preset-units">
+                <div class="gw-target-unit-circles gw-target-unit-circles--preset">
+                  <div
+                    v-for="(u, i) in preset.units_json"
+                    :key="i"
+                    class="gw-target-unit-circle-wrap"
+                    @mouseenter.stop="hoveredOwnDefenseUnit = { presetId: preset.id, i, unit: u }"
+                    @mouseleave.stop="hoveredOwnDefenseUnit = null"
+                  >
+                    <div
+                      class="gw-target-unit-circle"
+                      :class="[`rarity-${(u.rarity ?? 'common').toLowerCase()}`, { 'has-image': getUnitImageUrl(u) }]"
+                    >
+                      <img
+                        v-if="getUnitImageUrl(u)"
+                        :src="getUnitImageUrl(u) || ''"
+                        :alt="u.name ?? ''"
+                        class="gw-target-unit-circle-img"
+                      />
+                    </div>
+                    <div
+                      v-if="hoveredOwnDefenseUnit?.presetId === preset.id && hoveredOwnDefenseUnit?.i === i"
+                      class="gw-defense-unit-tooltip"
+                      role="tooltip"
+                    >
+                      <div v-if="getUnitImageUrl(u)" class="gw-unit-tooltip-img" :style="{ backgroundImage: `url(${getUnitImageUrl(u)})` }" />
+                      <div class="gw-unit-tooltip-title" :style="{ color: rarityColors[(u.rarity ?? 'common').toLowerCase()] ?? rarityColors.common }">{{ u.name ?? '?' }}</div>
+                      <div class="gw-unit-tooltip-meta">Niv.{{ u.level ?? '?' }} · {{ defenseUnitRoleLabel(u) }} · {{ (u.rarity ?? 'common').toLowerCase() }}</div>
+                      <div class="gw-unit-tooltip-stats">HP {{ u.stats?.maxHp ?? '?' }} · ATQ {{ u.stats?.attack ?? '?' }} · DEF {{ u.stats?.defense ?? '?' }} · VIT {{ u.stats?.speed ?? '?' }}</div>
+                      <div v-if="unitSkillDesc(u)" class="gw-unit-tooltip-skill">⚡ {{ unitSkillDesc(u) }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Historique (visible quand pas de guilde exclue par notInGuild) -->
         <div v-if="!notInGuild" class="gw-history-standalone nx-panel">
           <h3 class="gw-section-title">📜 Historique des guerres</h3>
@@ -59,7 +130,7 @@
     </template>
 
     <!-- ── Guerre active ─────────────────────────────────────────────────── -->
-    <template v-else>
+    <template v-else-if="war">
       <div class="gw-war-layout">
         <!-- En-tête guerre -->
         <div class="gw-war-header nx-panel">
@@ -84,10 +155,10 @@
           <!-- Barres de score -->
           <div class="gw-score-bars">
             <div class="gw-bar-wrap">
-              <div class="gw-bar gw-bar--a" :style="{ width: `${(war.guild_a_score / 6) * 100}%` }"></div>
+              <div class="gw-bar gw-bar--a" :style="{ width: `${scoreBarPercent(war.guild_a_score)}%` }"></div>
             </div>
             <div class="gw-bar-wrap">
-              <div class="gw-bar gw-bar--b" :style="{ width: `${(war.guild_b_score / 6) * 100}%` }"></div>
+              <div class="gw-bar gw-bar--b" :style="{ width: `${scoreBarPercent(war.guild_b_score)}%` }"></div>
             </div>
           </div>
 
@@ -119,7 +190,7 @@
           <!-- Nos défenses — visible uniquement aux membres (pas officiers/chef) -->
           <div v-if="!canManageDefenses" class="gw-defense-section nx-panel">
             <h3 class="gw-section-title">🛡️ Nos défenses — {{ myGuildName }}</h3>
-            <p class="gw-defense-hint">Défenses actuellement en place pour la guerre.</p>
+            <p class="gw-defense-hint">Défenses actuellement en place pour la guerre (pré-remplies d'un jour sur l'autre si votre guilde les a configurées).</p>
             <div class="gw-defense-grid">
               <div
                 v-for="slot in 6"
@@ -133,8 +204,38 @@
                 </div>
                 <div class="gw-slot-units">
                   <template v-if="getDefense(myGuildId, slot)">
-                    <div v-for="(unit, i) in getDefense(myGuildId, slot)?.units_json ?? []" :key="i" class="gw-slot-unit-badge">
-                      {{ unit.name ?? '???' }}
+                    <span v-if="getDefense(myGuildId, slot) && !getDefense(myGuildId, slot)?.is_destroyed" class="gw-slot-power">{{ computeDefensePower(getDefense(myGuildId, slot)).toLocaleString('fr-FR') }}</span>
+                    <div class="gw-target-unit-circles gw-target-unit-circles--slot">
+                      <div
+                        v-for="(unit, i) in getDefense(myGuildId, slot)?.units_json ?? []"
+                        :key="i"
+                        class="gw-target-unit-circle-wrap"
+                        @mouseenter.stop="hoveredOwnDefenseUnit = { slot, i, unit }"
+                        @mouseleave.stop="hoveredOwnDefenseUnit = null"
+                      >
+                        <div
+                          class="gw-target-unit-circle"
+                          :class="[`rarity-${(unit.rarity ?? 'common').toLowerCase()}`, { 'has-image': getUnitImageUrl(unit) }]"
+                        >
+                          <img
+                            v-if="getUnitImageUrl(unit)"
+                            :src="getUnitImageUrl(unit) || ''"
+                            :alt="unit.name ?? ''"
+                            class="gw-target-unit-circle-img"
+                          />
+                        </div>
+                        <div
+                          v-if="hoveredOwnDefenseUnit?.slot === slot && hoveredOwnDefenseUnit?.i === i"
+                          class="gw-defense-unit-tooltip"
+                          role="tooltip"
+                        >
+                          <div v-if="getUnitImageUrl(unit)" class="gw-unit-tooltip-img" :style="{ backgroundImage: `url(${getUnitImageUrl(unit)})` }" />
+                          <div class="gw-unit-tooltip-title" :style="{ color: rarityColors[(unit.rarity ?? 'common').toLowerCase()] ?? rarityColors.common }">{{ unit.name ?? '?' }}</div>
+                          <div class="gw-unit-tooltip-meta">Niv.{{ unit.level ?? '?' }} · {{ defenseUnitRoleLabel(unit) }} · {{ (unit.rarity ?? 'common').toLowerCase() }}</div>
+                          <div class="gw-unit-tooltip-stats">HP {{ unit.stats?.maxHp ?? '?' }} · ATQ {{ unit.stats?.attack ?? '?' }} · DEF {{ unit.stats?.defense ?? '?' }} · VIT {{ unit.stats?.speed ?? '?' }}</div>
+                          <div v-if="unitSkillDesc(unit)" class="gw-unit-tooltip-skill">⚡ {{ unitSkillDesc(unit) }}</div>
+                        </div>
+                      </div>
                     </div>
                     <span v-if="getDefense(myGuildId, slot)?.defender_name" class="gw-slot-defender">par {{ getDefense(myGuildId, slot)?.defender_name }}</span>
                   </template>
@@ -148,7 +249,11 @@
           <div v-if="canManageDefenses" class="gw-defense-section nx-panel">
             <h3 class="gw-section-title">⚙️ Configurer les défenses — {{ myGuildName }}</h3>
             <p v-if="war.status === 'preparation'" class="gw-defense-hint">
-              Sélectionnez une défense pour chaque emplacement parmi celles proposées par les membres.
+              <strong>Phase du matin uniquement</strong> : placez les propositions des membres sur la grille. À midi, les emplacements vides
+              font gagner des points à l'adversaire sur le compteur.
+            </p>
+            <p v-else class="gw-defense-hint gw-defense-hint--muted">
+              La grille n'est modifiable que le matin (avant 12h Paris). Vous pouvez toujours gérer vos propositions ci-dessous.
             </p>
             <div class="gw-defense-grid">
               <div
@@ -163,8 +268,38 @@
                 </div>
                 <div class="gw-slot-units">
                   <template v-if="getDefense(myGuildId, slot)">
-                    <div v-for="(unit, i) in getDefense(myGuildId, slot)?.units_json ?? []" :key="i" class="gw-slot-unit-badge">
-                      {{ unit.name ?? '???' }}
+                    <span v-if="getDefense(myGuildId, slot) && !getDefense(myGuildId, slot)?.is_destroyed" class="gw-slot-power">{{ computeDefensePower(getDefense(myGuildId, slot)).toLocaleString('fr-FR') }}</span>
+                    <div class="gw-target-unit-circles gw-target-unit-circles--slot">
+                      <div
+                        v-for="(unit, i) in getDefense(myGuildId, slot)?.units_json ?? []"
+                        :key="i"
+                        class="gw-target-unit-circle-wrap"
+                        @mouseenter.stop="hoveredOwnDefenseUnit = { slot, i, unit }"
+                        @mouseleave.stop="hoveredOwnDefenseUnit = null"
+                      >
+                        <div
+                          class="gw-target-unit-circle"
+                          :class="[`rarity-${(unit.rarity ?? 'common').toLowerCase()}`, { 'has-image': getUnitImageUrl(unit) }]"
+                        >
+                          <img
+                            v-if="getUnitImageUrl(unit)"
+                            :src="getUnitImageUrl(unit) || ''"
+                            :alt="unit.name ?? ''"
+                            class="gw-target-unit-circle-img"
+                          />
+                        </div>
+                        <div
+                          v-if="hoveredOwnDefenseUnit?.slot === slot && hoveredOwnDefenseUnit?.i === i"
+                          class="gw-defense-unit-tooltip"
+                          role="tooltip"
+                        >
+                          <div v-if="getUnitImageUrl(unit)" class="gw-unit-tooltip-img" :style="{ backgroundImage: `url(${getUnitImageUrl(unit)})` }" />
+                          <div class="gw-unit-tooltip-title" :style="{ color: rarityColors[(unit.rarity ?? 'common').toLowerCase()] ?? rarityColors.common }">{{ unit.name ?? '?' }}</div>
+                          <div class="gw-unit-tooltip-meta">Niv.{{ unit.level ?? '?' }} · {{ defenseUnitRoleLabel(unit) }} · {{ (unit.rarity ?? 'common').toLowerCase() }}</div>
+                          <div class="gw-unit-tooltip-stats">HP {{ unit.stats?.maxHp ?? '?' }} · ATQ {{ unit.stats?.attack ?? '?' }} · DEF {{ unit.stats?.defense ?? '?' }} · VIT {{ unit.stats?.speed ?? '?' }}</div>
+                          <div v-if="unitSkillDesc(unit)" class="gw-unit-tooltip-skill">⚡ {{ unitSkillDesc(unit) }}</div>
+                        </div>
+                      </div>
                     </div>
                     <span v-if="getDefense(myGuildId, slot)?.defender_name" class="gw-slot-defender">par {{ getDefense(myGuildId, slot)?.defender_name }}</span>
                   </template>
@@ -190,9 +325,12 @@
           <!-- Mes défenses proposées -->
           <div class="gw-defense-section nx-panel gw-my-presets-section">
             <h3 class="gw-section-title">📋 Mes défenses proposées</h3>
-            <p class="gw-defense-hint">Vos défenses soumises aux officiers. Une unité déjà utilisée dans une défense ne peut pas être réutilisée ailleurs.</p>
+            <p class="gw-defense-hint">
+              Propositions pour les officiers : vous pouvez les créer ou les supprimer <strong>tout le temps</strong>. Une unité ne peut
+              servir que dans une seule proposition à la fois (max. 3 propositions).
+            </p>
             <button
-              v-if="war.status === 'preparation' && myPresets.length < 3"
+              v-if="myPresets.length < 3"
               type="button"
               class="nx-btn nx-btn-primary gw-propose-btn"
               @click="openProposeModal"
@@ -210,8 +348,8 @@
               >
                 <div class="gw-my-preset-header">
                   <span class="gw-my-preset-name">{{ preset.name }}</span>
+                  <span v-if="preset.units_json?.length" class="gw-my-preset-power">{{ computePresetPower(preset).toLocaleString('fr-FR') }}</span>
                   <button
-                    v-if="war.status === 'preparation'"
                     type="button"
                     class="gw-my-preset-delete"
                     title="Supprimer"
@@ -222,7 +360,38 @@
                   </button>
                 </div>
                 <div class="gw-my-preset-units">
-                  <span v-for="(u, i) in preset.units_json" :key="i" class="gw-slot-unit-badge">{{ u.name ?? '???' }}</span>
+                  <div class="gw-target-unit-circles gw-target-unit-circles--preset">
+                    <div
+                      v-for="(u, i) in preset.units_json"
+                      :key="i"
+                      class="gw-target-unit-circle-wrap"
+                      @mouseenter.stop="hoveredOwnDefenseUnit = { presetId: preset.id, i, unit: u }"
+                      @mouseleave.stop="hoveredOwnDefenseUnit = null"
+                    >
+                      <div
+                        class="gw-target-unit-circle"
+                        :class="[`rarity-${(u.rarity ?? 'common').toLowerCase()}`, { 'has-image': getUnitImageUrl(u) }]"
+                      >
+                        <img
+                          v-if="getUnitImageUrl(u)"
+                          :src="getUnitImageUrl(u) || ''"
+                          :alt="u.name ?? ''"
+                          class="gw-target-unit-circle-img"
+                        />
+                      </div>
+                      <div
+                        v-if="hoveredOwnDefenseUnit?.presetId === preset.id && hoveredOwnDefenseUnit?.i === i"
+                        class="gw-defense-unit-tooltip"
+                        role="tooltip"
+                      >
+                        <div v-if="getUnitImageUrl(u)" class="gw-unit-tooltip-img" :style="{ backgroundImage: `url(${getUnitImageUrl(u)})` }" />
+                        <div class="gw-unit-tooltip-title" :style="{ color: rarityColors[(u.rarity ?? 'common').toLowerCase()] ?? rarityColors.common }">{{ u.name ?? '?' }}</div>
+                        <div class="gw-unit-tooltip-meta">Niv.{{ u.level ?? '?' }} · {{ defenseUnitRoleLabel(u) }} · {{ (u.rarity ?? 'common').toLowerCase() }}</div>
+                        <div class="gw-unit-tooltip-stats">HP {{ u.stats?.maxHp ?? '?' }} · ATQ {{ u.stats?.attack ?? '?' }} · DEF {{ u.stats?.defense ?? '?' }} · VIT {{ u.stats?.speed ?? '?' }}</div>
+                        <div v-if="unitSkillDesc(u)" class="gw-unit-tooltip-skill">⚡ {{ unitSkillDesc(u) }}</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -255,37 +424,41 @@
                   :disabled="destroyed || !defense"
                   @click="selectedSlot = slot"
                 >
-                  <span class="gw-target-slot-num">#{{ slot }}</span>
+                  <div class="gw-target-slot-header">
+                    <span class="gw-target-slot-num">#{{ slot }}</span>
+                    <span v-if="defense && !destroyed" class="gw-target-slot-power" title="Score de puissance (même calcul que Team Builder)">{{ computeDefensePower(defense).toLocaleString('fr-FR') }}</span>
+                  </div>
                   <template v-if="defense && !destroyed">
                     <span class="gw-target-slot-defender">{{ defense.defender_name ?? 'Joueur' }}</span>
-                    <span class="gw-target-slot-units">
-                      <template v-for="(u, i) in defense.units_json ?? []" :key="i">
-                        <span class="gw-target-unit">{{ u.name ?? '?' }} <em>Niv.{{ u.level ?? '?' }}</em></span>
-                        <template v-if="i < ((defense.units_json ?? []).length - 1)"> · </template>
-                      </template>
-                    </span>
-                    <div class="gw-defense-hover-bubble" role="tooltip">
-                      <div class="gw-defense-hover-title">Defense #{{ slot }}</div>
-                      <div class="gw-defense-hover-owner">Proprietaire : {{ defense.defender_name ?? 'Joueur inconnu' }}</div>
-                      <div class="gw-defense-hover-list">
+                    <div class="gw-target-unit-circles">
+                      <div
+                        v-for="(u, i) in defense.units_json ?? []"
+                        :key="i"
+                        class="gw-target-unit-circle-wrap"
+                        @mouseenter.stop="hoveredDefenseUnit = { slot, i, unit: u }"
+                        @mouseleave.stop="hoveredDefenseUnit = null"
+                      >
                         <div
-                          v-for="(u, i) in defense.units_json ?? []"
-                          :key="`hover-${slot}-${i}`"
-                          class="gw-defense-hover-unit"
+                          class="gw-target-unit-circle"
+                          :class="[`rarity-${(u.rarity ?? 'common').toLowerCase()}`, { 'has-image': getUnitImageUrl(u) }]"
                         >
-                          <div class="gw-defense-hover-head">
-                            <strong>{{ u.name ?? '?' }}</strong>
-                            <span class="gw-defense-hover-meta">Niv. {{ u.level ?? '?' }}</span>
-                            <span
-                              class="gw-defense-hover-spec"
-                              :class="{ 'is-none': !u.specialization }"
-                            >
-                              {{ u.specialization ? `Spe ${u.specialization}` : 'Non spe' }}
-                            </span>
-                          </div>
-                          <div class="gw-defense-hover-stats">
-                            HP {{ u.stats?.maxHp ?? '?' }} · ATK {{ u.stats?.attack ?? '?' }} · DEF {{ u.stats?.defense ?? '?' }} · SPD {{ u.stats?.speed ?? '?' }}
-                          </div>
+                          <img
+                            v-if="getUnitImageUrl(u)"
+                            :src="getUnitImageUrl(u) || ''"
+                            :alt="u.name ?? ''"
+                            class="gw-target-unit-circle-img"
+                          />
+                        </div>
+                        <div
+                          v-if="hoveredDefenseUnit?.slot === slot && hoveredDefenseUnit?.i === i"
+                          class="gw-defense-unit-tooltip"
+                          role="tooltip"
+                        >
+                          <div v-if="getUnitImageUrl(u)" class="gw-unit-tooltip-img" :style="{ backgroundImage: `url(${getUnitImageUrl(u)})` }" />
+                          <div class="gw-unit-tooltip-title" :style="{ color: rarityColors[(u.rarity ?? 'common').toLowerCase()] ?? rarityColors.common }">{{ u.name ?? '?' }}</div>
+                          <div class="gw-unit-tooltip-meta">Niv.{{ u.level ?? '?' }} · {{ defenseUnitRoleLabel(u) }} · {{ (u.rarity ?? 'common').toLowerCase() }}</div>
+                          <div class="gw-unit-tooltip-stats">HP {{ u.stats?.maxHp ?? '?' }} · ATQ {{ u.stats?.attack ?? '?' }} · DEF {{ u.stats?.defense ?? '?' }} · VIT {{ u.stats?.speed ?? '?' }}</div>
+                          <div v-if="unitSkillDesc(u)" class="gw-unit-tooltip-skill">⚡ {{ unitSkillDesc(u) }}</div>
                         </div>
                       </div>
                     </div>
@@ -298,10 +471,13 @@
 
             <!-- Sélection unités -->
             <div v-if="selectedSlot" class="gw-unit-select">
-              <p class="gw-sub-label">Vos unités ({{ selectedAttackers.length }}/4 — min 1, max 4)</p>
+              <p class="gw-sub-label">
+                Vos unités ({{ selectedAttackers.length }}/4 — min 1, max 4)
+                <span v-if="selectedAttackers.length > 0" class="gw-attack-total-power">— Puissance : {{ selectedAttackersTotalPower.toLocaleString('fr-FR') }}</span>
+              </p>
               <div class="gw-unit-grid">
                 <div
-                  v-for="unit in availableUnits"
+                  v-for="unit in availableUnitsSortedByPower"
                   :key="unit.user_unit_id"
                   class="gw-unit-card"
                   :class="{
@@ -421,7 +597,9 @@
       <div v-if="showProposeModal" class="gw-modal-overlay" @click.self="closeProposeModal">
         <div class="gw-modal">
           <h3>Proposer une défense</h3>
-          <p class="gw-modal-hint">Sélectionnez entre 1 et 4 unités. Les officiers pourront choisir cette défense pour un emplacement.</p>
+          <p class="gw-modal-hint">
+            Entre 1 et 4 unités. Les officiers ne pourront l'assigner à la grille <strong>que le matin</strong> (phase de préparation).
+          </p>
           <input
             v-model="proposePresetName"
             type="text"
@@ -485,6 +663,7 @@
       :pending-battle="gwPendingBattle"
       @close="closeGwBattle"
       @battle-finalized="handleGwBattleFinalized"
+      @abandon="handleGwAbandon"
     />
 
     <!-- ── Feedback ─────────────────────────────────────────────────────────── -->
@@ -500,6 +679,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import api from '../api';
 import StageModal from './StageModal.vue';
+import { getUnitImageUrl } from '../utils/unitImage';
+import { getSkillEffectDescription, buildSkillDescriptionFromSkillData } from '../utils/skillDescription';
+import { rarityColors } from '../utils/invokeAnimation';
+import { toRoleFr } from '../utils/i18nFr';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -510,6 +693,13 @@ type WarUnit = {
   level?: number;
   specialization?: 'A' | 'B' | null;
   power_level?: number;
+  role?: string | null;
+  archetype?: string | null;
+  rarity?: string | null;
+  image_url?: string | null;
+  skill_data?: Record<string, unknown> | null;
+  ascension_count?: number;
+  fatigue?: number;
   stats?: {
     maxHp?: number;
     attack?: number;
@@ -541,6 +731,8 @@ type AvailableUnit = {
   user_unit_id: number; name: string; code: string; rarity: string;
   element: string; role: string; archetype: string; image_url: string | null;
   level: number; power_level: number; used: boolean;
+  stats?: { maxHp?: number; attack?: number; defense?: number; speed?: number; mastery?: number } | null;
+  ascension_count?: number; fatigue?: number; skill_data?: Record<string, unknown> | null;
 };
 type Schedule = { current_phase: string; next_phase_at: string; next_war_at: string };
 type WarHistoryEntry = {
@@ -559,7 +751,7 @@ const defenses = ref<Defense[]>([]);
 const logs = ref<WarLog[]>([]);
 const availableUnits = ref<AvailableUnit[]>([]);
 const schedule = ref<Schedule | null>(null);
-const activeTab = ref<'defenses' | 'attack' | 'logs' | 'history'>('defenses');
+const activeTab = ref<GwTabId>('defenses');
 const canManageDefenses = ref(false);
 const attackLoading = ref(false);
 const placeLoading = ref(false);
@@ -586,8 +778,13 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 const countdown = ref('');
 const warTimer = ref('');
+/** Tooltip unité survolée dans une défense adverse (slot, index, unit) */
+const hoveredDefenseUnit = ref<{ slot: number; i: number; unit: WarUnit } | null>(null);
+/** Tooltip unité dans l'onglet Défenses (Nos défenses / Configurer / Mes défenses proposées) */
+const hoveredOwnDefenseUnit = ref<{ slot?: number; presetId?: number; i: number; unit: WarUnit } | null>(null);
 
-const tabs = [
+type GwTabId = 'defenses' | 'attack' | 'logs' | 'history';
+const tabs: Array<{ id: GwTabId; label: string }> = [
   { id: 'defenses', label: '🛡️ Défenses' },
   { id: 'attack', label: '⚔️ Attaquer' },
   { id: 'logs', label: '📋 Journal' },
@@ -728,6 +925,75 @@ function getSlotClass(guildId: number | null, slot: number): string {
   return 'slot--active';
 }
 
+/** Score de puissance d'une unité (même formule que TeamBuilder). */
+function computeDefenseUnitPower(u: WarUnit): number {
+  const maxHp = u.stats?.maxHp ?? 0;
+  const attack = u.stats?.attack ?? 0;
+  const defense = u.stats?.defense ?? 0;
+  const speed = u.stats?.speed ?? 0;
+  const mastery = u.stats?.mastery ?? 0;
+  let power = maxHp * 0.25 + attack * 1.2 + defense * 1 + speed * 1.5 + mastery * 0.8;
+  if ((u.ascension_count ?? 0) > 0) power *= 1.15;
+  const fatigue = Math.min(100, Math.max(0, u.fatigue ?? 0));
+  power *= 1 - fatigue / 200;
+  return Math.round(power);
+}
+
+/** Score de puissance total d'une défense. */
+function computeDefensePower(defense: Defense | undefined): number {
+  if (!defense?.units_json?.length) return 0;
+  return defense.units_json.reduce((sum, u) => sum + computeDefenseUnitPower(u), 0);
+}
+
+/** Score de puissance total d'un preset de défense (Mes défenses proposées). */
+function computePresetPower(preset: { units_json?: WarUnit[] }): number {
+  if (!preset?.units_json?.length) return 0;
+  return preset.units_json.reduce((sum, u) => sum + computeDefenseUnitPower(u), 0);
+}
+
+/** Score de puissance d'une unité disponible (attaque) — même formule que TeamBuilder. */
+function computeAttackUnitPower(u: AvailableUnit): number {
+  const maxHp = u.stats?.maxHp ?? 0;
+  const attack = u.stats?.attack ?? 0;
+  const defense = u.stats?.defense ?? 0;
+  const speed = u.stats?.speed ?? 0;
+  const mastery = u.stats?.mastery ?? 0;
+  let power = maxHp * 0.25 + attack * 1.2 + defense * 1 + speed * 1.5 + mastery * 0.8;
+  if ((u.ascension_count ?? 0) > 0) power *= 1.15;
+  const fatigue = Math.min(100, Math.max(0, u.fatigue ?? 0));
+  power *= 1 - fatigue / 200;
+  return Math.round(power);
+}
+
+/** Unités disponibles triées par puissance (décroissant). */
+const availableUnitsSortedByPower = computed(() => {
+  return [...availableUnits.value].sort((a, b) => computeAttackUnitPower(b) - computeAttackUnitPower(a));
+});
+
+/** Puissance totale de l'équipe d'attaque sélectionnée. */
+const selectedAttackersTotalPower = computed(() => {
+  return selectedAttackers.value.reduce((sum, u) => sum + computeAttackUnitPower(u), 0);
+});
+
+function unitSkillDesc(u: WarUnit): string {
+  const sd = u.skill_data as Record<string, unknown> | null | undefined;
+  if (!sd || typeof sd !== 'object') return '';
+  return (getSkillEffectDescription(sd) || buildSkillDescriptionFromSkillData(sd)).trim() || '';
+}
+
+/** Rôle affiché (Tank, Soutien, DPS, Assassin) à partir de role ou archetype. */
+function defenseUnitRoleLabel(u: WarUnit): string {
+  const role = (u.role ?? '').toString().toLowerCase();
+  const arch = (u.archetype ?? '').toString().toUpperCase();
+  const roleFr = toRoleFr(u.role);
+  if (['tank', 'assassin', 'support', 'soutien', 'dps'].includes(role)) return roleFr;
+  if (arch === 'CAC_TANK') return 'Tank';
+  if (arch === 'CAC_DPS') return 'Assassin';
+  if (arch.includes('SUPPORT')) return 'Soutien';
+  if (arch.includes('DISTANCE') || arch.includes('DPS')) return 'DPS';
+  return roleFr || '—';
+}
+
 function getGuildName(guildId: number): string {
   if (!war.value) return String(guildId);
   if (guildId === war.value.guild_a_id) return war.value.guild_a_name;
@@ -857,6 +1123,12 @@ function formatCountdown(targetDate: string): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/** Barre de score : max théorique 12 (6 slots vides + 6 destructibles). */
+function scoreBarPercent(score: number): number {
+  const max = 12;
+  return Math.min(100, (Math.max(0, score) / max) * 100);
+}
+
 // ── Chargement ────────────────────────────────────────────────────────────────
 
 async function loadWarStatus() {
@@ -869,6 +1141,9 @@ async function loadWarStatus() {
 
     if (!data.war) {
       war.value = null;
+      defenses.value = [];
+      logs.value = [];
+      await loadPresetCandidateUnits();
       return;
     }
 
@@ -877,9 +1152,7 @@ async function loadWarStatus() {
     defenses.value = data.war.defenses ?? [];
     logs.value = data.war.logs ?? [];
 
-    if (war.value) {
-      await loadAvailableUnits(war.value.id);
-    }
+    if (war.value) await loadAvailableUnits(war.value.id);
   } catch (err: any) {
     if (err.response?.status === 403) notInGuild.value = true;
   } finally {
@@ -890,6 +1163,15 @@ async function loadWarStatus() {
 async function loadAvailableUnits(warId: number) {
   try {
     const { data } = await api.get(`/guild-war/available-units/${warId}`);
+    if (data.success) availableUnits.value = data.units ?? [];
+  } catch {
+    // silencieux
+  }
+}
+
+async function loadPresetCandidateUnits() {
+  try {
+    const { data } = await api.get('/guild-war/units-for-presets');
     if (data.success) availableUnits.value = data.units ?? [];
   } catch {
     // silencieux
@@ -946,6 +1228,15 @@ async function launchAttack() {
 
 function closeGwBattle() {
   gwPendingBattle.value = null;
+}
+
+async function handleGwAbandon() {
+  try {
+    await api.post('/battle/abandon');
+    gwPendingBattle.value = null;
+  } catch {
+    gwPendingBattle.value = null;
+  }
 }
 
 async function handleGwBattleFinalized() {
@@ -1273,10 +1564,22 @@ onUnmounted(() => {
 .slot--destroyed .gw-slot-status { color: #f87171; }
 .slot--empty .gw-slot-status { color: #475569; }
 .gw-defense-hint { color: #64748b; font-size: 0.85rem; margin: 0 0 12px; }
+.gw-defense-hint--muted { color: #475569; opacity: 0.9; }
+.gw-my-presets-standalone { margin-top: 20px; text-align: left; }
 .gw-slot-units { display: flex; flex-direction: column; gap: 3px; min-height: 40px; }
 .gw-slot-unit-badge { font-size: 0.72rem; color: #94a3b8; background: rgba(100,116,139,0.1); padding: 2px 6px; border-radius: 4px; }
+.gw-slot-power { font-size: 0.72rem; font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+.gw-slot-power { font-size: 0.7rem; font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+.gw-slot-power { font-size: 0.72rem; font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+.gw-slot-power { font-size: 0.72rem; font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+.gw-slot-power { font-size: 0.72rem; color: #38bdf8; font-weight: 700; margin-bottom: 4px; }
 .gw-slot-defender { font-size: 0.68rem; color: #64748b; font-style: italic; margin-top: 2px; }
 .gw-slot-empty-label { font-size: 0.75rem; color: #334155; font-style: italic; }
+.gw-my-preset-power { font-size: 0.75rem; color: #38bdf8; font-weight: 700; margin-left: 8px; }
+.gw-attack-total-power { font-size: 0.85rem; color: #38bdf8; font-weight: 700; margin-left: 8px; }
+.gw-my-preset-power { font-size: 0.75rem; font-weight: 700; color: #38bdf8; margin-left: 8px; }
+.gw-attack-total-power { font-size: 0.85rem; font-weight: 700; color: #38bdf8; margin-left: 8px; }
+.gw-target-unit-circles--slot, .gw-target-unit-circles--preset { margin: 6px 0; }
 .gw-preset-select {
   margin-top: 8px;
   width: 100%;
@@ -1295,6 +1598,8 @@ onUnmounted(() => {
 .gw-phase-locked { text-align: center; padding: 30px; color: #64748b; font-size: 1rem; }
 .gw-attack-hint { color: #64748b; font-size: 0.875rem; margin: 0 0 16px; }
 .gw-sub-label { font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 8px; }
+.gw-attack-total-power { font-size: 0.85rem; font-weight: 600; color: #38bdf8; margin-left: 8px; }
+.gw-attack-total-power { font-size: 0.85rem; font-weight: 700; color: #38bdf8; margin-left: 8px; }
 .gw-target-select { margin-bottom: 20px; }
 .gw-target-slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .gw-target-slot-btn {
@@ -1317,8 +1622,46 @@ onUnmounted(() => {
 .gw-target-slot-btn:hover:not(:disabled) { border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.1); }
 .gw-target-slot-btn.selected { border-color: rgba(239,68,68,0.7); background: rgba(239,68,68,0.15); color: #f87171; }
 .gw-target-slot-btn.destroyed, .gw-target-slot-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.gw-target-slot-header {
+  display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 2px;
+}
 .gw-target-slot-num { font-weight: 800; font-size: 0.9rem; }
+.gw-target-slot-power {
+  font-size: 0.8rem; font-weight: 700; color: #eab308;
+}
 .gw-target-slot-defender { font-size: 0.78rem; color: #94a3b8; }
+.gw-target-unit-circles {
+  display: flex; gap: 6px; margin-top: 8px; justify-content: center; flex-wrap: wrap;
+}
+.gw-target-unit-circle-wrap { position: relative; }
+.gw-target-unit-circle {
+  width: 36px; height: 36px; border-radius: 50%; border: 2px solid rgba(148,163,184,0.4);
+  background: rgba(30,41,59,0.6); overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center;
+}
+.gw-target-unit-circle-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.gw-target-unit-circle.has-image { border-color: rgba(234,179,8,0.5); }
+.gw-target-unit-circle.rarity-common { border-color: rgba(120,113,108,0.6); }
+.gw-target-unit-circle.rarity-uncommon { border-color: rgba(34,197,94,0.5); }
+.gw-target-unit-circle.rarity-rare { border-color: rgba(59,130,246,0.5); }
+.gw-target-unit-circle.rarity-epic { border-color: rgba(168,85,247,0.5); }
+.gw-target-unit-circle.rarity-legendary { border-color: rgba(234,179,8,0.6); }
+.gw-target-unit-circle.rarity-mythic { border-color: rgba(220,38,38,0.5); }
+.gw-defense-unit-tooltip {
+  position: absolute; z-index: 100; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+  min-width: 200px; max-width: 280px; padding: 10px; background: rgba(15,23,42,0.98);
+  border: 1px solid rgba(71,85,105,0.6); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  pointer-events: none; text-align: left; font-size: 0.8rem;
+}
+.gw-defense-unit-tooltip .gw-unit-tooltip-img {
+  width: 48px; height: 48px; border-radius: 8px; background-size: contain; background-position: center;
+  margin-bottom: 6px; background-color: rgba(0,0,0,0.25);
+}
+.gw-defense-unit-tooltip .gw-unit-tooltip-title { font-weight: 700; font-size: 0.9rem; margin-bottom: 4px; }
+.gw-defense-unit-tooltip .gw-unit-tooltip-meta { font-size: 0.72rem; color: #94a3b8; margin-bottom: 4px; }
+.gw-defense-unit-tooltip .gw-unit-tooltip-stats { font-size: 0.72rem; color: #cbd5e1; margin-bottom: 4px; }
+.gw-defense-unit-tooltip .gw-unit-tooltip-skill { font-size: 0.7rem; color: #a5b4fc; margin-top: 6px; }
 .gw-target-slot-units { font-size: 0.72rem; color: #cbd5e1; line-height: 1.35; }
 .gw-target-slot-units em { font-style: normal; color: #64748b; }
 .gw-target-unit { white-space: nowrap; }
@@ -1559,6 +1902,8 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 .gw-my-preset-name { font-weight: 600; font-size: 0.9rem; color: #e2e8f0; }
+.gw-my-preset-power { font-size: 0.72rem; font-weight: 700; color: #38bdf8; margin-left: 8px; }
+.gw-my-preset-power { font-size: 0.78rem; font-weight: 700; color: #38bdf8; margin-left: 8px; }
 .gw-my-preset-delete {
   width: 28px; height: 28px;
   padding: 0;
