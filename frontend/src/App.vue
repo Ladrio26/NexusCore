@@ -46,7 +46,7 @@
             <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Campagne</router-link>
             <!-- Donjon joueur : tout joueur connecté. L’édition des compositions ennemies = Admin → Donjon Admin uniquement. -->
             <router-link to="/dungeon" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Donjon</router-link>
-            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">PvP</router-link>
+            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">P.v.P</router-link>
           </div>
         </div>
         <router-link to="/classement" class="menu-item" @click="sidebarOpen = false">Classement</router-link>
