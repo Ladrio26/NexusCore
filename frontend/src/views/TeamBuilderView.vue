@@ -281,18 +281,6 @@
                   Niv.{{ slot.level }}
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                 </span>
-                <template v-for="sk in [unitSkillPanel(slot)]" :key="'slot-sk-f-' + slot.user_unit_id">
-                  <div v-if="sk.baseText || sk.fullText || isSpecializedCollectionUnit(slot)" class="slot-skill-block">
-                    <div v-if="sk.baseText" class="slot-skill-desc">{{ sk.baseText }}</div>
-                    <div v-else-if="sk.fullText" class="slot-skill-desc">{{ sk.fullText }}</div>
-                    <p v-if="isSpecializedCollectionUnit(slot)" class="slot-spec-desc">
-                      <strong>Spécialisation {{ String(slot.specialization).toUpperCase() }}</strong>
-                      <template v-if="sk.specText">
-                        <span class="unit-spec-dash"> — </span>{{ sk.specText }}
-                      </template>
-                    </p>
-                  </div>
-                </template>
                 <div class="slot-stats-compact" aria-label="Stats rapides">
                   <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
                   <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
@@ -341,18 +329,6 @@
                   Niv.{{ slot.level }}
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                 </span>
-                <template v-for="sk in [unitSkillPanel(slot)]" :key="'slot-sk-b-' + slot.user_unit_id">
-                  <div v-if="sk.baseText || sk.fullText || isSpecializedCollectionUnit(slot)" class="slot-skill-block">
-                    <div v-if="sk.baseText" class="slot-skill-desc">{{ sk.baseText }}</div>
-                    <div v-else-if="sk.fullText" class="slot-skill-desc">{{ sk.fullText }}</div>
-                    <p v-if="isSpecializedCollectionUnit(slot)" class="slot-spec-desc">
-                      <strong>Spécialisation {{ String(slot.specialization).toUpperCase() }}</strong>
-                      <template v-if="sk.specText">
-                        <span class="unit-spec-dash"> — </span>{{ sk.specText }}
-                      </template>
-                    </p>
-                  </div>
-                </template>
                 <div class="slot-stats-compact" aria-label="Stats rapides">
                   <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
                   <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
@@ -1616,7 +1592,7 @@ onMounted(() => {
 
 @media (max-width: 1400px) {
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   }
 }
 
@@ -1628,7 +1604,7 @@ onMounted(() => {
     grid-column: 1;
   }
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   }
   .collection-columns.view-mode-list {
     grid-template-columns: 1fr;
@@ -1911,8 +1887,8 @@ onMounted(() => {
 
 .unit-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
   align-content: start;
 }
 
@@ -2119,11 +2095,10 @@ onMounted(() => {
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-block {
-  flex: 1 1 auto;
-  min-height: 0;
-  font-size: 0.88rem;
-  padding: 6px 8px;
-  line-height: 1.42;
+  flex: 0 0 auto;
+  font-size: 0.84rem;
+  padding: 8px 10px;
+  line-height: 1.45;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-panel-head {
@@ -2158,8 +2133,8 @@ onMounted(() => {
 }
 
 .unit-list-list .unit-card.unit-card-collection {
-  padding: 8px 10px;
-  gap: 5px;
+  padding: 10px 12px;
+  gap: 8px;
 }
 
 .unit-list-list .unit-card {
@@ -2209,8 +2184,9 @@ onMounted(() => {
 .unit-card.unit-card-collection {
   background: rgba(15, 23, 42, 0.92);
   border-width: 2px;
-  gap: 5px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
+  min-height: fit-content;
 }
 
 .unit-card.unit-card-collection .rarity-bar,
@@ -2267,8 +2243,7 @@ onMounted(() => {
 }
 
 .unit-card.unit-card-collection .unit-skill-block {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
 }
 
 .unit-card.unit-card-collection .unit-stats {
@@ -2338,6 +2313,13 @@ onMounted(() => {
   color: #e0e7ff;
   line-height: 1.45;
   white-space: pre-line;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.unit-card.unit-card-collection .unit-skill-desc,
+.unit-card.unit-card-collection .unit-spec-desc {
+  font-size: 0.82rem;
 }
 
 .unit-spec-desc {
@@ -2918,7 +2900,7 @@ onMounted(() => {
   justify-content: flex-start;
   align-items: stretch;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.2);
-  gap: 0;
+  gap: 4px;
 }
 
 .slot-unit.slot-unit-has-image::before {
@@ -2946,7 +2928,6 @@ onMounted(() => {
 
 .slot-unit.slot-unit-has-image .slot-name,
 .slot-unit.slot-unit-has-image .slot-meta,
-.slot-unit.slot-unit-has-image .slot-skill-block,
 .slot-unit.slot-unit-has-image .slot-stats-compact,
 .slot-unit.slot-unit-has-image .slot-fatigue,
 .slot-unit.slot-unit-has-image .slot-targeting {
@@ -2993,33 +2974,6 @@ onMounted(() => {
 .slot-meta .badge {
   font-size: 0.65rem;
   padding: 0.05rem 0.25rem;
-}
-
-.slot-skill-block {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin-top: 5px;
-  padding: 7px 8px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.38);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  font-size: 0.76rem;
-  line-height: 1.42;
-}
-
-.slot-skill-desc {
-  margin: 0;
-  color: #e0e7ff;
-  white-space: pre-line;
-  word-break: break-word;
-}
-
-.slot-spec-desc {
-  margin: 0.5rem 0 0 0;
-  padding-top: 0.5rem;
-  border-top: 1px solid rgba(165, 180, 252, 0.22);
-  color: #c7d2fe;
-  font-size: 0.9em;
 }
 
 .slot-stats-compact {
