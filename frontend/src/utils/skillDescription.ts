@@ -46,6 +46,33 @@ export function getUnitSkillDisplayText(
   return '';
 }
 
+/** Texte de la compétence active sans la ligne de spécialisation A/B (pour affichage structuré). */
+export function getUnitSkillBaseText(skillData: Record<string, unknown> | null | undefined): string {
+  if (!skillData || typeof skillData !== 'object') return '';
+  let base = getSkillTooltipPlainText(skillData, {}).trim();
+  if (!base) {
+    base = (buildSkillDescriptionFromSkillData(skillData) || '').trim();
+  }
+  return base ? normalizeSkillDescription(base) : '';
+}
+
+/** Texte de la branche spécialisée (specA / specB) si l’unité a choisi A ou B. */
+export function getUnitSpecializationText(
+  skillData: Record<string, unknown> | null | undefined,
+  specialization?: string | null
+): string {
+  const specLetter =
+    specialization != null && String(specialization).trim() !== ''
+      ? String(specialization).toUpperCase()
+      : null;
+  if (specLetter !== 'A' && specLetter !== 'B') return '';
+  const desc = skillData?.description;
+  if (!desc || typeof desc !== 'object') return '';
+  const d = desc as Record<string, unknown>;
+  const raw = specLetter === 'A' ? d.specA : d.specB;
+  return typeof raw === 'string' && raw.trim() ? normalizeSkillDescription(raw.trim()) : '';
+}
+
 /**
  * Description liée aux capacités (skills[]) en priorité ; sinon spé A/B ; sinon `description.skill`.
  */
