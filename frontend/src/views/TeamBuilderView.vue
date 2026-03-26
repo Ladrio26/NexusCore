@@ -64,7 +64,7 @@
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
               { selected: selectedUnitId === unit.user_unit_id }
             ]"
-            :title="unitTooltip(unit)"
+            :title="collectionUnitHoverTitle(unit)"
             @click="addUnitToTeam(unit)"
           >
             <div class="rarity-bar" :class="'rarity-' + (unit.rarity || 'common')" aria-hidden="true" />
@@ -91,9 +91,11 @@
                 </div>
                 <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
                 <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
-                <p v-if="sk.specText && unit.specialization" class="unit-spec-desc">
+                <p v-if="isSpecializedCollectionUnit(unit)" class="unit-spec-desc">
                   <strong>Spécialisation {{ String(unit.specialization).toUpperCase() }}</strong>
-                  <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                  <template v-if="sk.specText">
+                    <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                  </template>
                 </p>
               </div>
             </template>
@@ -130,7 +132,7 @@
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
               { selected: selectedUnitId === unit.user_unit_id }
             ]"
-            :title="unitTooltip(unit)"
+            :title="collectionUnitHoverTitle(unit)"
             @click="addUnitToTeam(unit)"
           >
             <div class="rarity-bar" :class="'rarity-' + (unit.rarity || 'common')" aria-hidden="true" />
@@ -157,9 +159,11 @@
                 </div>
                 <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
                 <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
-                <p v-if="sk.specText && unit.specialization" class="unit-spec-desc">
+                <p v-if="isSpecializedCollectionUnit(unit)" class="unit-spec-desc">
                   <strong>Spécialisation {{ String(unit.specialization).toUpperCase() }}</strong>
-                  <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                  <template v-if="sk.specText">
+                    <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                  </template>
                 </p>
               </div>
             </template>
@@ -835,6 +839,25 @@ function unitTooltip(unit: CollectionUnit): string {
   if (traits.length) parts.push('Traits: ' + traits.map(toTraitFr).join(', '));
   if ((unit.fatigue ?? 0) > 50) parts.push('Fatigue élevée (XP /2)');
   return parts.filter(Boolean).join(' · ');
+}
+
+/** Unité avec choix de branche A/B (affiche la ligne spé même si le texte spec est vide). */
+function isSpecializedCollectionUnit(unit: CollectionUnit): boolean {
+  const s = String(unit.specialization ?? '').trim().toUpperCase();
+  return s === 'A' || s === 'B';
+}
+
+/** Tooltip au survol : description complète compétence + spécialisation si applicable. */
+function collectionUnitHoverTitle(unit: CollectionUnit): string {
+  const sk = unitSkillPanel(unit);
+  const lines: string[] = [];
+  const skillBody = sk.baseText || sk.fullText;
+  if (skillBody) lines.push('Compétence : ' + skillBody);
+  if (isSpecializedCollectionUnit(unit)) {
+    const specLabel = 'Spécialisation ' + String(unit.specialization).toUpperCase();
+    lines.push(sk.specText ? specLabel + ' : ' + sk.specText : specLabel);
+  }
+  return lines.length ? lines.join('\n\n') : unitTooltip(unit);
 }
 
 function unitCardBgStyle(unit: CollectionUnit): Record<string, string> {
@@ -2064,44 +2087,71 @@ onMounted(() => {
 
 .unit-list-grid .unit-card.unit-card-collection {
   margin-bottom: 0;
-  padding: 12px 14px;
-  gap: 8px;
-  font-size: 0.9rem;
-  min-height: 9.5rem;
+  padding: 8px 10px;
+  gap: 5px;
+  font-size: 0.82rem;
+  min-height: 0;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-name {
-  font-size: 1.05rem;
+  font-size: 0.92rem;
+  line-height: 1.2;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-meta {
-  font-size: 0.82rem;
-  gap: 6px;
+  font-size: 0.72rem;
+  gap: 4px;
+  margin-top: 1px;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-stats-collection {
-  padding: 8px 10px;
-  font-size: 0.88rem;
-  gap: 6px 10px;
+  padding: 4px 6px;
+  font-size: 0.76rem;
+  gap: 3px 6px;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-block {
+  flex: 1 1 auto;
+  min-height: 0;
+  font-size: 0.88rem;
+  padding: 6px 8px;
+  line-height: 1.42;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-skill-panel-head {
+  margin-bottom: 4px;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-skill-panel-label {
+  font-size: 0.58rem;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-mastery-tag {
+  font-size: 0.72rem;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-skill-desc {
+  font-size: 0.88rem;
+  line-height: 1.42;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-spec-desc {
+  margin-top: 6px;
+  padding-top: 6px;
   font-size: 0.82rem;
-  padding: 7px 9px;
-  line-height: 1.4;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .traits {
-  font-size: 0.8rem;
-  padding: 7px 9px;
-  max-height: 5.2em;
+  font-size: 0.68rem;
+  padding: 4px 6px;
+  max-height: 2.8em;
   overflow-y: auto;
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .unit-list-list .unit-card.unit-card-collection {
-  padding: 12px 14px;
-  gap: 8px;
+  padding: 8px 10px;
+  gap: 5px;
 }
 
 .unit-list-list .unit-card {
@@ -2151,6 +2201,8 @@ onMounted(() => {
 .unit-card.unit-card-collection {
   background: rgba(15, 23, 42, 0.92);
   border-width: 2px;
+  gap: 5px;
+  padding: 8px 10px;
 }
 
 .unit-card.unit-card-collection .rarity-bar,
@@ -2163,6 +2215,84 @@ onMounted(() => {
 .unit-card.unit-card-collection .traits {
   position: relative;
   z-index: 1;
+}
+
+/* Collection : compacter l’en-tête / stats / fatigue pour laisser la place à la description de compétence */
+.unit-card.unit-card-collection .rarity-bar {
+  height: 3px;
+}
+
+.unit-card.unit-card-collection .unit-card-header {
+  gap: 0.4rem;
+}
+
+.unit-card.unit-card-collection .favorite-star {
+  font-size: 1.05rem;
+}
+
+.unit-card.unit-card-collection .unit-name {
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.unit-card.unit-card-collection .unit-meta {
+  font-size: 0.72rem;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.unit-card.unit-card-collection .badge {
+  padding: 2px 6px;
+  font-size: 0.68rem;
+  border-radius: 4px;
+}
+
+.unit-card.unit-card-collection .badge.element {
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+}
+
+.unit-card.unit-card-collection .unit-role-tag {
+  padding: 1px 5px;
+  font-size: 0.62rem;
+  max-width: 7rem;
+}
+
+.unit-card.unit-card-collection .unit-skill-block {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.unit-card.unit-card-collection .unit-stats {
+  padding: 4px 6px;
+  gap: 3px 6px;
+  font-size: 0.76rem;
+  margin-top: 0;
+}
+
+.unit-card.unit-card-collection .fatigue-row {
+  gap: 5px;
+  margin-top: 0;
+}
+
+.unit-card.unit-card-collection .fatigue-bar {
+  height: 5px;
+}
+
+.unit-card.unit-card-collection .fatigue-pct-collection {
+  font-size: 0.68rem;
+}
+
+.unit-card.unit-card-collection .fatigue-icon {
+  font-size: 0.75rem;
+}
+
+.unit-card.unit-card-collection .traits {
+  font-size: 0.68rem;
+  padding: 4px 6px;
+  max-height: 2.8em;
+  overflow-y: auto;
+  line-height: 1.3;
 }
 
 .unit-stats-collection {
