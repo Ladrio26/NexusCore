@@ -41,7 +41,8 @@ jobs:
             cd /root/web/src/nexuscore.goodloss.fr
 
             echo "📥 Pull latest code..."
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "📦 Backend install..."
             cd backend
