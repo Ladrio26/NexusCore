@@ -153,8 +153,40 @@ export function applySpecModifier(skillData, specModifier) {
   if (typeof patch.cd_actions === 'number' && patch.cd_actions >= 0) target.cd_actions = patch.cd_actions;
   if (typeof patch.trigger === 'string') target.trigger = patch.trigger.trim();
   if (typeof patch.cooldown === 'number' && patch.cooldown >= 0) target.cooldown = patch.cooldown;
+  if (typeof patch.passiveKind === 'string' && patch.passiveKind.trim()) {
+    target.passiveKind = patch.passiveKind.trim();
+  }
+  if (typeof patch.value === 'number' && Number.isFinite(patch.value)) {
+    target.value = patch.value;
+  }
 
   return out;
+}
+
+/**
+ * Applique le modificateur de compétence (spec A/B) et le passif de spé sur l'unité.
+ * Même logique que {@link buildTeamFromDb} ; à utiliser pour les PNJ chargés depuis `units` (campagne, donjon).
+ * @param {{ npcCombat?: boolean }} [opts] - si `npcCombat`, le passif de spé s'applique sans condition de rareté (sbires communs).
+ */
+export function applyUnitSpecializationToSkillData(unit, opts = {}) {
+  if (!unit || typeof unit !== 'object') return unit;
+  const spec =
+    unit.specialization != null && String(unit.specialization).trim() !== ''
+      ? String(unit.specialization).toUpperCase()
+      : null;
+  if (spec === 'A' && unit.specA_skill_modifier && typeof unit.specA_skill_modifier === 'object') {
+    unit.skill_data = applySpecModifier(unit.skill_data, unit.specA_skill_modifier);
+    unit.skillData = unit.skill_data;
+  } else if (spec === 'B' && unit.specB_skill_modifier && typeof unit.specB_skill_modifier === 'object') {
+    unit.skill_data = applySpecModifier(unit.skill_data, unit.specB_skill_modifier);
+    unit.skillData = unit.skill_data;
+  }
+  const allowPassive =
+    spec && (opts.npcCombat === true ? true : isRarityAtLeast(unit.rarity, 'Rare'));
+  if (allowPassive) {
+    unit.specPassive = spec === 'A' ? unit.specA_passive : unit.specB_passive;
+  }
+  return unit;
 }
 
 /**
@@ -336,17 +368,7 @@ export async function buildTeamFromDb(userId, slots) {
       skill_targeting: hasTargeting && row.skill_targeting != null ? String(row.skill_targeting).trim() || 'NO_FOCUS' : 'NO_FOCUS'
     };
 
-    const spec = unit.specialization != null && String(unit.specialization).trim() !== '' ? String(unit.specialization).toUpperCase() : null;
-    if (spec === 'A' && unit.specA_skill_modifier && typeof unit.specA_skill_modifier === 'object') {
-      unit.skill_data = applySpecModifier(unit.skill_data, unit.specA_skill_modifier);
-      unit.skillData = unit.skill_data;
-    } else if (spec === 'B' && unit.specB_skill_modifier && typeof unit.specB_skill_modifier === 'object') {
-      unit.skill_data = applySpecModifier(unit.skill_data, unit.specB_skill_modifier);
-      unit.skillData = unit.skill_data;
-    }
-    if (isRarityAtLeast(unit.rarity, 'Rare') && spec) {
-      unit.specPassive = spec === 'A' ? unit.specA_passive : unit.specB_passive;
-    }
+    applyUnitSpecializationToSkillData(unit);
 
     const userUnit = { level: unit.level, specialization: unit.specialization, power_level: unit.power_level };
     const stats = computeScaledStats(unit, userUnit);

@@ -211,7 +211,7 @@ export function applyStartOfBattleRuntimeEffects(state, logEvent) {
     forSide(state, side, (u) => {
       if (!u.alive) return;
       const before = u.atb;
-      u.atb = Math.min(before + 20, 150);
+      u.atb = before + 20;
       logEvent({
         type: 'SYNERGY_TRIGGER',
         trait: 'TACTICIANS',
@@ -238,7 +238,7 @@ export function onUnitActionStartSynergies(state, actor, logEvent) {
     });
     if (slowest) {
       const before = slowest.atb;
-      slowest.atb = Math.min(before + 30, 150);
+      slowest.atb = before + 30;
       state.flags.tacticianTeamBoostApplied[side] = true;
       logEvent({
         type: 'SYNERGY_TRIGGER',
@@ -354,7 +354,7 @@ export function onKillSynergies(state, killer, victim, logEvent) {
   // EXECUTIONERS 6 : à chaque élimination par un Bourreau → +40 ATB au tueur (uniquement si le tueur est bourreau)
   if (killer.executionerLevel >= 6 && killer.traits?.includes('EXECUTIONERS')) {
     const before = killer.atb;
-    killer.atb = Math.min(before + 40, 150);
+    killer.atb = before + 40;
     logEvent({
       type: 'SYNERGY_TRIGGER',
       trait: 'EXECUTIONERS',

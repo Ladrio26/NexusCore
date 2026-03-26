@@ -6,13 +6,6 @@
       aria-hidden="true"
     />
     <div class="dungeon-content nx-panel">
-    <p
-      v-if="isLightOrDarkDungeon"
-      class="dungeon-coming-soon-banner"
-      role="status"
-    >
-      Donjon encore inaccessible, disponible très prochainement
-    </p>
     <div class="dungeon-header">
       <h1 class="nx-title">Donjon</h1>
       <div class="dungeon-rewards-info" :key="selectedElement">
@@ -183,9 +176,6 @@ const DUNGEON_REWARD_LINES: Record<string, string> = {
 const rewardTextForSelectedDungeon = computed(
   () => DUNGEON_REWARD_LINES[selectedElement.value] ?? DUNGEON_REWARD_LINES.fire
 );
-
-/** Donjon Ténèbres : contenu / rencontres pas encore prêts — message en tête de panneau. */
-const isLightOrDarkDungeon = computed(() => selectedElement.value === 'dark');
 
 /** Fonds (copiés depuis /images vers public/images/dungeon/) — même principe que la campagne. */
 const DUNGEON_BACKGROUNDS: Record<string, string> = {
@@ -453,19 +443,6 @@ onMounted(async () => {
   width: 100%;
   margin: 0 auto;
   padding: 1.25rem 1rem 2rem;
-}
-
-.dungeon-coming-soon-banner {
-  margin: 0 0 1rem 0;
-  padding: 0.65rem 0.85rem;
-  border-radius: 8px;
-  text-align: center;
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #fef3c7;
-  background: rgba(180, 83, 9, 0.35);
-  border: 1px solid rgba(251, 191, 36, 0.45);
-  box-shadow: 0 0 12px rgba(245, 158, 11, 0.12);
 }
 
 /* Panneau plus transparent pour laisser apparaître le fond (tout en gardant la lisibilité). */

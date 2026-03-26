@@ -174,6 +174,7 @@ import {
   STAT_FR
 } from '../utils/i18nFr';
 import { normalizeSkillDescription, getBestiaryMultiSkillDescriptions } from '../utils/skillDescription';
+import { getSkillTooltipPlainText } from '@engine/skillDescriptionTooltip.js';
 import { getUnitImageUrl } from '../utils/unitImage';
 import {
   TOOLTIP_TYPE,
@@ -399,10 +400,10 @@ const descriptionSkill = computed(() => {
   if (sd && typeof sd === 'object') {
     const multi = getBestiaryMultiSkillDescriptions(sd as Record<string, unknown>);
     if (multi.trim()) return multi.trim();
+    const t = getSkillTooltipPlainText(sd as Record<string, unknown>);
+    if (t.trim()) return normalizeSkillDescription(t);
   }
-  const desc = getDescriptionFromSkillData(u.skill_data ?? null);
-  const text = desc?.skill;
-  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : buildSkillDescription(u.skill_data ?? null) || '—';
+  return buildSkillDescription(u.skill_data ?? null) || '—';
 });
 
 const descriptionSpecA = computed(() => {

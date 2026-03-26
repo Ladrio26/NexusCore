@@ -68,6 +68,7 @@
             <router-link to="/admin/feedback" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Feedback / Tickets</router-link>
             <router-link to="/admin/campaign" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Campagne Admin</router-link>
             <router-link to="/admin/dungeon" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Donjon Admin</router-link>
+            <router-link to="/admin/custom-unit" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Unité Personnalisée</router-link>
           </div>
         </div>
       </nav>

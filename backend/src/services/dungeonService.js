@@ -12,6 +12,7 @@ import { getSkillDescriptionForTooltip } from '../utils/skillDescription.js';
 import { applyCombatStats } from './combatStatsService.js';
 import { grantDungeonLevelCompleteRewards, grantDungeonFirstClearRewards } from './artifactService.js';
 import { applyCampaignFatigue } from './campaignService.js';
+import { applyUnitSpecializationToSkillData } from './battleTeamService.js';
 
 export const DUNGEON_ELEMENTS = ['fire', 'water', 'plant', 'light', 'dark'];
 const MAX_LEVEL = 10;
@@ -38,7 +39,9 @@ function normalizeElement(raw) {
 async function getUnitByCode(code) {
   const rows = await query(
     `SELECT id, code, name, rarity, role, attack_type, element, archetype,
-            base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url
+            base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url,
+            specA_bonus_stat, specB_bonus_stat,
+            specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
      FROM units WHERE code = ?`,
     [code]
   );
@@ -69,9 +72,16 @@ function buildUnitForCombat(unitRow, multiplier, index, levelOverride, specializ
     traits: parseJson(unitRow.traits) ?? unitRow.traits,
     skill_data: skillData,
     skillData,
+    specA_bonus_stat: unitRow.specA_bonus_stat ?? null,
+    specB_bonus_stat: unitRow.specB_bonus_stat ?? null,
+    specA_skill_modifier: parseJson(unitRow.specA_skill_modifier) ?? null,
+    specB_skill_modifier: parseJson(unitRow.specB_skill_modifier) ?? null,
+    specA_passive: parseJson(unitRow.specA_passive) ?? unitRow.specA_passive ?? null,
+    specB_passive: parseJson(unitRow.specB_passive) ?? unitRow.specB_passive ?? null,
     rangeType: unitRow.attack_type === 'melee' ? 'melee' : 'ranged',
     position: 'front'
   };
+  applyUnitSpecializationToSkillData(unit, { npcCombat: true });
   const stats = computeScaledStats(unit, { level, specialization });
   unit.maxHp = Math.round(stats.maxHp * multiplier);
   unit.attack = Math.round(stats.attack * multiplier);

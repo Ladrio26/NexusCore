@@ -26,6 +26,7 @@ import { registerFeedbackRoutes } from './routes/feedback.js';
 import { registerNotificationsRoutes } from './routes/notifications.js';
 import { registerRestCenterRoutes } from './routes/restCenter.js';
 import { registerDungeonRoutes } from './routes/dungeon.js';
+import { registerCustomUnitRoutes } from './routes/customUnit.js';
 import { startGuildWarCron } from './services/guildWarCronService.js';
 
 export async function buildApp({ logger = true } = {}) {
@@ -78,6 +79,7 @@ export async function buildApp({ logger = true } = {}) {
   registerNotificationsRoutes(fastify, authMiddleware);
   registerRestCenterRoutes(fastify, authMiddleware);
   registerDungeonRoutes(fastify, authMiddleware);
+  registerCustomUnitRoutes(fastify, authMiddleware, requireAdminUser);
 
   startGuildWarCron();
 

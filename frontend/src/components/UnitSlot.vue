@@ -4,7 +4,7 @@
     <div class="hp-bar">
       <div class="hp-inner" :style="{ width: hpPercent + '%' }"></div>
     </div>
-    <div class="atb">ATB: {{ Math.round(atb) }}</div>
+    <div class="atb" :title="atb > 100 ? `ATB réel : ${Math.round(atb)}` : ''">ATB: {{ Math.min(100, Math.round(atb)) }}</div>
     <div class="tags">
       <span class="tag">{{ unit.position }}</span>
       <span class="tag">{{ unit.rangeType }}</span>

@@ -40,6 +40,7 @@ const MAP: Record<string, BuffVisual> = {
   ANTI_SHIELD: { icon: '🛡', color: '#7f1d1d' },
   ANTI_BUFF: { icon: '✕', color: '#991b1b' },
   DOT: { icon: '🔥', color: '#dc2626' },
+  DEATH_MARK: { icon: '☠', color: '#7c3aed', ringClass: 'death-mark-ring' },
   STAT_STEAL_DEBUFF: { icon: '🧲', color: '#0f766e', ringClass: 'stat-steal-debuff-ring' },
   CLEANSE: { icon: '✨', color: '#a78bfa' },
   STRIP: { icon: '⬇', color: '#f59e0b' },

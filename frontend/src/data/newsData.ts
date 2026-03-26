@@ -64,6 +64,27 @@ export function writeNewsLastSeenSignature(signature: string): void {
 
 export const NEWS_ENTRIES: NewsEntry[] = [
   {
+    date: '2026-03-25',
+    priority: 130,
+    title: 'XP en campagne & PvP — presets d’équipe',
+    content:
+      '**Distribution d’XP (campagne & PvP)**\n\n'
+      + 'En **fin de combat**, l’**XP** est calculée comme avant pour chaque unité de ton équipe (malus **fatigue**, bonus **artefact** d’XP en PvP, etc.). '
+      + '**Changement** : si une unité est déjà **niveau 50**, l’XP qu’elle aurait reçue **n’est plus « perdue »** : elle est **répartie à parts égales** entre toutes les unités de l’équipe qui ne sont **pas encore niveau 50**. '
+      + 'Ainsi, monter tes persos reste utile même quand une partie du groupe est déjà au plafond.\n\n'
+      + '**Presets d’équipe (Mes Équipes)**\n\n'
+      + 'Tu peux désormais enregistrer jusqu’à **15 presets** par joueur (au lieu de **6**). '
+      + 'Utile pour campagne, PvP, donjons et situations variées sans tout refaire à chaque fois.'
+  },
+  {
+    date: '2026-03-25',
+    priority: 120,
+    title: 'Lumière & Ténèbres : invocation et donjon Ténèbres',
+    content:
+      'Les **unités Lumière** et **unités Ténèbres** sont désormais **obtenables à l’invocation** dans le **Sanctuaire** (portails concernés), au même titre que les autres éléments.\n\n'
+      + 'Le **donjon Ténèbres** est **enfin disponible** : rends-toi dans **Combats → Donjon** et sélectionne l’onglet **Ténèbres** pour enchaîner les **trois combats** par niveau, sur le même modèle que les autres donjons élémentaires. Les **récompenses** d’artefacts de ce donjon privilégient la **Maîtrise** (stat simple, double stat incluant la maîtrise, ou artefact rare). Bonne chance !'
+  },
+  {
     date: '2026-03-24',
     priority: 110,
     title: 'Donjon Lumière — ouvert',

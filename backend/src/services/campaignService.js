@@ -1,6 +1,6 @@
 import { query, getPool } from '../config/db.js';
 import { computeScaledStats } from '../../../core/combatEngine.js';
-import { addXp } from './xpService.js';
+import { addXp, redistributeXpFromMaxLevelUnits } from './xpService.js';
 import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
 import {
   getRestCenterUserUnitIdSet,
@@ -9,6 +9,7 @@ import {
   DEFAULT_FATIGUE_RECOVERY_PER_MINUTE
 } from './restCenterService.js';
 import { getUnitIdsWithXpBoost } from './artifactService.js';
+import { applyUnitSpecializationToSkillData } from './battleTeamService.js';
 
 const MIN_UNITS_TO_UNLOCK = 5;
 const HARD_MODE_UNLOCK_NORMAL_CHAPTER = 5;
@@ -145,7 +146,9 @@ export async function getCampaignStatus(userId, mode, seasonKey = null) {
 async function getUnitByCode(code) {
   const rows = await query(
     `SELECT id, code, name, rarity, role, attack_type, element, archetype,
-            base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url
+            base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url,
+            specA_bonus_stat, specB_bonus_stat,
+            specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
      FROM units WHERE code = ?`,
     [code]
   );
@@ -257,9 +260,16 @@ function buildUnitForCombat(unitRow, multiplier, index, isBoss, levelOverride, s
     traits: parseJson(unitRow.traits) ?? unitRow.traits,
     skill_data: skillData,
     skillData,
+    specA_bonus_stat: unitRow.specA_bonus_stat ?? null,
+    specB_bonus_stat: unitRow.specB_bonus_stat ?? null,
+    specA_skill_modifier: parseJson(unitRow.specA_skill_modifier) ?? null,
+    specB_skill_modifier: parseJson(unitRow.specB_skill_modifier) ?? null,
+    specA_passive: parseJson(unitRow.specA_passive) ?? unitRow.specA_passive ?? null,
+    specB_passive: parseJson(unitRow.specB_passive) ?? unitRow.specB_passive ?? null,
     rangeType: unitRow.attack_type === 'melee' ? 'melee' : 'ranged',
     position: isBoss ? 'front' : 'front'
   };
+  applyUnitSpecializationToSkillData(unit, { npcCombat: true });
   const stats = computeScaledStats(unit, { level, specialization });
   unit.maxHp = Math.round(stats.maxHp * multiplier);
   unit.attack = Math.round(stats.attack * multiplier);
@@ -349,14 +359,14 @@ export async function grantCampaignXp(userId, teamSlots, survivors, isBoss, mode
   let useComputedFatigue = false;
   try {
     rows = await query(
-      `SELECT id, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
+      `SELECT id, level, fatigue, fatigue_last_update, UNIX_TIMESTAMP(fatigue_last_update) AS fatigue_last_update_ts FROM user_units WHERE id IN (${placeholders})`,
       ids
     );
     useComputedFatigue = true;
   } catch (err) {
     const msg = (err?.message || err?.code || '').toString();
     if (msg.includes('fatigue_last_update') || err?.code === 'ER_BAD_FIELD_ERROR') {
-      rows = await query(`SELECT id, user_id, fatigue FROM user_units WHERE id IN (${placeholders})`, ids);
+      rows = await query(`SELECT id, user_id, level, fatigue FROM user_units WHERE id IN (${placeholders})`, ids);
     } else {
       throw err;
     }
@@ -389,12 +399,23 @@ export async function grantCampaignXp(userId, teamSlots, survivors, isBoss, mode
     })
   );
   const xpBoostIds = await getUnitIdsWithXpBoost(ids);
-  const results = [];
+  const levelById = new Map(rows.map((r) => [r.id, Number(r.level ?? 1)]));
+  const rawAmountById = new Map();
   for (const id of ids) {
     const fatigue = fatigueById.get(id) ?? 0;
     let amount = baseXp;
     if (fatigue > FATIGUE_XP_HALF_THRESHOLD) amount = Math.floor(amount / 2);
     if (xpBoostIds.has(id)) amount = Math.floor(amount * 1.5);
+    rawAmountById.set(id, amount);
+  }
+  const finalAmounts = redistributeXpFromMaxLevelUnits(ids, levelById, rawAmountById);
+  const results = [];
+  for (const id of ids) {
+    const amount = Math.max(0, Math.floor(Number(finalAmounts.get(id) ?? 0)));
+    if (amount <= 0) {
+      results.push({ userUnitId: id, level: levelById.get(id), xp: 0, levelsGained: 0, skippedMaxLevel: true });
+      continue;
+    }
     try {
       const r = await addXp(id, amount);
       results.push({ userUnitId: id, ...r });

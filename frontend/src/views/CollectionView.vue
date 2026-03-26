@@ -417,8 +417,8 @@
                 <p class="skill-description-text">{{ descriptionSkill }}</p>
                 <div class="unit-spec-section">
                   <p v-if="detailUnit && !hasSpec(detailUnit)" class="spec-section-title" :title="TOOLTIP_SPEC">Spécialisations</p>
-                  <p v-if="descriptionSpecA && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'A'))" class="spec-line"><strong>Spécialisation A</strong> — {{ descriptionSpecA }}</p>
-                  <p v-if="descriptionSpecB && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'B'))" class="spec-line"><strong>Spécialisation B</strong> — {{ descriptionSpecB }}</p>
+                  <p v-if="descriptionSpecA && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'B'))" class="spec-line"><strong>Spécialisation A</strong> — {{ descriptionSpecA }}</p>
+                  <p v-if="descriptionSpecB && (!detailUnit || !hasSpec(detailUnit) || (detailUnit.specialization && String(detailUnit.specialization).toUpperCase() === 'A'))" class="spec-line"><strong>Spécialisation B</strong> — {{ descriptionSpecB }}</p>
                   <p v-if="!descriptionSpecA && !descriptionSpecB" class="spec-line spec-empty">—</p>
                 </div>
               </section>
@@ -472,7 +472,7 @@ import {
   toTraitFr,
   STAT_FR
 } from '../utils/i18nFr';
-import { normalizeSkillDescription, getBestiaryMultiSkillDescriptions } from '../utils/skillDescription';
+import { normalizeSkillDescription, getUnitSkillDisplayText } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
 import {
   TOOLTIP_TYPE,
@@ -825,12 +825,10 @@ const descriptionSkill = computed(() => {
     }
   }
   if (sd) {
-    const multi = getBestiaryMultiSkillDescriptions(sd);
-    if (multi.trim()) return multi.trim();
+    const t = getUnitSkillDisplayText(sd, u.specialization ?? null);
+    if (t.trim()) return t.trim();
   }
-  const desc = getDescriptionFromSkillData(u.skill_data ?? null);
-  const text = desc?.skill;
-  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : (detailUnit.value ? buildSkillDescription(detailUnit.value.skill_data ?? null) : '—');
+  return detailUnit.value ? buildSkillDescription(detailUnit.value.skill_data ?? null) : '—';
 });
 
 const descriptionSpecA = computed(() => {

@@ -1,5 +1,5 @@
-import { initializeAtb, advanceAtb, pickNextActor } from './atb.js';
-import { chooseTarget, resolveTargets, hasProvoke, selectTarget } from './targeting.js';
+import { initializeAtb, advanceAtb, pickNextActor, consumeAtbAfterAction } from './atb.js';
+import { chooseTarget, resolveTargets, hasProvoke, selectTarget, getValidTargets } from './targeting.js';
 import {
   onUnitActionEnd,
   decrementRegenAndDotDurationsAfterProc,
@@ -109,7 +109,7 @@ function isDebuffBuffType(buffType) {
   if (!buffType || typeof buffType !== 'string') return false;
   const t = buffType.toUpperCase();
   return t.endsWith('_DOWN') || t === 'SLOW' || t === 'SILENCE' || t === 'BLIND' || t === 'PROVOKE' || t === 'STUN'
-    || t === 'ANTI_HEAL' || t === 'ANTI_SHIELD' || t === 'ANTI_BUFF' || t === 'DOT';
+    || t === 'ANTI_HEAL' || t === 'ANTI_SHIELD' || t === 'ANTI_BUFF' || t === 'DOT' || t === 'DEATH_MARK';
 }
 
 function onBeforeReduceAtb(target) {
@@ -363,7 +363,11 @@ function applySkillEffect(state, actor, target, effectConfig) {
         value: cfg.value,
         remainingActions: cfg.remainingActions,
         isDebuff: true,
-        meta: { ...(cfg.meta || {}), appliedBy: actor?.uid },
+        meta: {
+          ...(cfg.meta || {}),
+          appliedBy: actor?.uid,
+          sourceCombatIndex: actor?.combatIndex
+        },
         chance: cfg.chance
       }, actor?.uid);
       return { applied: true };
@@ -412,7 +416,8 @@ function applySkillEffect(state, actor, target, effectConfig) {
       if (pct > 1) pct = pct / 100;
       pct = Math.max(0, Math.min(1, Number(pct) || 0));
       const before = target.atb ?? 0;
-      target.atb = Math.min(100, before + pct * 100);
+      const delta = pct * 100;
+      target.atb = Math.max(0, before + delta);
       return { applied: target.atb !== before, atbBefore: before, atbAfter: target.atb };
     }
     case 'RESET_SKILL_COOLDOWN': {
@@ -659,7 +664,9 @@ function applySkillEffect(state, actor, target, effectConfig) {
         value,
         remainingActions: cfg.remainingActions ?? 1,
         isDebuff: asDebuff,
-        meta: asDebuff ? { ...(cfg.meta || {}), appliedBy: actor?.uid } : cfg.meta,
+        meta: asDebuff
+          ? { ...(cfg.meta || {}), appliedBy: actor?.uid, sourceCombatIndex: actor?.combatIndex }
+          : cfg.meta,
         chance: cfg.chance
       }, actor?.uid);
       return { applied: true, buffType, remainingActions: cfg.remainingActions ?? 1 };
@@ -758,7 +765,7 @@ function applySkillEffect(state, actor, target, effectConfig) {
           if (execLevel >= 4 && hpRatio < 0.3) damage = Math.round(damage * 1.2);
         }
       }
-      const damageResult = applyDamageToTarget(state, actor, target, damage);
+      const damageResult = applyDamageToTarget(state, actor, target, damage, { damageSource: 'SKILL' });
       return {
         applied: damageResult.effectiveDamage > 0,
         effectiveDamage: damageResult.effectiveDamage,
@@ -1048,7 +1055,11 @@ function shouldUseSkill(actor) {
 /** Texte de tooltip compétence(s) pour l’UI manuelle (multi-compétences si applicable). */
 function getMainSkillDescriptionFromUnit(actor) {
   const raw = actor?.skill_data || actor?.skillData || actor?.skill;
-  return getSkillTooltipPlainText(raw) || '';
+  const specRaw = actor?.specialization;
+  const spec =
+    specRaw != null && String(specRaw).trim() !== '' ? String(specRaw).toUpperCase() : null;
+  const opts = spec === 'A' || spec === 'B' ? { specialization: spec } : {};
+  return getSkillTooltipPlainText(raw, opts) || '';
 }
 
 function getAliveEnemies(state, actor) {
@@ -1066,6 +1077,7 @@ function getDeadAllies(state, actor) {
 /** Priorité des cibles pour le ciblage manuel : du plus prioritaire au moins. */
 const SKILL_TARGET_PRIORITY = [
   'ALLY_DEAD_SINGLE',
+  'TEAM_ALLY_DEAD',
   'ENEMY_SINGLE',
   'ALLY_SINGLE',
   'TEAM_ENEMY',
@@ -1108,7 +1120,7 @@ function getSkillTargetCandidates(state, actor, skillOverride = null, opts = {})
   const allies = getAliveAllies(state, actor);
   const deadAllies = getDeadAllies(state, actor);
 
-  if (preferredTarget === 'ALLY_DEAD_SINGLE') {
+  if (preferredTarget === 'ALLY_DEAD_SINGLE' || preferredTarget === 'TEAM_ALLY_DEAD') {
     return deadAllies;
   }
   if (preferredTarget === 'ENEMY_SINGLE') {
@@ -1246,16 +1258,24 @@ function setUnitHp(unit, newHp, state) {
 }
 
 function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext = {}) {
-  if (!actor?.alive) {
+  const damageSource = extraContext.damageSource ?? 'DIRECT';
+  const allowDeadActor = extraContext.deathMarkExplosion === true;
+  if (!allowDeadActor && !actor?.alive) {
     return { hpBefore: 0, hpAfter: 0, shieldBefore: 0, shieldAfter: 0, effectiveDamage: 0 };
   }
   if (!target?.alive) {
     return { hpBefore: target?.hp ?? 0, hpAfter: target?.hp ?? 0, shieldBefore: 0, shieldAfter: 0, effectiveDamage: 0 };
   }
-  const pre = onBeforeDamage(target, { state, actor, baseFinalDamage, ...extraContext });
+  let incoming = Math.max(0, Math.round(Number(baseFinalDamage) || 0));
+  const pre = onBeforeDamage(target, { state, actor, baseFinalDamage: incoming, ...extraContext });
   if (pre.blocked) {
     if (state.logEvent) {
-      state.logEvent(state, { type: 'immune', targetId: target.combatIndex, sourceId: actor.combatIndex, reason: 'INVINCIBILITY' });
+      state.logEvent(state, {
+        type: 'immune',
+        targetId: target.combatIndex,
+        sourceId: actor?.combatIndex,
+        reason: 'INVINCIBILITY'
+      });
     }
     const shieldBefore = getShieldTotal(target);
     const hpBefore = target.hp;
@@ -1266,11 +1286,11 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
       shieldAfter: shieldBefore,
       effectiveDamage: 0
     };
-    onAfterDamage(actor, target, 0, { state, actor, baseFinalDamage, prevented: true, ...extraContext });
+    onAfterDamage(actor, target, 0, { state, actor, baseFinalDamage: incoming, prevented: true, ...extraContext });
     return result;
   }
 
-  // Redirection DEFEND (avant shield / HP) — on ne recalcule pas les dégâts
+  // Redirection DEFEND (avant mitigation shield / Acier / bouclier PV) — on ne recalcule pas les dégâts
   let actualTarget = target;
   const defender = findDefendProtector(state, target);
   if (defender && defender.uid !== target.uid) {
@@ -1285,7 +1305,70 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
     actualTarget = defender;
   }
 
-  const dmg = baseFinalDamage;
+  // Bouclier multi-coups : bloque tout dégât (direct, DoT, etc.) tant qu’il reste des charges
+  if (incoming > 0) {
+    const mhs = actualTarget.multiHitShieldHitsRemaining;
+    if (typeof mhs === 'number' && mhs > 0) {
+      actualTarget.multiHitShieldHitsRemaining = mhs - 1;
+      if (state.logEvent) {
+        state.logEvent(state, {
+          type: 'multi_hit_shield_absorb',
+          targetId: actualTarget.combatIndex,
+          sourceId: actor?.combatIndex,
+          hitsRemaining: actualTarget.multiHitShieldHitsRemaining
+        });
+      }
+      const shieldBefore = getShieldTotal(actualTarget);
+      onAfterDamage(actor, actualTarget, 0, {
+        state,
+        actor,
+        baseFinalDamage: incoming,
+        prevented: true,
+        multiHitShield: true,
+        ...extraContext
+      });
+      const logPassiveMhs = (ev) => state.logEvent && state.logEvent(state, ev);
+      handlePassiveTrigger(
+        state,
+        actualTarget,
+        'ON_RECEIVE_DAMAGE',
+        { source: actor, target: actualTarget, damage: 0 },
+        logPassiveMhs
+      );
+      handlePassiveTrigger(state, actor, 'ON_HIT', { target: actualTarget, damage: 0 }, logPassiveMhs);
+      handlePassiveTrigger(state, actor, 'ON_DEAL_DAMAGE', { target: actualTarget, damage: 0 }, logPassiveMhs);
+      for (const u of state.units) {
+        if (!u.alive || u.side !== actualTarget.side || u.uid === actualTarget.uid) continue;
+        handlePassiveTrigger(state, u, 'ON_ALLY_RECEIVE_DAMAGE', {
+          source: actor,
+          target: actualTarget,
+          damage: 0
+        }, logPassiveMhs);
+      }
+      return {
+        hpBefore: actualTarget.hp,
+        hpAfter: actualTarget.hp,
+        shieldBefore,
+        shieldAfter: shieldBefore,
+        effectiveDamage: 0,
+        died: false,
+        selfResurrected: false,
+        koSourceId: actualTarget.combatIndex,
+        koSourceName: actualTarget.name ?? String(actualTarget.combatIndex)
+      };
+    }
+  }
+
+  // Acier : réduction % sur dégâts directs (attaques, compétences DAMAGE, marque de mort, etc.)
+  let dmg = incoming;
+  if (damageSource !== 'DOT' && dmg > 0) {
+    const sp = actualTarget.steelDamageReductionPercent;
+    if (typeof sp === 'number' && sp > 0) {
+      const pct = sp > 1 ? sp / 100 : sp;
+      dmg = Math.max(0, Math.round(dmg * (1 - Math.min(0.95, pct))));
+    }
+  }
+
   const mod = state.bossModifier;
   const isBossTarget = state.bossUid != null && actualTarget.uid === state.bossUid;
   const shieldBefore = getShieldTotal(actualTarget);
@@ -1293,7 +1376,7 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
   const shieldAfter = getShieldTotal(actualTarget);
   const valueAbsorbed = shieldBefore - shieldAfter;
   if (valueAbsorbed > 0 && state.logEvent) {
-    state.logEvent(state, { type: 'shield_absorb', targetId: actualTarget.combatIndex, sourceId: actor.combatIndex, valueAbsorbed });
+    state.logEvent(state, { type: 'shield_absorb', targetId: actualTarget.combatIndex, sourceId: actor?.combatIndex, valueAbsorbed });
   }
   const hpBefore = actualTarget.hp;
   const hpDamage = Math.min(actualTarget.hp, remainingDamage);
@@ -1324,19 +1407,24 @@ function applyDamageToTarget(state, actor, target, baseFinalDamage, extraContext
     koSourceId: actualTarget.combatIndex,
     koSourceName: actualTarget.name ?? String(actualTarget.combatIndex)
   };
-  onAfterDamage(actor, actualTarget, result.effectiveDamage, { state, actor, baseFinalDamage, ...extraContext });
+  onAfterDamage(actor, actualTarget, result.effectiveDamage, { state, actor, baseFinalDamage: incoming, ...extraContext });
 
   const logPassive = (ev) => state.logEvent && state.logEvent(state, ev);
-  if (result.effectiveDamage > 0) {
-    handlePassiveTrigger(state, actualTarget, 'ON_RECEIVE_DAMAGE', { source: actor, target: actor, damage: result.effectiveDamage }, logPassive);
-    handlePassiveTrigger(state, actor, 'ON_HIT', { target: actualTarget, damage: result.effectiveDamage }, logPassive);
-    handlePassiveTrigger(state, actor, 'ON_DEAL_DAMAGE', { target: actualTarget, damage: result.effectiveDamage }, logPassive);
+  // Coup reçu : PV perdus OU absorption par bouclier PV (pas seulement hpDamage — sinon pas de passif si tout est absorbé).
+  const connectHit =
+    damageSource !== 'DOT' &&
+    (result.effectiveDamage > 0 || valueAbsorbed > 0);
+  if (connectHit) {
+    const dmgCtx = result.effectiveDamage;
+    handlePassiveTrigger(state, actualTarget, 'ON_RECEIVE_DAMAGE', { source: actor, target: actualTarget, damage: dmgCtx }, logPassive);
+    handlePassiveTrigger(state, actor, 'ON_HIT', { target: actualTarget, damage: dmgCtx }, logPassive);
+    handlePassiveTrigger(state, actor, 'ON_DEAL_DAMAGE', { target: actualTarget, damage: dmgCtx }, logPassive);
     for (const u of state.units) {
       if (!u.alive || u.side !== actualTarget.side || u.uid === actualTarget.uid) continue;
       handlePassiveTrigger(state, u, 'ON_ALLY_RECEIVE_DAMAGE', {
         source: actor,
         target: actualTarget,
-        damage: result.effectiveDamage
+        damage: dmgCtx
       }, logPassive);
     }
   }
@@ -1416,10 +1504,11 @@ function performBasicAction(state, actor, arg2, arg3, arg4, arg5, options = {}) 
 
   const damageInfo = computeBasicDamage(state, actor, target, rng);
   const damageResult = applyDamageToTarget(state, actor, target, damageInfo.finalDamage, {
-    isCounter: !!opts.isCounter
+    isCounter: !!opts.isCounter,
+    damageSource: opts.isCounter ? 'COUNTER' : 'BASIC'
   });
 
-  const atbAfterActor = opts.isCounter ? actor.atb : (actor.atb -= 100);
+  const atbAfterActor = opts.isCounter ? actor.atb : consumeAtbAfterAction(actor);
 
   const event = {
     type: 'attack',
@@ -1494,10 +1583,54 @@ function performBasicAction(state, actor, arg2, arg3, arg4, arg5, options = {}) 
   onUnitActionEndSynergies(state, actor, (e) => logEvent(state, e));
 }
 
+/**
+ * Marque de mort : explosion 90 % PV max quand la durée passe naturellement de 1 → 0 (fin d’action).
+ * Pas d’explosion si le debuff a été retiré avant (ex. CLEANSE).
+ */
+function procDeathMarkExplosion(state, target, dm) {
+  if (!target?.alive) return;
+  let sourceActor = null;
+  const idx = dm.meta?.sourceCombatIndex;
+  if (idx != null) {
+    sourceActor = state.units.find((u) => Number(u.combatIndex) === Number(idx));
+  }
+  if (!sourceActor || !sourceActor.alive) {
+    sourceActor = target;
+  }
+  const dmg = Math.round((target.maxHp || 0) * 0.9);
+  if (dmg <= 0) return;
+  if (state.logEvent) {
+    state.logEvent(state, { type: 'death_mark_explode', targetId: target.combatIndex, damage: dmg });
+  }
+  const res = applyDamageToTarget(state, sourceActor, target, dmg, { damageSource: 'DEATH_MARK', deathMarkExplosion: true });
+  if (res.died && !res.selfResurrected && state.logEvent) {
+    state.logEvent(state, {
+      type: 'unit_ko',
+      sourceId: res.koSourceId ?? target.combatIndex,
+      sourceName: res.koSourceName ?? target.name,
+      targetId: target.combatIndex
+    });
+  }
+}
+
 function tickStatuses(state, actor, logEventFn) {
+  const deathMarkExpiring = (actor.debuffs || [])
+    .filter((d) => (d.type || d.key || '').toUpperCase() === 'DEATH_MARK' && d.remainingActions === 1)
+    .map((d) => ({ sourceId: d.sourceId, meta: d.meta || {} }));
+
   const buffsBefore = (actor.buffs || []).map((b) => ({ type: b.type || b.key, remaining: b.remainingActions }));
   const debuffsBefore = (actor.debuffs || []).map((d) => ({ type: d.type || d.key, remaining: d.remainingActions }));
   onUnitActionEnd(actor);
+
+  for (const dm of deathMarkExpiring) {
+    const still = (actor.debuffs || []).some(
+      (d) => (d.type || d.key || '').toUpperCase() === 'DEATH_MARK' && d.sourceId === dm.sourceId
+    );
+    if (!still) {
+      procDeathMarkExplosion(state, actor, dm);
+    }
+  }
+
   const actorId = actor.combatIndex;
   for (const b of actor.buffs || []) {
     const t = b.type || b.key;
@@ -1585,12 +1718,35 @@ const SUPPORTED_PASSIVE_TRIGGERS = [
 ];
 
 /**
+ * Ajoute specA_passive / specB_passive (JSON unité) au même flux que les PASSIVE de skill_data.
+ * Ignore les objets purement descriptifs sans trigger / effets / passiveKind.
+ */
+function mergeSpecPassiveIntoPassiveSkills(base, specPassive) {
+  const list = Array.isArray(base) ? [...base] : [];
+  if (specPassive == null) return list;
+  const extras = Array.isArray(specPassive) ? specPassive : [specPassive];
+  for (const p of extras) {
+    if (!p || typeof p !== 'object') continue;
+    const trig = String(p.trigger ?? p.type ?? '').toUpperCase().trim();
+    const hasTrigger = SUPPORTED_PASSIVE_TRIGGERS.includes(trig);
+    const hasEffects = Array.isArray(p.effects) && p.effects.length > 0;
+    const hasSingleEffect = p.effect && typeof p.effect === 'object';
+    const hasPermanentKind = String(p.passiveKind ?? '').trim() !== '';
+    if (!hasTrigger && !hasEffects && !hasSingleEffect && !hasPermanentKind) continue;
+    list.push(p);
+  }
+  return list;
+}
+
+/**
  * Passifs permanents (pas de proc) : flags sur l'unité de combat.
  * passiveKind: DEBUFF_IMMUNITY — immunise aux débuffs, STRIP, REDUCE_ATB, SET_SKILL_COOLDOWN_MAX, CD_UP,
  * vol de stats (STEAL_STAT côté cible), etc. (pas aux dégâts / soins / CLEANSE alliée ni CD_DOWN).
+ * STEEL — value: % réduction dégâts directs (stocké ici en ratio 0–0.95).
+ * MULTI_HIT_SHIELD — value: nombre de sources de dégâts absorbées par tour (tous types : directs, DoT, etc.) ; le compteur est réinitialisé au début de chaque tour de l’unité.
  */
 function extractPermanentPassiveTraits(rawList) {
-  const flags = { debuffImmunity: false };
+  const flags = { debuffImmunity: false, steelDamageReductionPercent: 0, multiHitShieldHitsRemaining: 0, multiHitShieldHitsMax: 0 };
   if (!Array.isArray(rawList)) return flags;
   for (const p of rawList) {
     if (!p || typeof p !== 'object') continue;
@@ -1598,7 +1754,20 @@ function extractPermanentPassiveTraits(rawList) {
     if (kind === 'DEBUFF_IMMUNITY' || p.permanentDebuffImmunity === true || p.immuneToAllDebuffs === true) {
       flags.debuffImmunity = true;
     }
+    if (kind === 'STEEL') {
+      let v = Number(p.value);
+      if (!Number.isFinite(v)) v = 0;
+      if (v > 1) v /= 100;
+      v = Math.max(0, Math.min(0.95, v));
+      flags.steelDamageReductionPercent = Math.max(flags.steelDamageReductionPercent, v);
+    }
+    if (kind === 'MULTI_HIT_SHIELD') {
+      let hits = Math.floor(Number(p.value));
+      if (!Number.isFinite(hits) || hits < 0) hits = 0;
+      flags.multiHitShieldHitsRemaining = Math.max(flags.multiHitShieldHitsRemaining, hits);
+    }
   }
+  flags.multiHitShieldHitsMax = flags.multiHitShieldHitsRemaining;
   return flags;
 }
 
@@ -1664,7 +1833,7 @@ function normalizePassives(rawList) {
  * Résout la cible pour un effet de passif selon effect.target (SELF, TARGET, TEAM_ALLY, TEAM_ENEMY, ENEMY_SINGLE).
  * ENEMY_SINGLE est résolu contextuellement :
  *   - ON_ATTACK → l'ennemi attaqué (context.target)
- *   - ON_RECEIVE_DAMAGE → l'ennemi qui a infligé les dégâts (context.source)
+ *   - ON_RECEIVE_DAMAGE → context.source = attaquant ; context.target = défenseur touché (porteur du passif)
  *   - ON_ENEMY_KO → l'ennemi mis KO (context.victim)
  *   - ON_ALLY_KO → le tueur (context.killer)
  *   - ON_ALLY_RECEIVE_DAMAGE → l'attaquant ayant blessé l'allié (context.source)
@@ -1737,6 +1906,33 @@ function resolvePassiveEffectTargets(state, actor, effect, context) {
   }
   if (targetKey === 'TEAM_ENEMY') {
     return units.filter((u) => u.side !== actor.side && u.alive);
+  }
+  // ON_RECEIVE_DAMAGE : sans clé `target`, resolveTargets('') ciblait un ennemi — tous les effets
+  // (ATB_UP, APPLY_BUFF / DEF_UP, HEAL, etc.) s'appliquent au défenseur (porteur du passif).
+  if (triggerType === 'ON_RECEIVE_DAMAGE' && !targetKey) {
+    return actor?.alive ? [actor] : [];
+  }
+  // Autres triggers : sans `target`, ATB_UP / REDUCE_ATB → porteur (évite resolveTargets → ennemi).
+  const effType = String(effect?.type ?? '').toUpperCase();
+  if (!targetKey && (effType === 'ATB_UP' || effType === 'REDUCE_ATB')) {
+    const selfDefaultTriggers = [
+      'ON_ACTION_START',
+      'ON_ACTION_END',
+      'ON_COMBAT_START',
+      'ON_DEATH',
+      'ON_HIT',
+      'ON_DEAL_DAMAGE',
+      'ON_ATTACK',
+      'ON_KILL',
+      'ON_ALLY_RECEIVE_DAMAGE',
+      'ON_ENEMY_TURN_START',
+      'ON_ALLY_KO',
+      'ON_ENEMY_KO',
+      'ALWAYS'
+    ];
+    if (selfDefaultTriggers.includes(triggerType)) {
+      return actor?.alive ? [actor] : [];
+    }
   }
   return resolveTargets(state, actor, effect);
 }
@@ -2008,11 +2204,20 @@ function computeHealShieldRegenBaseAmount(cfg, target, actor) {
  * ATB_UP et REDUCE_ATB : % barre = percent (base) + percentPerRemoved × métrique (effet précédent, même cible).
  */
 function resolveAtbBarDeltaPercentForTarget(eff, resultsPerEffect, effectIndex, targetUid) {
-  let basePct = eff.percent ?? eff.value ?? 0;
+  // Virgule décimale (ex. "0,2" depuis l’UI) : Number("0,2") est NaN sans normalisation.
+  let basePct = normalizeDecimal(eff.percent ?? eff.value ?? 0);
+  if (typeof basePct === 'string') {
+    const n = parseFloat(String(basePct).replace(/,/g, '.'));
+    basePct = Number.isFinite(n) ? n : 0;
+  }
   if (basePct > 1) basePct = basePct / 100;
   basePct = Math.max(0, Math.min(1, Number(basePct) || 0));
   const n = getChainScaleN(eff, resultsPerEffect, effectIndex, targetUid);
-  let per = Number(eff.percentPerRemoved ?? 0);
+  let per = normalizeDecimal(eff.percentPerRemoved ?? 0);
+  if (typeof per === 'string') {
+    const npr = parseFloat(String(per).replace(/,/g, '.'));
+    per = Number.isFinite(npr) ? npr : 0;
+  }
   if (per > 1) per = per / 100;
   per = Math.max(0, Number(per) || 0);
   const total = Math.min(1, basePct + per * n);
@@ -2222,6 +2427,15 @@ function ensureSkillEffects(skill) {
   }
 
   if (synthetic) skill.effects = synthetic;
+  // Format skills[] : type ACTIVE sans tableau d'effets (ou effets vidés par spec) → l'IA et le ciblage
+  // exigent au moins un effet ; défaut cohérent avec une compétence active offensive.
+  if ((!Array.isArray(skill.effects) || skill.effects.length === 0) && type === 'ACTIVE') {
+    skill.effects = [{
+      type: 'DAMAGE',
+      target: 'ENEMY_SINGLE',
+      mult: skill.mult ?? 1
+    }];
+  }
   return skill;
 }
 
@@ -2250,32 +2464,35 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
   let event = null;
 
   // Branche effets (HEAL, SHIELD, etc.) : pas de cible ennemie requise ; pas de fallback vers basic même si 0 cible.
-  // Si le 1er effet cible une cible unique (tout sauf TEAM_ALLY / TEAM_ENEMY), les effets suivants en ALLY_SINGLE ou ENEMY_SINGLE visent la même unité (si compatible).
+  // Si le 1er effet cible une cible unique (tout sauf TEAM_ALLY / TEAM_ENEMY / TEAM_ALLY_DEAD), les effets suivants en ALLY_SINGLE ou ENEMY_SINGLE visent la même unité (si compatible).
   if (Array.isArray(skill.effects) && skill.effects.length > 0) {
     const allTargetUids = [];
     let lockedSingleTarget = null;
     const effectTargetsList = skill.effects.map((eff) => {
       const targetKey = eff.target != null ? String(eff.target).toUpperCase().trim() : '';
-      const isTeamWide = targetKey === 'TEAM_ENEMY' || targetKey === 'TEAM_ALLY';
+      const isTeamWide =
+        targetKey === 'TEAM_ENEMY' || targetKey === 'TEAM_ALLY' || targetKey === 'TEAM_ALLY_DEAD';
       const isSingleTargetType = targetKey && !isTeamWide;
       const cfg = isTeamWide ? { ...eff, ignoreTargetingRules: true } : eff;
       let targets;
       if (targetKey === 'SELF') {
         targets = [actor];
         if (!lockedSingleTarget) lockedSingleTarget = actor;
+      } else if (forcedTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE' || targetKey === 'ALLY_DEAD_SINGLE')) {
+        // Avant lockedSingleTarget : sinon après un effet SELF, locked = acteur et ENEMY_SINGLE
+        // retombait sur resolveTargets (IA) au lieu de la cible manuelle interactive.
+        const isAlly = forcedTarget.side === actor.side;
+        const isDeadAlly = isAlly && !forcedTarget.alive;
+        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly) || (targetKey === 'ALLY_DEAD_SINGLE' && isDeadAlly)) {
+          targets = [forcedTarget];
+        } else {
+          targets = resolveTargets(state, actor, cfg);
+        }
       } else if (lockedSingleTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE' || targetKey === 'ALLY_DEAD_SINGLE')) {
         const isAlly = lockedSingleTarget.side === actor.side;
         const isDeadAlly = isAlly && !lockedSingleTarget.alive;
         if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly) || (targetKey === 'ALLY_DEAD_SINGLE' && isDeadAlly)) {
           targets = [lockedSingleTarget];
-        } else {
-          targets = resolveTargets(state, actor, cfg);
-        }
-      } else if (forcedTarget && (targetKey === 'ALLY_SINGLE' || targetKey === 'ENEMY_SINGLE' || targetKey === 'ALLY_DEAD_SINGLE')) {
-        const isAlly = forcedTarget.side === actor.side;
-        const isDeadAlly = isAlly && !forcedTarget.alive;
-        if ((targetKey === 'ALLY_SINGLE' && isAlly) || (targetKey === 'ENEMY_SINGLE' && !isAlly) || (targetKey === 'ALLY_DEAD_SINGLE' && isDeadAlly)) {
-          targets = [forcedTarget];
         } else {
           targets = resolveTargets(state, actor, cfg);
         }
@@ -2333,7 +2550,7 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
       };
     });
 
-    const atbAfterActor = (actor.atb -= 100);
+    const atbAfterActor = consumeAtbAfterAction(actor);
 
     // Enregistrer les unit_ko dans le battle log MAIS sans créer de frame replay séparée.
     // Tout s'affiche en une seule frame (KOs + buffs + dégâts) pour éviter l'effet "un par un".
@@ -2482,6 +2699,7 @@ function makeReplaySnapshot(state) {
     attack: u.attack,
     defense: u.defense,
     speed: u.speed,
+    mastery: u.mastery ?? 0,
     level: u.level,
     hasSkill: !!u.skill || (Array.isArray(u.activeSkillSlots) && u.activeSkillSlots.length > 0),
     skillCd: Number.isFinite(Number(u.skillCd)) ? Number(u.skillCd) : 0,
@@ -2875,8 +3093,9 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
   const units = [...teamA, ...teamB].map((u, idx) => {
     const rawSkill = u.skill || u.skillData || u.skill_data;
     const { activeSkills, passiveSkills: rawPassiveSkills } = getSkillsFromSkillData(rawSkill);
-    const passives = normalizePassives(rawPassiveSkills);
-    const permanentTraits = extractPermanentPassiveTraits(rawPassiveSkills);
+    const mergedPassives = mergeSpecPassiveIntoPassiveSkills(rawPassiveSkills, u.specPassive);
+    const passives = normalizePassives(mergedPassives);
+    const permanentTraits = extractPermanentPassiveTraits(mergedPassives);
     const activeSkillSlots = buildActiveSkillSlotsFromRaw(activeSkills);
 
     let skill = null;
@@ -2909,7 +3128,10 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
       activeSkillSlots: activeSkillSlots.length > 0 ? activeSkillSlots : null,
       passives,
       passiveCooldowns: {},
-      permanentDebuffImmunity: !!permanentTraits.debuffImmunity
+      permanentDebuffImmunity: !!permanentTraits.debuffImmunity,
+      steelDamageReductionPercent: permanentTraits.steelDamageReductionPercent ?? 0,
+      multiHitShieldHitsMax: permanentTraits.multiHitShieldHitsMax ?? permanentTraits.multiHitShieldHitsRemaining ?? 0,
+      multiHitShieldHitsRemaining: permanentTraits.multiHitShieldHitsRemaining ?? 0
     };
   });
 
@@ -2934,7 +3156,6 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     rng,
     events: [],
     flags: {},
-    passives: {},
     bossModifier: config.bossModifier || null,
     bossUid: null,
     bossPhase2: false,
@@ -2955,12 +3176,6 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
     }
     state.bossUid = bossUnit ? bossUnit.uid : (state.units.find((u) => u.side === 'B')?.uid ?? null);
   }
-  for (const u of state.units) {
-    if (u.specPassive != null) {
-      state.passives[u.uid] = u.specPassive;
-    }
-  }
-
   applyPreBattleSynergies(state);
 
   initializeAtb(state.units);
@@ -3073,6 +3288,12 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
       state.currentRound = rounds;
       state.activeUnitId = actor.uid;
 
+      // MULTI_HIT_SHIELD : réinitialise les charges disponibles au début du tour de l’unité (avant REGEN / DoT).
+      const mhsCap = actor.multiHitShieldHitsMax;
+      if (typeof mhsCap === 'number' && mhsCap > 0) {
+        actor.multiHitShieldHitsRemaining = mhsCap;
+      }
+
       // REGEN et DOT proc au début du tour (y compris étourdi) ; leur durée (remainingActions) diminue juste après ce proc, pas en fin d’action.
       const regenStacks = (actor.buffs || []).filter((b) => (b.type || b.key || '').toUpperCase() === 'REGEN');
       if (regenStacks.length > 0 && actor.alive) {
@@ -3101,17 +3322,37 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
         const maxHp = actor.maxHp || 1;
         const dotDamage = Math.min(actor.hp, Math.max(0, Math.round(0.05 * maxHp * dotStacks)));
         if (dotDamage > 0) {
-          const hpBefore = actor.hp;
-          const hpResult = setUnitHp(actor, actor.hp - dotDamage, state);
-          if (state.logEvent) {
-            state.logEvent(state, { type: 'dot_damage', actorId: actor.combatIndex, damage: dotDamage, stacks: dotStacks, hpBefore, hpAfter: actor.hp });
-          }
-          if (hpResult?.died === true) {
-            const logDot = (ev) => state.logEvent && state.logEvent(state, ev);
-            fireKoObserverPassives(state, actor, null, logDot);
+          const mhsDot = actor.multiHitShieldHitsRemaining;
+          if (typeof mhsDot === 'number' && mhsDot > 0) {
+            actor.multiHitShieldHitsRemaining = mhsDot - 1;
             if (state.logEvent) {
-              state.activeUnitId = null; // Ne pas afficher une unité morte comme "active" dans le replay
-              state.logEvent(state, { type: 'unit_ko', sourceId: actor.combatIndex, sourceName: actor.name });
+              state.logEvent(state, {
+                type: 'multi_hit_shield_absorb',
+                targetId: actor.combatIndex,
+                sourceId: null,
+                hitsRemaining: actor.multiHitShieldHitsRemaining,
+                fromDot: true
+              });
+            }
+            const logDotMhs = (ev) => state.logEvent && state.logEvent(state, ev);
+            handlePassiveTrigger(state, actor, 'ON_RECEIVE_DAMAGE', { source: null, target: actor, damage: 0 }, logDotMhs);
+            for (const u of state.units) {
+              if (!u.alive || u.side !== actor.side || u.uid === actor.uid) continue;
+              handlePassiveTrigger(state, u, 'ON_ALLY_RECEIVE_DAMAGE', { source: null, target: actor, damage: 0 }, logDotMhs);
+            }
+          } else {
+            const hpBefore = actor.hp;
+            const hpResult = setUnitHp(actor, actor.hp - dotDamage, state);
+            if (state.logEvent) {
+              state.logEvent(state, { type: 'dot_damage', actorId: actor.combatIndex, damage: dotDamage, stacks: dotStacks, hpBefore, hpAfter: actor.hp });
+            }
+            if (hpResult?.died === true) {
+              const logDot = (ev) => state.logEvent && state.logEvent(state, ev);
+              fireKoObserverPassives(state, actor, null, logDot);
+              if (state.logEvent) {
+                state.activeUnitId = null; // Ne pas afficher une unité morte comme "active" dans le replay
+                state.logEvent(state, { type: 'unit_ko', sourceId: actor.combatIndex, sourceName: actor.name });
+              }
             }
           }
         }
@@ -3172,14 +3413,10 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
       let usedSkill = shouldUseSkill(actor) && !hasProvoke(actor);
       if (interactive && actor.side === 'A' && !targetHasStatus(actor, EffectType.STUN) && !hasProvoke(actor)) {
         const basicEnemies = getAliveEnemies(state, actor);
-        const basicCandidates = (() => {
-          if (!basicEnemies.length) return [];
-          const isDist = String(actor.rangeType ?? actor.attack_type ?? actor.position ?? '').toUpperCase().includes('DISTANCE')
-            || String(actor.position ?? '').toLowerCase() === 'back';
-          if (isDist) return basicEnemies;
-          const front = basicEnemies.filter((u) => String(u.position ?? '').toLowerCase() === 'front');
-          return front.length > 0 ? front : basicEnemies;
-        })();
+        // Même pool que selectTarget / performBasicAction (getValidTargets) : évite forcedTarget null
+        // si l’UI propose des ennemis « front » implicites (position omise = front) alors que l’ancien
+        // filtre exigeait la chaîne exacte "front".
+        const basicCandidates = getValidTargets(actor, basicEnemies, false);
         const skillAvailable = shouldUseSkill(actor);
         const previewSlot = selectSkillSlotForAi(actor, state);
         const skillCandidates = previewSlot

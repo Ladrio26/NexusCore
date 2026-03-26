@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 /**
- * Copie les compositions donjon Feu → Eau, Plante et Lumière en remplaçant les codes d'unités
+ * Copie les compositions donjon Feu → Eau, Plante, Lumière et Ténèbres en remplaçant les codes d'unités
  * par les équivalents (même « famille » : préfixe avant la virgule, ou règles Boss / premier mot).
- * Même niveau et spécialisation que le template Feu ; seul le code (unité de l’élément cible) change.
+ * Même niveau, même spécialisation et mêmes positions que le template Feu ; seul le code (unité de l’élément cible) change.
  *
- * Usage : depuis backend/ : node scripts/sync-dungeon-water-plant-from-fire.mjs
- * Requiert .env avec accès MySQL (même config que db.js) et des unités Lumière pour chaque famille présente au donjon Feu.
+ * Usage : depuis backend/ :
+ *   node scripts/sync-dungeon-water-plant-from-fire.mjs
+ *   node scripts/sync-dungeon-water-plant-from-fire.mjs --dry-run
+ *   node scripts/sync-dungeon-water-plant-from-fire.mjs --only=dark   (uniquement donjon ténèbres)
+ *   node scripts/sync-dungeon-water-plant-from-fire.mjs --only=water,plant
+ *
+ * Requiert .env avec accès MySQL (même config que db.js) et pour chaque famille du donjon Feu une unité
+ * par élément ciblé (eau, plante, lumière, ténèbres) avec le même préfixe de nom.
+ * Si une rencontre ne peut pas être mappée (unité cible absente), elle est ignorée pour cet élément
+ * (les autres combinaisons sont quand même écrites). Code de sortie 1 si au moins une erreur.
+ *
+ * Boss : le boss feu « Boss Feu » doit avoir un équivalent par élément avec le **même texte avant la virgule**
+ * si sous-titre (ex. « Boss Feu, … »), ou le même nom complet si pas de virgule — sinon ajouter l’unité manquante.
  */
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -33,8 +44,31 @@ function familyKeyFromUnitName(name) {
   return words[0] || t;
 }
 
+const DEFAULT_TARGET_ELEMENTS = ['water', 'plant', 'light', 'dark'];
+
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
+  const onlyArg = process.argv.find((a) => a.startsWith('--only='));
+  const onlyParsed = onlyArg
+    ? onlyArg
+        .slice('--only='.length)
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    : null;
+  let targetElements =
+    onlyParsed && onlyParsed.length > 0
+      ? onlyParsed.filter((e) => DEFAULT_TARGET_ELEMENTS.includes(e))
+      : [...DEFAULT_TARGET_ELEMENTS];
+  if (onlyParsed && onlyParsed.length > 0 && targetElements.length === 0) {
+    console.error(
+      'Aucun élément valide dans --only=. Utiliser : water, plant, light, dark (séparés par des virgules).'
+    );
+    process.exit(1);
+  }
+  console.log(
+    `[sync-dungeon] Éléments cibles : ${targetElements.join(', ')}${dryRun ? ' (dry-run)' : ''}`
+  );
 
   const pool = await mysql.createPool({
     host: DB_HOST,
@@ -110,8 +144,9 @@ async function main() {
     const units = Array.isArray(template.units) ? template.units : [];
     const statMultiplier = template.stat_multiplier ?? 1;
 
-    for (const targetEl of ['water', 'plant', 'light']) {
+    for (const targetEl of targetElements) {
       const newUnits = [];
+      let encounterFailed = false;
       for (const u of units) {
         const code = u?.code;
         if (!code) continue;
@@ -120,13 +155,18 @@ async function main() {
           console.error(
             `[${targetEl} L${row.level} C${row.combat_index}] ${res.reason} (code source ${code})`
           );
-          err++;
-          throw new Error(res.reason);
+          encounterFailed = true;
+          break;
         }
         newUnits.push({
           ...u,
           code: res.code
         });
+      }
+
+      if (encounterFailed) {
+        err++;
+        continue;
       }
 
       const newTemplate = {
@@ -151,9 +191,12 @@ async function main() {
 
   console.log(
     dryRun
-      ? `[dry-run] Terminé. Combinaisons prévues (eau+plante+lumière): ${ok}`
-      : `Terminé. Lignes écrites (eau+plante+lumière): ${ok}, erreurs de mapping: ${err}`
+      ? `[dry-run] Terminé. Combinaisons prévues: ${ok}`
+      : `Terminé. Lignes écrites: ${ok}, rencontres ignorées (mapping incomplet): ${err}`
   );
+  if (err > 0) {
+    process.exitCode = 1;
+  }
   } finally {
     await pool.end();
   }

@@ -297,19 +297,30 @@ function validateUnit(payload) {
       let skipEffectsValidation = false;
       if (stype === 'PASSIVE') {
         const pKind = (s.passiveKind ?? '').toString().toUpperCase().trim();
-        const permanentImmunity =
-          pKind === 'DEBUFF_IMMUNITY' ||
-          s.permanentDebuffImmunity === true ||
-          s.immuneToAllDebuffs === true;
-        if (permanentImmunity) {
-          if (pKind && pKind !== 'DEBUFF_IMMUNITY' && !PASSIVE_KINDS_PERMANENT.includes(pKind)) {
+        const legacyPermanent = s.permanentDebuffImmunity === true || s.immuneToAllDebuffs === true;
+        const permanentPassive =
+          (pKind && PASSIVE_KINDS_PERMANENT.includes(pKind)) || legacyPermanent;
+        if (permanentPassive) {
+          if (pKind && !PASSIVE_KINDS_PERMANENT.includes(pKind) && !legacyPermanent) {
             errors.push(`skills[${i}]: passiveKind permanent inconnu. Valeurs: ${PASSIVE_KINDS_PERMANENT.join(', ')}`);
+          }
+          if (pKind === 'STEEL') {
+            const v = Number(s.value);
+            if (!Number.isFinite(v) || v < 0) {
+              errors.push(`skills[${i}]: passiveKind STEEL requiert value >= 0 (pourcentage de réduction, ex. 15 ou 0.15)`);
+            }
+          }
+          if (pKind === 'MULTI_HIT_SHIELD') {
+            const v = Number(s.value);
+            if (!Number.isFinite(v) || v < 1 || Math.floor(v) !== v) {
+              errors.push(`skills[${i}]: passiveKind MULTI_HIT_SHIELD requiert value entier >= 1 (nombre de coups absorbés)`);
+            }
           }
           skipEffectsValidation = !Array.isArray(s.effects) || s.effects.length === 0;
         } else {
           const trigger = (s.trigger ?? '').toString().toUpperCase().trim();
           if (!trigger) {
-            errors.push(`skills[${i}]: trigger requis pour PASSIVE (ou passiveKind DEBUFF_IMMUNITY)`);
+            errors.push(`skills[${i}]: trigger requis pour PASSIVE (ou passiveKind permanent dans ${PASSIVE_KINDS_PERMANENT.join(', ')})`);
           } else if (!SUPPORTED_TRIGGERS.includes(trigger)) {
             errors.push(`skills[${i}]: trigger invalide. Valeurs: ${SUPPORTED_TRIGGERS.join(', ')}`);
           }
@@ -393,6 +404,17 @@ function normalizeSkillsPayload(skillData) {
         type: 'PASSIVE',
         passiveKind: 'DEBUFF_IMMUNITY',
         effects: Array.isArray(p.effects) ? p.effects : (p.effect ? [p.effect] : [])
+      });
+      continue;
+    }
+    if (pKind === 'STEEL' || pKind === 'MULTI_HIT_SHIELD') {
+      const val = p.value != null ? Number(p.value) : NaN;
+      out.push({
+        id: generateSkillId(),
+        type: 'PASSIVE',
+        passiveKind: pKind,
+        value: Number.isFinite(val) ? val : 0,
+        effects: []
       });
       continue;
     }

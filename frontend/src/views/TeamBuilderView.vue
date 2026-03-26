@@ -69,8 +69,7 @@
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
               <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
             </div>
-            <div v-if="getBaseSkillDescription(unit)" class="unit-skill">⚡ {{ getBaseSkillDescription(unit) }}</div>
-            <div v-if="getSpecDescription(unit)" class="unit-skill unit-spec">✨ {{ getSpecDescription(unit) }}</div>
+            <div v-if="unitSkillDisplayText(unit)" class="unit-skill">⚡ {{ unitSkillDisplayText(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
@@ -123,8 +122,7 @@
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
               <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
             </div>
-            <div v-if="getBaseSkillDescription(unit)" class="unit-skill">⚡ {{ getBaseSkillDescription(unit) }}</div>
-            <div v-if="getSpecDescription(unit)" class="unit-skill unit-spec">✨ {{ getSpecDescription(unit) }}</div>
+            <div v-if="unitSkillDisplayText(unit)" class="unit-skill">⚡ {{ unitSkillDisplayText(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
@@ -191,7 +189,7 @@
               Supprimer
             </button>
             <button
-              v-if="presetList.length < 10"
+              v-if="presetList.length < PRESET_MAX"
               type="button"
               class="nexus-btn secondary nx-btn"
               title="Créer un nouveau preset"
@@ -302,11 +300,8 @@
           <div v-if="traitsList(hoveredTeamUnit).length" class="tooltip-traits">
             Traits : {{ traitsList(hoveredTeamUnit).map(toTraitFr).join(', ') }}
           </div>
-          <div v-if="getBaseSkillDescription(hoveredTeamUnit)" class="tooltip-skill">
-            ⚡ {{ getBaseSkillDescription(hoveredTeamUnit) }}
-          </div>
-          <div v-if="getSpecDescription(hoveredTeamUnit)" class="tooltip-spec">
-            ✨ {{ getSpecDescription(hoveredTeamUnit) }}
+          <div v-if="unitSkillDisplayText(hoveredTeamUnit)" class="tooltip-skill">
+            ⚡ {{ unitSkillDisplayText(hoveredTeamUnit) }}
           </div>
         </div>
 
@@ -386,7 +381,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import api from '../api';
-import { normalizeSkillDescription } from '../utils/skillDescription';
+import { getUnitSkillDisplayText, normalizeSkillDescription } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
 import { toTraitFr, resolveTraitFromSearch } from '../utils/i18nFr';
 
@@ -526,7 +521,7 @@ const dropMessageType = ref<'error' | 'ok'>('error');
 const dropMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const saved = ref(false);
 const errorMessage = ref('');
-const PRESET_MAX = 10;
+const PRESET_MAX = 15;
 interface PresetItem {
   preset_index: number;
   preset_name: string | null;
@@ -682,15 +677,6 @@ function archetypeClass(unit: CollectionUnit): string {
   return a === 'CAC_TANK' || a === 'CAC_DPS' ? 'archetype-cac' : 'archetype-distance';
 }
 
-const SKILL_TYPE_LABELS: Record<string, string> = {
-  BASIC: 'Attaque de base',
-  SHIELD_SELF: 'Bouclier',
-  DAMAGE_SINGLE: 'Dégâts',
-  APPLY_DEBUFF: 'Débuff',
-  HEAL: 'Soins',
-  BUFF: 'Bonus'
-};
-
 function parseSkillData(skillData: CollectionUnit['skill_data']): Record<string, unknown> | null {
   if (skillData == null) return null;
   if (typeof skillData === 'object') return skillData as Record<string, unknown>;
@@ -700,42 +686,10 @@ function parseSkillData(skillData: CollectionUnit['skill_data']): Record<string,
   return null;
 }
 
-/** Description de la compétence de base (toujours affichée). */
-function getBaseSkillDescription(unit: CollectionUnit): string {
+/** Texte compétence : entrées skills[] + spé A/B si besoin (pas description.skill générique). */
+function unitSkillDisplayText(unit: CollectionUnit): string {
   const data = parseSkillData(unit.skill_data);
-  if (!data) return '';
-  const desc = data.description;
-  if (!desc || typeof desc !== 'object') {
-    return inferSkillLabel(data);
-  }
-  const d = desc as { skill?: string; specA?: string; specB?: string };
-  if (typeof d.skill === 'string' && d.skill.trim()) return normalizeSkillDescription(d.skill);
-  return inferSkillLabel(data);
-}
-
-function inferSkillLabel(data: Record<string, unknown>): string {
-  const skill = data.skill ?? data;
-  if (!skill || typeof skill !== 'object') return '';
-  const s = skill as Record<string, unknown>;
-  const type = String(s.type || '');
-  const label = SKILL_TYPE_LABELS[type] || type;
-  const parts: string[] = [label];
-  if (s.mult != null) parts.push(`×${s.mult}`);
-  if (s.cd_actions != null) parts.push(`CD ${s.cd_actions}`);
-  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : label;
-}
-
-/** Description de la spécialisation choisie (A ou B). Vide si pas de spé. */
-function getSpecDescription(unit: CollectionUnit): string {
-  const spec = unit.specialization != null && String(unit.specialization).trim() !== '' ? String(unit.specialization).toUpperCase() : null;
-  if (spec !== 'A' && spec !== 'B') return '';
-  const data = parseSkillData(unit.skill_data);
-  if (!data) return '';
-  const desc = data.description;
-  if (!desc || typeof desc !== 'object') return '';
-  const d = desc as { specA?: string; specB?: string };
-  const text = spec === 'A' ? d.specA : d.specB;
-  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : '';
+  return getUnitSkillDisplayText(data, unit.specialization ?? null);
 }
 
 function unitTooltip(unit: CollectionUnit): string {
@@ -1997,6 +1951,7 @@ onMounted(() => {
   color: #cbd5e1;
   margin-top: 0.25rem;
   font-style: italic;
+  white-space: pre-line;
 }
 .unit-skill.unit-spec {
   color: #a5b4fc;
@@ -2472,6 +2427,7 @@ onMounted(() => {
   font-size: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 6px;
+  white-space: pre-line;
 }
 
 .unit-tooltip .tooltip-spec {

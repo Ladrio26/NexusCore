@@ -1,4 +1,5 @@
 import { query } from '../config/db.js';
+import { MAX_TEAM_PRESETS } from '../constants/teamPresets.js';
 import { computeCurrentFatigue } from '../utils/fatigueUtils.js';
 import { getRestCenterUserUnitIdSet, REST_CENTER_FATIGUE_RECOVERY_PER_MINUTE, DEFAULT_FATIGUE_RECOVERY_PER_MINUTE } from '../services/restCenterService.js';
 import { TARGETING_RULES } from '../../../core/constants/targeting.js';
@@ -133,7 +134,7 @@ export function registerTeamRoutes(fastify, authenticate) {
   });
 
   const PRESET_INDEX_MIN = 1;
-  const PRESET_INDEX_MAX = 10;
+  const PRESET_INDEX_MAX = MAX_TEAM_PRESETS;
 
   fastify.get('/team/presets', { preHandler: [authenticate] }, async (request, reply) => {
     const userId = request.user.id;

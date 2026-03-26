@@ -680,7 +680,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import api from '../api';
 import StageModal from './StageModal.vue';
 import { getUnitImageUrl } from '../utils/unitImage';
-import { getSkillEffectDescription, buildSkillDescriptionFromSkillData } from '../utils/skillDescription';
+import { getUnitSkillDisplayText } from '../utils/skillDescription';
 import { rarityColors } from '../utils/invokeAnimation';
 import { toRoleFr } from '../utils/i18nFr';
 
@@ -977,8 +977,7 @@ const selectedAttackersTotalPower = computed(() => {
 
 function unitSkillDesc(u: WarUnit): string {
   const sd = u.skill_data as Record<string, unknown> | null | undefined;
-  if (!sd || typeof sd !== 'object') return '';
-  return (getSkillEffectDescription(sd) || buildSkillDescriptionFromSkillData(sd)).trim() || '';
+  return getUnitSkillDisplayText(sd, u.specialization ?? null);
 }
 
 /** Rôle affiché (Tank, Soutien, DPS, Assassin) à partir de role ou archetype. */
@@ -1654,6 +1653,10 @@ onUnmounted(() => {
   border: 1px solid rgba(71,85,105,0.6); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   pointer-events: none; text-align: left; font-size: 0.8rem;
 }
+.gw-unit-tooltip-skill {
+  white-space: pre-line;
+}
+
 .gw-defense-unit-tooltip .gw-unit-tooltip-img {
   width: 48px; height: 48px; border-radius: 8px; background-size: contain; background-position: center;
   margin-bottom: 6px; background-color: rgba(0,0,0,0.25);

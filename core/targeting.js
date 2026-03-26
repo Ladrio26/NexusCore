@@ -286,6 +286,14 @@ export function resolveTargets(state, actor, cfg) {
     return [dead[0]];
   }
 
+  /** Tous les alliés morts (résurrection de masse). */
+  if (targetKey === 'TEAM_ALLY_DEAD') {
+    const dead = units.filter((u) => u.side === actor.side && !u.alive);
+    if (dead.length === 0) return [];
+    dead.sort((a, b) => (a.maxHp || 0) - (b.maxHp || 0));
+    return dead;
+  }
+
   // --- Étape 4 : Méthodes spécifiques ---
   const take = (arr, n) => {
     if (n == null || n < 1) return arr;

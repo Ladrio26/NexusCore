@@ -21,6 +21,7 @@ import {
 } from '../services/pvpService.js';
 import { generateNpcDefense } from '../services/pvpNpcService.js';
 import { query } from '../config/db.js';
+import { MAX_TEAM_PRESETS } from '../constants/teamPresets.js';
 import { createPendingBattle, serializePendingBattle } from '../services/pendingBattleService.js';
 import { getSkillDescriptionForTooltip } from '../utils/skillDescription.js';
 
@@ -48,7 +49,10 @@ export function registerPvpRoutes(fastify, authenticate) {
       return { success: true };
     } catch (err) {
       if (err.message === 'INVALID_PRESET_ID') {
-        return reply.code(400).send({ error: 'INVALID_PRESET_ID', message: 'preset_id invalide (1-10).' });
+        return reply.code(400).send({
+          error: 'INVALID_PRESET_ID',
+          message: `preset_id invalide (1-${MAX_TEAM_PRESETS}).`
+        });
       }
       if (err.message === 'PRESET_EMPTY_OR_NOT_FOUND') {
         return reply.code(400).send({
@@ -88,7 +92,7 @@ export function registerPvpRoutes(fastify, authenticate) {
     }
 
     const attackerPresetIndex = Number(attackerPresetId);
-    if (!Number.isInteger(attackerPresetIndex) || attackerPresetIndex < 1 || attackerPresetIndex > 10) {
+    if (!Number.isInteger(attackerPresetIndex) || attackerPresetIndex < 1 || attackerPresetIndex > MAX_TEAM_PRESETS) {
       return reply.code(400).send({ error: 'INVALID_PRESET_ID' });
     }
 

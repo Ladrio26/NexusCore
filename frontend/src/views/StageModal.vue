@@ -270,15 +270,13 @@
                 <div>ATQ : {{ hoveredUnit.attack ?? '—' }}</div>
                 <div>DEF : {{ hoveredUnit.defense ?? '—' }}</div>
                 <div>VIT : {{ hoveredUnit.speed ?? '—' }}</div>
+                <div>MTR : {{ hoveredUnitMasteryDisplay }}</div>
               </div>
               <div v-if="(hoveredUnit.traits ?? []).length" class="tooltip-traits">
                 Traits : {{ (hoveredUnit.traits ?? []).map(toTraitFr).join(', ') }}
               </div>
               <div v-if="hoveredUnitSkillDescription" class="tooltip-skill">
                 ⚡ {{ hoveredUnitSkillDescription }}
-              </div>
-              <div v-if="hoveredUnitSpecDescription" class="tooltip-spec">
-                ✨ {{ hoveredUnitSpecDescription }}
               </div>
             </div>
             <div class="battle-body">
@@ -351,8 +349,7 @@ import { getBuffVisual } from '../utils/buffVisualMap';
 import { getUnitImageUrl } from '../utils/unitImage';
 import { toTraitFr, combatRoleLabel } from '../utils/i18nFr';
 import { rarityColors } from '../utils/invokeAnimation';
-import { normalizeSkillDescription } from '../utils/skillDescription';
-import { getSkillTooltipPlainText } from '@engine/skillDescriptionTooltip.js';
+import { normalizeSkillDescription, getUnitSkillDisplayText } from '../utils/skillDescription';
 
 type PresetUnit = { user_unit_id: number; fatigue?: number };
 type PresetItem = {
@@ -446,6 +443,7 @@ type BattlefieldUnit = {
   attack?: number;
   defense?: number;
   speed?: number;
+  mastery?: number;
   traits?: string[];
   skillDescription?: string;
 };
@@ -481,6 +479,14 @@ type DecisionSkillSlot = {
   skillTargets?: Array<{ combatIndex: number; name: string }>;
   description?: string;
 };
+
+/** Priorité auto pour compétences ALLY_SINGLE (mode auto). */
+type AllySingleAutoTargetStrategy =
+  | 'lowest_hp_pct'
+  | 'most_debuffs'
+  | 'highest_attack'
+  | 'lowest_atb'
+  | 'longest_cd';
 
 /* Déclarations nécessaires avant isStandaloneReplay, finalizeAndStore, watch (évite "Cannot access before initialization") */
 const battleResult = ref<{
@@ -864,6 +870,176 @@ function getSnapshotFlatUnits(snapshot: ReplaySnapshot | null): Array<Record<str
   return teams.flatMap((t) => t.units || []);
 }
 
+/** Aligné sur SKILL_TARGET_PRIORITY du moteur (ciblage manuel / prochain événement). */
+const MANUAL_SKILL_TARGET_PRIORITY: string[] = [
+  'ALLY_DEAD_SINGLE',
+  'TEAM_ALLY_DEAD',
+  'ENEMY_SINGLE',
+  'ALLY_SINGLE',
+  'TEAM_ENEMY',
+  'TEAM_ALLY',
+  'LOWEST_HP_ALLY',
+  'SELF'
+];
+
+function getAllySingleAutoStrategyFromReplayRow(
+  row: { effect?: string; effectConfig?: Record<string, unknown> } | null | undefined
+): AllySingleAutoTargetStrategy | null {
+  if (!row) return null;
+  const effRaw = String(row.effect ?? '').toUpperCase();
+  const cfg = row.effectConfig ?? {};
+  const buffType = String(cfg.buffType ?? '').toUpperCase();
+  const logicalType =
+    effRaw === 'APPLY_BUFF' && buffType && buffType !== 'DEBUFF' ? buffType : effRaw;
+
+  if (logicalType === 'HEAL') return 'lowest_hp_pct';
+  if (logicalType === 'CLEANSE') return 'most_debuffs';
+  if (logicalType === 'ATK_UP') return 'highest_attack';
+  if (logicalType === 'ATB_UP') return 'lowest_atb';
+  if (logicalType === 'RESET_SKILL_COOLDOWN' || logicalType === 'CD_DOWN') return 'longest_cd';
+
+  const survivability = new Set(['DEF_UP', 'REGEN', 'SHIELD', 'DEFEND', 'INVINCIBILITY']);
+  if (survivability.has(logicalType)) return 'lowest_hp_pct';
+
+  return null;
+}
+
+function getAllySingleAutoStrategyFromRawEffect(eff: Record<string, unknown> | null | undefined): AllySingleAutoTargetStrategy | null {
+  if (!eff) return null;
+  const type = String(eff.type ?? '').toUpperCase();
+  const buffType = String(eff.buffType ?? eff.buff ?? '').toUpperCase();
+  const logicalType = type === 'APPLY_BUFF' && buffType && buffType !== 'DEBUFF' ? buffType : type;
+  return getAllySingleAutoStrategyFromReplayRow({
+    effect: logicalType,
+    effectConfig: { buffType: buffType || undefined }
+  });
+}
+
+function findActiveSkillDefinitionByKey(
+  skillData: Record<string, unknown> | null,
+  skillKey: string
+): Record<string, unknown> | null {
+  if (!skillData || typeof skillData !== 'object') return null;
+  const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
+  const active = skills.filter(
+    (s) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE'
+  ) as Array<Record<string, unknown>>;
+  for (let i = 0; i < active.length; i++) {
+    const s = active[i];
+    const key = s.id != null ? String(s.id) : `active-${i}`;
+    if (key === skillKey) return s;
+  }
+  const inner = (skillData.skill ?? skillData) as Record<string, unknown>;
+  if (inner && typeof inner === 'object' && Array.isArray(inner.effects)) return inner;
+  return null;
+}
+
+/**
+ * Même ordre que performAutoDecision : premier slot prêt avec des cibles, par priorité croissante.
+ */
+function resolveServerAutoSkillKey(skillSlots: DecisionSkillSlot[] | null | undefined): string | null {
+  if (!skillSlots || skillSlots.length === 0) return null;
+  const sorted = [...skillSlots].sort((a, b) => Number(a.priority ?? 999) - Number(b.priority ?? 999));
+  for (const s of sorted) {
+    if (!s.ready) continue;
+    const st = s.skillTargets ?? [];
+    if (st.length > 0) return String(s.skillKey);
+  }
+  return null;
+}
+
+function computeAllySingleAutoStrategyFromSkillData(
+  skillData: Record<string, unknown> | null,
+  skillSlots: DecisionSkillSlot[] | null | undefined
+): AllySingleAutoTargetStrategy | null {
+  if (!skillData || typeof skillData !== 'object') return null;
+  const key = resolveServerAutoSkillKey(skillSlots);
+  let effects: Array<Record<string, unknown>> = [];
+  if (key) {
+    const skillDef = findActiveSkillDefinitionByKey(skillData, key);
+    if (skillDef && Array.isArray(skillDef.effects)) effects = skillDef.effects as Array<Record<string, unknown>>;
+  }
+  if (effects.length === 0) {
+    const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
+    const active = skills.filter(
+      (s) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE'
+    ) as Array<Record<string, unknown>>;
+    const first = active[0];
+    if (first && Array.isArray(first.effects)) effects = first.effects as Array<Record<string, unknown>>;
+  }
+  if (effects.length === 0) return null;
+  const effectTargets = effects
+    .map((e) => String(e.target ?? '').toUpperCase().trim())
+    .filter((t) => t.length > 0);
+  const preferred = MANUAL_SKILL_TARGET_PRIORITY.find((p) => effectTargets.includes(p));
+  if (preferred !== 'ALLY_SINGLE') return null;
+  const allyFirst = effects.find((e) => String(e.target ?? '').toUpperCase().trim() === 'ALLY_SINGLE');
+  return getAllySingleAutoStrategyFromRawEffect(allyFirst ?? effects[0]);
+}
+
+function pickAutoAllySingleTargetCombatIndex(
+  pool: Array<{ combatIndex: number; name: string }>,
+  strategy: AllySingleAutoTargetStrategy,
+  snapshotUnits: Array<Record<string, unknown>>
+): number | null {
+  if (pool.length <= 1 || !snapshotUnits.length) return null;
+  const map = new Map<number, Record<string, unknown>>();
+  for (const u of snapshotUnits) {
+    const ci = Number(u.combatIndex);
+    if (Number.isInteger(ci)) map.set(ci, u);
+  }
+  const rows = pool
+    .map((t) => ({ t, u: map.get(t.combatIndex) }))
+    .filter((x): x is { t: { combatIndex: number; name: string }; u: Record<string, unknown> } => Boolean(x.u));
+  if (!rows.length) return null;
+
+  const hpRatio = (u: Record<string, unknown>) => {
+    const hp = Number(u.hp ?? 0);
+    const max = Number(u.maxHp ?? u.hpMax ?? 0);
+    if (max > 0) return hp / max;
+    return hp > 0 ? 1 : 0;
+  };
+  const debuffCount = (u: Record<string, unknown>) => {
+    const d = u.debuffs;
+    return Array.isArray(d) ? d.length : 0;
+  };
+  const attackVal = (u: Record<string, unknown>) => {
+    const a = Number(u.attack ?? u.atk ?? 0);
+    return Number.isFinite(a) ? a : 0;
+  };
+  const atbVal = (u: Record<string, unknown>) => {
+    const a = u.atb;
+    if (a == null) return 0;
+    const n = Number(a);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const skillCdVal = (u: Record<string, unknown>) => {
+    const c = Number(u.skillCd ?? 0);
+    return Number.isFinite(c) ? c : 0;
+  };
+
+  const pickMinRatio = () =>
+    rows.reduce((best, cur) => (hpRatio(cur.u) < hpRatio(best.u) ? cur : best));
+  const pickMaxDebuffs = () =>
+    rows.reduce((best, cur) => (debuffCount(cur.u) > debuffCount(best.u) ? cur : best));
+  const pickMaxAtk = () =>
+    rows.reduce((best, cur) => (attackVal(cur.u) > attackVal(best.u) ? cur : best));
+  const pickMinAtb = () =>
+    rows.reduce((best, cur) => (atbVal(cur.u) < atbVal(best.u) ? cur : best));
+  const pickMaxCd = () =>
+    rows.reduce((best, cur) => (skillCdVal(cur.u) > skillCdVal(best.u) ? cur : best));
+
+  let chosen = rows[0];
+  if (strategy === 'lowest_hp_pct') chosen = pickMinRatio();
+  else if (strategy === 'most_debuffs') chosen = pickMaxDebuffs();
+  else if (strategy === 'highest_attack') chosen = pickMaxAtk();
+  else if (strategy === 'lowest_atb') chosen = pickMinAtb();
+  else if (strategy === 'longest_cd') chosen = pickMaxCd();
+  else return null;
+
+  return chosen.t.combatIndex;
+}
+
 const manualDecisionContext = computed(() => {
   try {
   // Accès explicite à replayFrameIndex pour forcer la réévaluation à chaque frame
@@ -884,19 +1060,24 @@ const manualDecisionContext = computed(() => {
         : null;
     const drSlots = (serverDecision as { skillSlots?: DecisionSkillSlot[] }).skillSlots;
     const skillSlots = Array.isArray(drSlots) ? drSlots : null;
+    const allySingleAutoTargetStrategy = computeAllySingleAutoStrategyFromSkillData(skillData, skillSlots);
     const mainFromServer = String(
       (serverDecision as { mainSkillDescription?: string }).mainSkillDescription ?? ''
     ).trim();
     /** Tooltip bouton unique : texte aligné moteur/API (multi-compétences si applicable). */
     const skillDesc = (() => {
       if (skillSlots && skillSlots.length > 1) return null;
+      const spec =
+        rawUnit && typeof rawUnit === 'object'
+          ? (rawUnit as { specialization?: string | null }).specialization
+          : null;
+      if (skillData) {
+        const t = getUnitSkillDisplayText(skillData, spec);
+        if (t) return t;
+      }
       const fromUnit = actorUnit?.skillDescription;
       if (fromUnit && String(fromUnit).trim()) return normalizeSkillDescription(String(fromUnit).trim());
       if (mainFromServer) return normalizeSkillDescription(mainFromServer);
-      if (skillData) {
-        const t = getSkillTooltipPlainText(skillData);
-        return t ? normalizeSkillDescription(t) : null;
-      }
       return null;
     })();
     return {
@@ -905,6 +1086,7 @@ const manualDecisionContext = computed(() => {
       skillDescription: skillDesc,
       skillSlots,
       expectedTargetCombatIndex: null,
+      allySingleAutoTargetStrategy,
       skillAvailable: Boolean(serverDecision.skillAvailable),
       skillInCooldown: Number(serverDecision.skillCd ?? 0) > 0,
       skillCd: Number(serverDecision.skillCd ?? 0),
@@ -967,25 +1149,29 @@ const manualDecisionContext = computed(() => {
     ? enemyAllAlive
     : (enemyFrontAlive.length > 0 ? enemyFrontAlive : enemyBackAlive);
 
-  /** Priorité des cibles pour le ciblage manuel : du plus prioritaire au moins. */
-  const TARGET_PRIORITY: string[] = [
-    'ALLY_DEAD_SINGLE', 'ENEMY_SINGLE', 'ALLY_SINGLE', 'TEAM_ENEMY', 'TEAM_ALLY', 'LOWEST_HP_ALLY', 'SELF'
-  ];
-
   const effectsByTarget = Array.isArray(nextEvent.effectsResultsByTarget)
     ? (nextEvent.effectsResultsByTarget as Array<{ effect?: string; effectConfig?: Record<string, unknown>; results?: Array<Record<string, unknown>> }>)
     : [];
   const effectTargets = effectsByTarget
     .map((e) => String(e.effectConfig?.target ?? '').toUpperCase().trim())
     .filter((t) => t.length > 0);
-  const preferredTarget = TARGET_PRIORITY.find((p) => effectTargets.includes(p));
+  const preferredTarget = MANUAL_SKILL_TARGET_PRIORITY.find((p) => effectTargets.includes(p));
+
+  const allySingleAutoTargetStrategy: AllySingleAutoTargetStrategy | null =
+    preferredTarget === 'ALLY_SINGLE'
+      ? getAllySingleAutoStrategyFromReplayRow(
+          effectsByTarget.find(
+            (e) => String(e.effectConfig?.target ?? '').toUpperCase().trim() === 'ALLY_SINGLE'
+          ) ?? effectsByTarget[0]
+        )
+      : null;
 
   const expectedTargetRaw = (nextEvent.target ?? nextEvent.targetId ?? (Array.isArray(nextEvent.targets) ? nextEvent.targets[0] : null)) as string | number | null;
   const expectedTargetCombatIndex = getCombatIndexSafe(expectedTargetRaw);
   const forcedProvokeTargets = isProvoked && expectedTargetCombatIndex != null ? [expectedTargetCombatIndex] : [];
 
   let skillTargetIndexes: number[];
-  if (preferredTarget === 'ALLY_DEAD_SINGLE') {
+  if (preferredTarget === 'ALLY_DEAD_SINGLE' || preferredTarget === 'TEAM_ALLY_DEAD') {
     skillTargetIndexes = allyDead;
   } else if (preferredTarget === 'ENEMY_SINGLE') {
     skillTargetIndexes = basicTargetIndexes;
@@ -1020,10 +1206,14 @@ const manualDecisionContext = computed(() => {
     ? (rawUnit.skill_data as Record<string, unknown>)
     : null;
   const rawActorDesc = (actorUnit as { skillDescription?: string })?.skillDescription?.trim();
-  const desc = rawActorDesc
-    ? normalizeSkillDescription(rawActorDesc)
-    : sd
-      ? normalizeSkillDescription(getSkillTooltipPlainText(sd) || '')
+  const specReplay =
+    rawUnit && typeof rawUnit === 'object'
+      ? (rawUnit as { specialization?: string | null }).specialization
+      : null;
+  const desc = sd
+    ? getUnitSkillDisplayText(sd, specReplay) || null
+    : rawActorDesc
+      ? normalizeSkillDescription(rawActorDesc)
       : null;
 
   return {
@@ -1032,6 +1222,7 @@ const manualDecisionContext = computed(() => {
     skillDescription: desc ?? null,
     skillSlots: null,
     expectedTargetCombatIndex,
+    allySingleAutoTargetStrategy,
     skillAvailable: actorHasSkill && actorSkillCd <= 0 && !isStunned && !isProvoked && !actorDebuffs.some((d) => String(d?.type ?? '').toUpperCase() === 'SILENCE'),
     skillInCooldown: actorHasSkill && actorSkillCd > 0,
     skillCd: actorSkillCd,
@@ -1244,43 +1435,23 @@ const initialUnitsForBattlefield = computed(() => {
   return Array.isArray(list) ? list : [];
 });
 
-/** Description de la compétence pour l'unité survolée (depuis initialUnits ou fallback teamA/B). */
+/** Description de la compétence pour l'unité survolée (skill_data moteur en priorité — inclut actives + passifs). */
 const hoveredUnitSkillDescription = computed(() => {
   const unit = hoveredUnit.value;
   if (!unit) return '';
   const idx = unit.combatIndex;
   if (idx == null || typeof idx !== 'number') return '';
-  const initial = initialUnitsForBattlefield.value[idx];
-  const fromInit = (initial as { skillDescription?: string })?.skillDescription?.trim();
-  if (fromInit) return normalizeSkillDescription(fromInit);
   const sizeA = initialUnitsForBattlefield.value.filter((u) => u.side === 'A').length;
   const raw = idx < sizeA ? (engineTeamA.value as Record<string, unknown>[])?.[idx] : (engineTeamB.value as Record<string, unknown>[])?.[idx - sizeA];
   if (raw && typeof raw === 'object' && raw.skill_data) {
-    const t = getSkillTooltipPlainText(raw.skill_data as Record<string, unknown>);
-    return t ? normalizeSkillDescription(t) : '';
+    const spec = (raw as { specialization?: string | null }).specialization;
+    const t = getUnitSkillDisplayText(raw.skill_data as Record<string, unknown>, spec);
+    if (t) return t;
   }
+  const initial = initialUnitsForBattlefield.value[idx];
+  const fromInit = (initial as { skillDescription?: string })?.skillDescription?.trim();
+  if (fromInit) return normalizeSkillDescription(fromInit);
   return '';
-});
-
-/** Description de la spécialisation choisie (A ou B) pour l'unité survolée. Affichée uniquement si l'unité a une spécialisation. */
-const hoveredUnitSpecDescription = computed(() => {
-  const unit = hoveredUnit.value;
-  if (!unit) return '';
-  const idx = (unit as { combatIndex?: number }).combatIndex;
-  if (idx == null || typeof idx !== 'number') return '';
-  const sizeA = initialUnitsForBattlefield.value.filter((u) => u.side === 'A').length;
-  const raw = idx < sizeA ? (engineTeamA.value as Record<string, unknown>[])?.[idx] : (engineTeamB.value as Record<string, unknown>[])?.[idx - sizeA];
-  if (!raw || typeof raw !== 'object') return '';
-  const specRaw = (raw as { specialization?: string | null }).specialization;
-  const spec = specRaw != null && String(specRaw).trim() !== '' ? String(specRaw).trim().toUpperCase() : null;
-  if (spec !== 'A' && spec !== 'B') return '';
-  const skillData = (raw as { skill_data?: unknown }).skill_data;
-  if (!skillData || typeof skillData !== 'object') return '';
-  const desc = (skillData as Record<string, unknown>).description;
-  if (!desc || typeof desc !== 'object') return '';
-  const d = desc as Record<string, unknown>;
-  const text = spec === 'A' ? d.specA : d.specB;
-  return typeof text === 'string' && text.trim() ? normalizeSkillDescription(text) : '';
 });
 
 /** Couleur du nom de l'unité selon sa rareté (tooltip). Fallback sur initialUnits si uiUnit n'a pas rarity. */
@@ -1330,6 +1501,20 @@ const hoveredUnitFatigue = computed(() => {
   if (hu.fatigue != null) return hu.fatigue;
   if (init?.fatigue != null) return init.fatigue;
   return null;
+});
+
+/** Maîtrise affichée dans le tooltip (unité UI puis unité initiale). */
+const hoveredUnitMasteryDisplay = computed(() => {
+  const u = hoveredUnit.value;
+  if (!u) return '—';
+  const hu = u as { mastery?: number; combatIndex?: number };
+  const fromUi = hu.mastery;
+  if (fromUi != null && Number.isFinite(Number(fromUi))) return Number(fromUi);
+  const idx = hu.combatIndex;
+  const initial = typeof idx === 'number' && idx >= 0 ? initialUnitsForBattlefield.value[idx] : null;
+  const m = (initial as { mastery?: number } | null)?.mastery;
+  if (m != null && Number.isFinite(Number(m))) return Number(m);
+  return '—';
 });
 
 /** combatUnits = ordre exact moteur (teamA puis teamB), avec combatIndex. */
@@ -1681,6 +1866,37 @@ function hydrateBattleState(payload: {
 }
 
 /**
+ * Après un tour de moteur : positionner l'index de replay, réappliquer la snapshot, relancer le flux auto/replay.
+ * En onglet masqué, exécution synchrone (sans nextTick) pour ne pas dépendre des timers ralentis par le navigateur.
+ */
+function applyEngineRunAftermath(isFirstRun: boolean, prevFrameIdx: number) {
+  if (isFirstRun) {
+    // Sauter directement au dernier frame pour afficher les ATB correctes dès le début
+    const lastFrameIdx = Math.max(0, replayFrames.value.length - 1);
+    replayFrameIndex.value = lastFrameIdx;
+    initBattlefieldHp();
+    // Réinitialiser la déduplication : après initBattlefieldHp, la snapshot doit toujours être
+    // réappliquée (sinon si lastFrameIdx=0, le watch a déjà enregistré cette snapshot
+    // et la déduplication bloque la réapplication → ATB restent à 0).
+    __lastAppliedSnapshot = null;
+    __lastAppliedTick = null;
+  } else {
+    // Si l'index ne change pas (ex: prevFrameIdx=0 sur 2e décision), Vue ne déclenchera
+    // pas le watch. On force un "bump" via une valeur temporaire puis on revient.
+    const target = Math.max(0, prevFrameIdx);
+    if (replayFrameIndex.value === target) {
+      // Forcer la réinitialisation de la déduplication pour re-appliquer le snapshot
+      __lastAppliedSnapshot = null;
+      __lastAppliedTick = null;
+    }
+    replayFrameIndex.value = target;
+  }
+  applyReplaySnapshotToBattlefield(currentReplaySnapshot.value);
+  stopReplayTimer();
+  startManualAutoFlow();
+}
+
+/**
  * Lance le moteur de combat localement avec les équipes et décisions courantes.
  * Met à jour battleResult, replayFrames, puis redémarre l'animation depuis la position courante.
  */
@@ -1741,32 +1957,12 @@ function runEngineLocally(isFirstRun = false) {
   manualSkillHoverKey.value = null;
   manualDecisionError.value = '';
 
-  nextTick(() => {
-    if (isFirstRun) {
-      // Sauter directement au dernier frame pour afficher les ATB correctes dès le début
-      const lastFrameIdx = Math.max(0, replayFrames.value.length - 1);
-      replayFrameIndex.value = lastFrameIdx;
-      initBattlefieldHp();
-      // Réinitialiser la déduplication : après initBattlefieldHp, la snapshot doit toujours être
-      // réappliquée (sinon si lastFrameIdx=0, le watch a déjà enregistré cette snapshot
-      // et la déduplication bloque la réapplication → ATB restent à 0).
-      __lastAppliedSnapshot = null;
-      __lastAppliedTick = null;
-    } else {
-      // Si l'index ne change pas (ex: prevFrameIdx=0 sur 2e décision), Vue ne déclenchera
-      // pas le watch. On force un "bump" via une valeur temporaire puis on revient.
-      const target = Math.max(0, prevFrameIdx);
-      if (replayFrameIndex.value === target) {
-        // Forcer la réinitialisation de la déduplication pour re-appliquer le snapshot
-        __lastAppliedSnapshot = null;
-        __lastAppliedTick = null;
-      }
-      replayFrameIndex.value = target;
-    }
-    applyReplaySnapshotToBattlefield(currentReplaySnapshot.value);
-    stopReplayTimer();
-    startManualAutoFlow();
-  });
+  const scheduleAftermath = () => applyEngineRunAftermath(isFirstRun, prevFrameIdx);
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    scheduleAftermath();
+  } else {
+    nextTick(scheduleAftermath);
+  }
 }
 
 watch(
@@ -1936,6 +2132,7 @@ function initBattlefieldHp() {
       attack: u.attack,
       defense: u.defense,
       speed: u.speed,
+      mastery: (u as { mastery?: number }).mastery,
       level: u.level,
       rarity: (u as { rarity?: string }).rarity ?? 'common'
     });
@@ -1991,6 +2188,9 @@ function applyReplaySnapshotToBattlefield(snapshot: ReplaySnapshot | null) {
       attack: (raw.attack as number) ?? (initialUnit as Record<string, unknown>)?.attack,
       defense: (raw.defense as number) ?? (initialUnit as Record<string, unknown>)?.defense,
       speed: (raw.speed as number) ?? (initialUnit as Record<string, unknown>)?.speed,
+      mastery:
+        (raw.mastery as number) ??
+        (initialUnit as Record<string, unknown>)?.mastery as number | undefined,
       level: (raw.level as number) ?? (initialUnit as Record<string, unknown>)?.level,
       rarity: (raw.rarity as string) ?? (initialUnit as Record<string, unknown>)?.rarity ?? 'common'
     });
@@ -2750,6 +2950,15 @@ function advanceReplayOneFrame(force = false) {
   return true;
 }
 
+/** Même logique qu'advanceReplayOneFrame mais application synchrone (onglet masqué : pas de nextTick). */
+function advanceReplayOneFrameSync(force = false) {
+  if (replayFrameIndex.value >= replayFrames.value.length - 1) return false;
+  if (!force && !canAdvanceReplayManuallyWithoutChoice()) return false;
+  replayFrameIndex.value++;
+  applyReplaySnapshotToBattlefield(currentReplaySnapshot.value);
+  return true;
+}
+
 function replayStepForward() {
   advanceReplayOneFrame();
 }
@@ -2759,6 +2968,32 @@ function replayEnd() {
   nextTick(() => applyReplaySnapshotToBattlefield(currentReplaySnapshot.value));
 }
 const REPLAY_TICK_MS = 80;
+
+/**
+ * Quand l'onglet est en arrière-plan, les navigateurs ralentissent fortement setInterval/requestAnimationFrame.
+ * On enchaîne alors les frames et les décisions auto de façon synchrone jusqu'à la fin ou une décision manuelle.
+ */
+function flushHiddenReplayCatchUp() {
+  if (typeof document === 'undefined' || document.visibilityState !== 'hidden' || !hasReplayMode.value) return;
+  const MAX_STEPS = 100000;
+  let steps = 0;
+  while (document.visibilityState === 'hidden' && steps++ < MAX_STEPS && hasReplayMode.value && battleResult.value) {
+    if (replayFrames.value.length === 0) break;
+    if (replayFrameIndex.value < replayFrames.value.length - 1) {
+      if (!advanceReplayOneFrameSync()) break;
+      continue;
+    }
+    const dr = battleResult.value.decisionRequest;
+    if (!dr) break;
+    if (autoMode.value) {
+      const ctx = manualDecisionContext.value;
+      if (ctx && (ctx.isStunned || ctx.isProvoked)) break;
+      performAutoDecision();
+      continue;
+    }
+    break;
+  }
+}
 
 function startReplayPlaybackFromStart() {
   if (!hasReplayMode.value || replayFrames.value.length === 0) return;
@@ -2778,9 +3013,14 @@ function stopReplayTimer() {
 
 function startManualAutoFlow() {
   if (!hasReplayMode.value) return;
-  // Bloquer uniquement si on est déjà au dernier frame ET qu'une décision attend
-  if (battleResult.value?.decisionRequest && replayFrameIndex.value >= replayFrames.value.length - 1) return;
   stopReplayTimer();
+  // Onglet masqué : ne pas s'appuyer sur setInterval (throttlé à ~1s ou figé).
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    flushHiddenReplayCatchUp();
+    return;
+  }
+  // En avant-plan : dernier frame + attente de décision joueur → le watch auto / manuel prend le relais.
+  if (battleResult.value?.decisionRequest && replayFrameIndex.value >= replayFrames.value.length - 1) return;
   replayTimer = setInterval(() => {
     if (replayFrameIndex.value >= replayFrames.value.length - 1) {
       stopReplayTimer();
@@ -2869,9 +3109,18 @@ function performAutoDecision() {
     pool = ctx.basicTargets;
     autoSkillKey = undefined;
   }
-  const target = ctx.expectedTargetCombatIndex != null
-    ? pool.find((t) => t.combatIndex === ctx.expectedTargetCombatIndex)?.combatIndex
-    : pool[0]?.combatIndex;
+  const strat = ctx.allySingleAutoTargetStrategy;
+  const snapUnits = getSnapshotFlatUnits(currentReplaySnapshot.value);
+  const smartAlly =
+    action === 'SKILL' && strat && pool.length > 1
+      ? pickAutoAllySingleTargetCombatIndex(pool, strat, snapUnits)
+      : null;
+  const target =
+    smartAlly != null
+      ? smartAlly
+      : ctx.expectedTargetCombatIndex != null
+        ? pool.find((t) => t.combatIndex === ctx.expectedTargetCombatIndex)?.combatIndex
+        : pool[0]?.combatIndex;
   if (target == null) return;
   manualDecisionError.value = '';
   submitInteractiveAction(action, target, autoSkillKey);
@@ -2988,10 +3237,40 @@ watch(
     if (!autoMode.value || !battleResult.value?.decisionRequest || replayFrameIndex.value < replayFrames.value.length - 1) return;
     const ctx = manualDecisionContext.value;
     if (!ctx || ctx.isStunned || ctx.isProvoked) return;
+    // Onglet masqué : performAutoDecision est enchaîné par flushHiddenReplayCatchUp (évite double soumission).
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     nextTick(() => performAutoDecision());
   },
   { flush: 'post' }
 );
+
+/** Reprendre l'intervalle de replay en avant-plan ; rattraper le combat en arrière-plan. */
+function onCombatDocumentVisibilityChange() {
+  if (!hasReplayMode.value || !battleResult.value) return;
+  if (document.visibilityState === 'visible') {
+    startManualAutoFlow();
+    // En auto, au dernier frame le timer ne tourne pas : le watch peut ne pas se redéclencher au retour d’onglet.
+    if (
+      autoMode.value &&
+      battleResult.value.decisionRequest &&
+      replayFrameIndex.value >= replayFrames.value.length - 1
+    ) {
+      const ctx = manualDecisionContext.value;
+      if (ctx && !ctx.isStunned && !ctx.isProvoked) {
+        nextTick(() => performAutoDecision());
+      }
+    }
+  } else {
+    flushHiddenReplayCatchUp();
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onCombatDocumentVisibilityChange);
+});
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onCombatDocumentVisibilityChange);
+});
 
 function triggerReplayAttackAnimations() {
   if (!hasReplayMode.value || !battlefieldRef.value) return;

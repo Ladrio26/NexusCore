@@ -448,7 +448,7 @@ import {
 } from '../utils/invokeAnimation';
 import { getUnitImageUrl } from '../utils/unitImage';
 import { toRoleFr, toElementFr } from '../utils/i18nFr';
-import { getSkillEffectDescription, buildSkillDescriptionFromSkillData } from '../utils/skillDescription';
+import { getUnitSkillDisplayText } from '../utils/skillDescription';
 
 const wallet = ref({
   credits: 0,
@@ -462,7 +462,7 @@ const wallet = ref({
 type PullType = 'standard' | 'core' | 'resonance' | 'divine_core' | 'divine_standard' | 'divine_resonance';
 
 /** Désactivation temporaire des 3 portails divins (x1 et x10). Remettre à false pour réactiver. */
-const DIVINE_PORTALS_DISABLED = true;
+const DIVINE_PORTALS_DISABLED = false;
 
 function isDivinePortalType(type: PullType): boolean {
   return type === 'divine_core' || type === 'divine_standard' || type === 'divine_resonance';
@@ -686,17 +686,13 @@ const revealCardRarityClass = computed(() => {
 });
 
 const pullResultSkillDescription = computed(() => {
-  const u = pullResult.value?.unit as { skill_description?: string; skill_data?: Record<string, unknown> } | undefined;
-  const desc = u?.skill_description;
-  if (typeof desc === 'string' && desc.trim()) return desc.trim();
-  return getSkillEffectDescription(u?.skill_data ?? null) || buildSkillDescriptionFromSkillData(u?.skill_data ?? null);
+  const u = pullResult.value?.unit as { skill_data?: Record<string, unknown>; specialization?: string | null } | undefined;
+  return getUnitSkillDisplayText(u?.skill_data ?? null, u?.specialization ?? null);
 });
 
 function getMultiRevealSkillDesc(result: PullResultData): string {
-  const u = result?.unit as { skill_description?: string; skill_data?: Record<string, unknown> } | undefined;
-  const desc = u?.skill_description;
-  if (typeof desc === 'string' && desc.trim()) return desc.trim();
-  return getSkillEffectDescription(u?.skill_data ?? null) || buildSkillDescriptionFromSkillData(u?.skill_data ?? null);
+  const u = result?.unit as { skill_data?: Record<string, unknown>; specialization?: string | null } | undefined;
+  return getUnitSkillDisplayText(u?.skill_data ?? null, u?.specialization ?? null);
 }
 
 const pullPrimaryMessage = computed(() => {
@@ -2990,6 +2986,7 @@ onUnmounted(() => {
   max-width: 280px;
   margin-left: auto;
   margin-right: auto;
+  white-space: pre-line;
 }
 .reveal-skill-desc {
   font-size: 0.82rem;

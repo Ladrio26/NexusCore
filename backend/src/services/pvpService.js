@@ -3,16 +3,20 @@
  * Réutilise le moteur de combat (simulateBattle) et les services existants.
  */
 import { query, getPool } from '../config/db.js';
+import { MAX_TEAM_PRESETS } from '../constants/teamPresets.js';
 import { withTransaction } from '../config/db.js';
-import { addXp } from './xpService.js';
+import { addXp, redistributeXpFromMaxLevelUnits } from './xpService.js';
 import { applyCampaignFatigue } from './campaignService.js';
 
 const ELO_MIN = 0;
 const ELO_MATCHMAKING_RANGE = 100;
 
 /**
- * Calcule les deltas Elo PvP selon l'écart entre attaquant et défenseur.
- * Écart 0-10 : +10 / -10. Puis par tranche de 10 : favori +10-bucket / -10-bucket, underdog +10+bucket / -10+bucket.
+ * Calcule les deltas Elo PvP selon l'écart entre attaquant et défenseur (jeu à somme nulle).
+ * Écart 0–10 : base ±10. Au-delà, par tranches de 10 pts d’écart (bucket max 9) :
+ * - Favori gagne : gain modéré (10 − bucket) ; perdre contre plus faible : grosse perte.
+ * - Outsider gagne : gros gain (10 + bucket) ; perdre contre plus fort : petite perte (10 − bucket).
+ * Le défenseur reçoit toujours l’opposé de l’attaquant (cohérent avec une mise à jour Elo symétrique).
  * @param {number} attackerElo
  * @param {number} defenderElo (même valeur que attacker si PNJ)
  * @param {boolean} attackerWon
@@ -23,24 +27,12 @@ function computePvpEloDeltas(attackerElo, defenderElo, attackerWon) {
   const bucket = diff <= 10 ? 0 : Math.min(9, Math.floor((diff - 1) / 10));
   const attackerIsFavorite = attackerElo >= defenderElo;
   let attackerDelta;
-  let defenderDelta;
   if (attackerWon) {
-    if (attackerIsFavorite) {
-      attackerDelta = 10 - bucket;
-      defenderDelta = -(10 + bucket);
-    } else {
-      attackerDelta = 10 + bucket;
-      defenderDelta = -(10 - bucket);
-    }
+    attackerDelta = attackerIsFavorite ? 10 - bucket : 10 + bucket;
   } else {
-    if (attackerIsFavorite) {
-      attackerDelta = -(10 + bucket);
-      defenderDelta = 10 + bucket;
-    } else {
-      attackerDelta = -(10 - bucket);
-      defenderDelta = 10 - bucket;
-    }
+    attackerDelta = attackerIsFavorite ? -(10 + bucket) : -(10 - bucket);
   }
+  const defenderDelta = -attackerDelta;
   return { attackerDelta, defenderDelta };
 }
 const PVP_XP_WIN = 1000;
@@ -232,12 +224,12 @@ function isPresetValid(slotsData) {
 }
 
 /**
- * Définit la défense PvP du joueur (preset_id = preset_index 1-10).
+ * Définit la défense PvP du joueur (preset_id = preset_index 1..MAX_TEAM_PRESETS).
  * Le preset doit exister et contenir au moins une unité.
  */
 export async function setDefense(userId, presetId) {
   const presetIndex = Number(presetId);
-  if (!Number.isInteger(presetIndex) || presetIndex < 1 || presetIndex > 10) {
+  if (!Number.isInteger(presetIndex) || presetIndex < 1 || presetIndex > MAX_TEAM_PRESETS) {
     throw new Error('INVALID_PRESET_ID');
   }
   const slotsData = await getPresetSlots(userId, presetIndex);
@@ -501,11 +493,26 @@ export async function recordPvpBattle(attackerId, defenderId, defenderType, atta
  */
 export async function grantPvpXp(attackerUserUnitIds, attackerWon) {
   const baseAmount = attackerWon ? PVP_XP_WIN : PVP_XP_LOSS;
+  const ids = [...new Set(attackerUserUnitIds.map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  if (ids.length === 0) return [];
   const { getUnitIdsWithXpBoost } = await import('./artifactService.js');
-  const xpBoostIds = await getUnitIdsWithXpBoost(attackerUserUnitIds);
-  const results = [];
-  for (const id of attackerUserUnitIds) {
+  const xpBoostIds = await getUnitIdsWithXpBoost(ids);
+  const placeholders = ids.map(() => '?').join(',');
+  const levelRows = await query(`SELECT id, level FROM user_units WHERE id IN (${placeholders})`, ids);
+  const levelById = new Map(levelRows.map((r) => [r.id, Number(r.level ?? 1)]));
+  const rawAmountById = new Map();
+  for (const id of ids) {
     const amount = xpBoostIds.has(id) ? Math.floor(baseAmount * 1.5) : baseAmount;
+    rawAmountById.set(id, amount);
+  }
+  const finalAmounts = redistributeXpFromMaxLevelUnits(ids, levelById, rawAmountById);
+  const results = [];
+  for (const id of ids) {
+    const amount = Math.max(0, Math.floor(Number(finalAmounts.get(id) ?? 0)));
+    if (amount <= 0) {
+      results.push({ userUnitId: id, level: levelById.get(id), xp: 0, levelsGained: 0, skippedMaxLevel: true });
+      continue;
+    }
     try {
       const r = await addXp(id, amount);
       results.push({ userUnitId: id, ...r });

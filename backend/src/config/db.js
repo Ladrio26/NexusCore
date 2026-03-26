@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import mysql from 'mysql2/promise';
+import { getAllCustomTreeNodes } from '../data/customUnitDefinitions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -252,6 +253,7 @@ export async function ensureDatabaseSchema() {
     await query('UPDATE user_units SET power_openings = 1 WHERE power_openings IS NULL OR power_openings < 1');
     await query('UPDATE user_units SET fatigue_last_update = NOW() WHERE fatigue_last_update IS NULL');
     await query("UPDATE units SET is_boss = 1 WHERE code LIKE 'BOSS_CH%'");
+    await query("UPDATE units SET is_boss = 1 WHERE code LIKE 'CUSTOM_U%'");
 
     await query(`
       CREATE TABLE IF NOT EXISTS pvp_rank_reward_claims (
@@ -654,6 +656,124 @@ export async function ensureDatabaseSchema() {
         PRIMARY KEY (element, level, combat_index)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS custom_units (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED NOT NULL,
+        name VARCHAR(128) NOT NULL,
+        role VARCHAR(32) NOT NULL,
+        element VARCHAR(32) NOT NULL,
+        attack_type VARCHAR(16) NOT NULL,
+        unit_id INT UNSIGNED DEFAULT NULL,
+        is_locked TINYINT(1) NOT NULL DEFAULT 0,
+        raid_meta JSON DEFAULT NULL,
+        future_creation_cost JSON DEFAULT NULL,
+        future_evolution_cost JSON DEFAULT NULL,
+        future_evolution_level TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_custom_units_user (user_id),
+        KEY idx_custom_units_unit (unit_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    try {
+      await query(
+        "ALTER TABLE custom_units ADD COLUMN config_json JSON NULL COMMENT 'Unité custom : config budget points (v2)'"
+      );
+    } catch (e) {
+      if (e?.code !== 'ER_DUP_FIELDNAME') {
+        console.warn('[ensureDatabaseSchema] custom_units.config_json:', e?.message || e);
+      }
+    }
+    await query(`
+      CREATE TABLE IF NOT EXISTS custom_unit_choices (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        custom_unit_id INT UNSIGNED NOT NULL,
+        skill_slot TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        choice_type VARCHAR(64) NOT NULL,
+        choice_value VARCHAR(128) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_cuc_custom (custom_unit_id),
+        FOREIGN KEY (custom_unit_id) REFERENCES custom_units(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS custom_unit_snapshots (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        custom_unit_id INT UNSIGNED NOT NULL,
+        final_stats_json JSON NOT NULL,
+        final_skill1_json JSON NOT NULL,
+        final_skill2_json JSON NOT NULL,
+        final_preview_json JSON DEFAULT NULL,
+        version INT UNSIGNED NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_cus_custom (custom_unit_id),
+        FOREIGN KEY (custom_unit_id) REFERENCES custom_units(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS custom_skill_tree_nodes (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        role VARCHAR(32) NOT NULL,
+        skill_slot TINYINT NOT NULL,
+        node_key VARCHAR(128) NOT NULL,
+        node_label VARCHAR(255) NOT NULL,
+        step TINYINT NOT NULL,
+        choice_group VARCHAR(128) NOT NULL,
+        requires_json JSON DEFAULT NULL,
+        ui_order INT NOT NULL DEFAULT 0,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        power_cost INT UNSIGNED NOT NULL DEFAULT 1,
+        UNIQUE KEY uq_cst_node_key (node_key),
+        KEY idx_cst_role (role, skill_slot, step)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    try {
+      await query(
+        'ALTER TABLE custom_skill_tree_nodes ADD COLUMN power_cost INT UNSIGNED NOT NULL DEFAULT 1'
+      );
+    } catch (e) {
+      if (e?.code !== 'ER_DUP_FIELDNAME') {
+        console.warn('[ensureDatabaseSchema] custom_skill_tree_nodes.power_cost:', e?.message || e);
+      }
+    }
+    try {
+      const cnt = await query('SELECT COUNT(*) AS n FROM custom_skill_tree_nodes');
+      if (Number(cnt[0]?.n) === 0) {
+        const nodes = getAllCustomTreeNodes();
+        for (const n of nodes) {
+          await query(
+            `INSERT INTO custom_skill_tree_nodes (role, skill_slot, node_key, node_label, step, choice_group, requires_json, ui_order, is_active, power_cost)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            [
+              n.role,
+              n.skillSlot,
+              n.nodeKey,
+              n.labelFr,
+              n.step,
+              n.groupId,
+              n.requiresOneOf ? JSON.stringify(n.requiresOneOf) : null,
+              n.step * 10 + (n.skillSlot === 2 ? 100 : 0),
+              Number(n.powerCost ?? 1)
+            ]
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('[ensureDatabaseSchema] seed custom_skill_tree_nodes:', e?.message || e);
+    }
+    try {
+      for (const n of getAllCustomTreeNodes()) {
+        await query('UPDATE custom_skill_tree_nodes SET power_cost = ? WHERE node_key = ?', [
+          Number(n.powerCost ?? 1),
+          n.nodeKey
+        ]);
+      }
+    } catch (e) {
+      console.warn('[ensureDatabaseSchema] sync custom_skill_tree_nodes.power_cost:', e?.message || e);
+    }
     await query(`
       CREATE TABLE IF NOT EXISTS gacha_sanctuary_pull_log (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

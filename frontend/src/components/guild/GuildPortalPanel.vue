@@ -192,7 +192,7 @@ import {
   getElementSlug,
   getScreenShakeCssClass
 } from '../../utils/invokeAnimation';
-import { getSkillEffectDescription, buildSkillDescriptionFromSkillData } from '../../utils/skillDescription';
+import { getUnitSkillDisplayText } from '../../utils/skillDescription';
 
 type RotationUnit = {
   slot_index: number;
@@ -292,10 +292,8 @@ const elementEffectClass = computed(() =>
   elementSlug.value && elementSlug.value !== 'neutral' ? `element-effect-${elementSlug.value}` : ''
 );
 const guildSkillDescription = computed(() => {
-  const desc = animUnit.value?.skill_description;
-  if (typeof desc === 'string' && desc.trim()) return desc.trim();
   const sd = animUnit.value?.skill_data as Record<string, unknown> | null | undefined;
-  return getSkillEffectDescription(sd) || buildSkillDescriptionFromSkillData(sd);
+  return getUnitSkillDisplayText(sd, null);
 });
 
 // ── Watch result prop → trigger animation ─────────────────────────────────────
@@ -1007,7 +1005,7 @@ function formatDate(value: string) {
 .rarity-badge.rarity-mythic { background: #dc2626; color: #fff; }
 
 .reveal-role, .reveal-element { font-size: 0.9rem; color: #94a3b8; margin: 0.25rem 0; }
-.reveal-skill-desc { font-size: 0.82rem; color: #a5b4c8; margin: 0.4rem 0; line-height: 1.35; font-style: italic; }
+.reveal-skill-desc { font-size: 0.82rem; color: #a5b4c8; margin: 0.4rem 0; line-height: 1.35; font-style: italic; white-space: pre-line; }
 .guild-result-balance { font-size: 0.88rem; color: #cbd5e1; margin: 0.5rem 0 0; }
 .mythic-title { display: block; font-size: 0.9rem; letter-spacing: 0.2em; color: #f87171; margin-bottom: 0.25rem; animation: mythic-title-spacing 0.8s ease-out forwards; }
 @keyframes mythic-title-spacing { from { letter-spacing: -0.1em; opacity: 0; } to { letter-spacing: 0.35em; opacity: 1; } }

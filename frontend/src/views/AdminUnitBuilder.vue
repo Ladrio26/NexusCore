@@ -190,6 +190,12 @@
                 <button type="button" class="nx-btn nx-btn-secondary" title="Passif permanent DEBUFF_IMMUNITY (immunité débuffs, STRIP, −ATB, etc.)" @click="addDebuffImmunityPassive">
                   + Passif immunisation débuffs
                 </button>
+                <button type="button" class="nx-btn nx-btn-secondary" title="Passif STEEL — réduction % des dégâts directs" @click="addSteelPassive">
+                  + Passif Acier
+                </button>
+                <button type="button" class="nx-btn nx-btn-secondary" title="Passif bouclier multi-coups" @click="addMultiHitShieldPassive">
+                  + Passif bouclier multi-coups
+                </button>
               </div>
               <div v-for="(sk, skIdx) in form.skills" :key="'sk-' + (sk.id || skIdx)" class="skill-card" :class="{ 'skill-targeted-by-spec': skillIdsTargetedBySpecs.has((sk.id ?? '').toString().trim()) }">
                 <div v-if="skillIdsTargetedBySpecs.has((sk.id ?? '').toString().trim())" class="spec-target-warning">⚠ Spé utilise cet ID.</div>
@@ -213,12 +219,25 @@
                         @change="onPassiveModeChange(sk, ($event.target as HTMLSelectElement).value)"
                       >
                         <option value="triggered">Déclenché (trigger + effets)</option>
-                        <option value="immunity">Permanent — DEBUFF_IMMUNITY (immunité débuffs / effets négatifs)</option>
+                        <option value="immunity">Permanent (kind API : DEBUFF_IMMUNITY, STEEL, MULTI_HIT_SHIELD…)</option>
                       </select>
                     </label>
                     <p v-if="isPermanentPassiveSkill(sk)" class="unit-image-help passive-permanent-hint">
-                      <strong>DEBUFF_IMMUNITY</strong> : pas de trigger ni d’effets ici — le moteur immunise contre débuffs,
-                      STRIP, réduction d’ATB, plafond CD, vol de stats, etc. (pas les dégâts/soins bruts).
+                      <template v-if="(sk as PassiveSkill).passiveKind === 'DEBUFF_IMMUNITY'">
+                        <strong>DEBUFF_IMMUNITY</strong> : pas de trigger ni d’effets ici — le moteur immunise contre débuffs,
+                        STRIP, réduction d’ATB, plafond CD, vol de stats, etc. (pas les dégâts/soins bruts).
+                      </template>
+                      <template v-else-if="(sk as PassiveSkill).passiveKind === 'STEEL'">
+                        <strong>STEEL</strong> : indiquez la <strong>valeur</strong> (% de réduction) — s’applique aux attaques de base,
+                        compétences avec effet DAMAGE (y compris % PV max), marque de mort, etc. Pas les DoT.
+                      </template>
+                      <template v-else-if="(sk as PassiveSkill).passiveKind === 'MULTI_HIT_SHIELD'">
+                        <strong>MULTI_HIT_SHIELD</strong> : indiquez la <strong>valeur</strong> (nombre entier ≥ 1) — immunise à tous les dégâts ; le compteur se réinitialise au début de chaque tour de l’unité
+                        directs jusqu’à avoir été touché autant de fois (les DoT ne consomment pas les coups).
+                      </template>
+                      <template v-else>
+                        Passif permanent défini par le schéma API (<code>passiveKind</code> + éventuellement <code>value</code>).
+                      </template>
                     </p>
                     <template v-if="!isPermanentPassiveSkill(sk)">
                       <label>Trigger
@@ -230,9 +249,23 @@
                     </template>
                     <template v-else>
                       <label>Kind permanent
-                        <select v-model="sk.passiveKind">
+                        <select v-model="sk.passiveKind" @change="onPermanentPassiveKindChange(sk as PassiveSkill)">
                           <option v-for="k in passivePermanentKindOptions" :key="k" :value="k">{{ k }}</option>
                         </select>
+                      </label>
+                      <label
+                        v-if="(sk as PassiveSkill).passiveKind === 'STEEL' || (sk as PassiveSkill).passiveKind === 'MULTI_HIT_SHIELD'"
+                        class="passive-value-field"
+                      >
+                        Valeur
+                        <input
+                          v-model.number="(sk as PassiveSkill).value"
+                          type="number"
+                          min="0"
+                          step="any"
+                          class="input-inline"
+                          :placeholder="(sk as PassiveSkill).passiveKind === 'STEEL' ? 'ex. 15 (15 %)' : 'ex. 3'"
+                        />
                       </label>
                     </template>
                   </template>
@@ -322,6 +355,9 @@
                   DOT : +<code>valuePerRemoved</code> × STRIP = stacks supplémentaires. ANTI_BUFF : bonus de <code>remainingActions</code> (tours) × strip.
                   Pour les bonus CLEANSE, garder <code>scaleMetric</code> = <code>removedCount</code> (défaut).
                 </p>
+                <p v-if="String(eff.type ?? '').toUpperCase() === 'RESURRECT'" class="effect-fixed-value-msg">
+                  <strong>Résurrection :</strong> <code>target</code> = <code>ALLY_DEAD_SINGLE</code> (un allié mort) ou <code>TEAM_ALLY_DEAD</code> (tous les alliés morts).
+                </p>
               </template>
                   </div>
                 </div>
@@ -346,6 +382,14 @@
                     <span class="preview-label">passiveKind</span>
                     <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('passiveKind') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.passiveKind }}</span>
                     <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('passiveKind')" class="badge-spec">(modifié par spécialisation)</span>
+                  </div>
+                  <div
+                    v-if="['STEEL', 'MULTI_HIT_SHIELD'].includes(String(finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.passiveKind ?? '').toUpperCase())"
+                    class="preview-row"
+                  >
+                    <span class="preview-label">value</span>
+                    <span :class="{ 'modified-by-spec': finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('value') }">{{ finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.final?.value ?? '—' }}</span>
+                    <span v-if="finalSkillPreviews[(sk?.id ?? '').toString().trim()]?.modifiedKeys?.has('value')" class="badge-spec">(modifié par spécialisation)</span>
                   </div>
                   <div class="preview-row">
                     <span class="preview-label">Trigger</span>
@@ -414,7 +458,7 @@
           <span class="section-badge section-badge-a">Spécialisation A</span>
           <h4>Spec A — Modification de compétence</h4>
           <div v-if="form.specA_skill_modifier.targetSkillId && !form.skills.some(s => (s.id ?? '').toString().trim() === form.specA_skill_modifier.targetSkillId.trim())" class="errors spec-validation-msg">⚠ Cette spécialisation cible une compétence inexistante.</div>
-          <div v-if="(form.specA_skill_modifier.modify?.effects?.length || typeof form.specA_skill_modifier.modify?.cd_actions === 'number' || typeof form.specA_skill_modifier.modify?.cooldown === 'number' || (form.specA_skill_modifier.modify?.trigger ?? '').trim() || (form.specA_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specA_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
+          <div v-if="(form.specA_skill_modifier.modify?.effects?.length || typeof form.specA_skill_modifier.modify?.cd_actions === 'number' || typeof form.specA_skill_modifier.modify?.cooldown === 'number' || typeof form.specA_skill_modifier.modify?.value === 'number' || (form.specA_skill_modifier.modify?.trigger ?? '').trim() || (form.specA_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specA_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
           <label>Compétence ciblée
             <select v-model="form.specA_skill_modifier.targetSkillId">
               <option value="">—</option>
@@ -448,6 +492,12 @@
               </label>
               <label>Modifier cooldown
                 <input type="number" v-model.number="form.specA_skill_modifier.modify.cooldown" />
+              </label>
+              <label
+                v-if="['STEEL', 'MULTI_HIT_SHIELD'].includes(String(form.specA_skill_modifier.modify?.passiveKind ?? '').toUpperCase())"
+              >
+                Modifier valeur (STEEL / MULTI_HIT_SHIELD)
+                <input type="number" v-model.number="form.specA_skill_modifier.modify.value" step="any" />
               </label>
             </div>
           </template>
@@ -513,6 +563,9 @@
               >
                 Buffs débuffs chaînés : indices = cette liste spé.
               </p>
+              <p v-if="String(eff.type ?? '').toUpperCase() === 'RESURRECT'" class="effect-fixed-value-msg">
+                <strong>Résurrection :</strong> <code>ALLY_DEAD_SINGLE</code> ou <code>TEAM_ALLY_DEAD</code> (tous les morts).
+              </p>
             </template>
           </div>
         </div>
@@ -520,7 +573,7 @@
           <span class="section-badge section-badge-b">Spécialisation B</span>
           <h4>Spec B — Modification de compétence</h4>
           <div v-if="form.specB_skill_modifier.targetSkillId && !form.skills.some(s => (s.id ?? '').toString().trim() === form.specB_skill_modifier.targetSkillId.trim())" class="errors spec-validation-msg">⚠ Cette spécialisation cible une compétence inexistante.</div>
-          <div v-if="(form.specB_skill_modifier.modify?.effects?.length || typeof form.specB_skill_modifier.modify?.cd_actions === 'number' || typeof form.specB_skill_modifier.modify?.cooldown === 'number' || (form.specB_skill_modifier.modify?.trigger ?? '').trim() || (form.specB_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specB_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
+          <div v-if="(form.specB_skill_modifier.modify?.effects?.length || typeof form.specB_skill_modifier.modify?.cd_actions === 'number' || typeof form.specB_skill_modifier.modify?.cooldown === 'number' || typeof form.specB_skill_modifier.modify?.value === 'number' || (form.specB_skill_modifier.modify?.trigger ?? '').trim() || (form.specB_skill_modifier.modify?.passiveKind ?? '').trim()) && !form.specB_skill_modifier.targetSkillId?.trim()" class="errors spec-validation-msg">⚠ Spécialisation sans compétence ciblée : choisir une compétence ou vider les modifications.</div>
           <label>Compétence ciblée
             <select v-model="form.specB_skill_modifier.targetSkillId">
               <option value="">—</option>
@@ -554,6 +607,12 @@
               </label>
               <label>Modifier cooldown
                 <input type="number" v-model.number="form.specB_skill_modifier.modify.cooldown" />
+              </label>
+              <label
+                v-if="['STEEL', 'MULTI_HIT_SHIELD'].includes(String(form.specB_skill_modifier.modify?.passiveKind ?? '').toUpperCase())"
+              >
+                Modifier valeur (STEEL / MULTI_HIT_SHIELD)
+                <input type="number" v-model.number="form.specB_skill_modifier.modify.value" step="any" />
               </label>
             </div>
           </template>
@@ -618,6 +677,9 @@
                 class="effect-fixed-value-msg"
               >
                 Buffs débuffs chaînés : indices = cette liste spé.
+              </p>
+              <p v-if="String(eff.type ?? '').toUpperCase() === 'RESURRECT'" class="effect-fixed-value-msg">
+                <strong>Résurrection :</strong> <code>ALLY_DEAD_SINGLE</code> ou <code>TEAM_ALLY_DEAD</code> (tous les morts).
               </p>
             </template>
           </div>
@@ -742,6 +804,8 @@ type PassiveSkill = {
   description?: string;
   /** Passif permanent : immunisation (débuffs, STRIP, −ATB, max CD, vol stat). Pas de trigger ni effets requis. */
   passiveKind?: string;
+  /** STEEL : % réduction dégâts ; MULTI_HIT_SHIELD : nombre de sources absorbées par tour (reset début de tour). */
+  value?: number;
   cooldown?: number;
   effects: Record<string, any>[];
 };
@@ -755,6 +819,7 @@ type SpecSkillModifier = {
     trigger?: string;
     cooldown?: number;
     passiveKind?: string;
+    value?: number;
   };
 };
 
@@ -781,6 +846,7 @@ function fillSpecModifyFromSkill(spec: 'A' | 'B') {
     cooldown: skill.type === 'PASSIVE' ? ((skill as { cooldown?: number }).cooldown ?? undefined) : undefined,
     trigger: skill.type === 'PASSIVE' ? ((skill as { trigger?: string }).trigger ?? undefined) : undefined,
     passiveKind: skill.type === 'PASSIVE' ? ((skill as { passiveKind?: string }).passiveKind ?? undefined) : undefined,
+    value: skill.type === 'PASSIVE' ? ((skill as PassiveSkill).value ?? undefined) : undefined,
     cd_actions: skill.type === 'ACTIVE' ? ((skill as { cd_actions?: number }).cd_actions ?? undefined) : undefined,
     effects: deepClone(skill.effects) ?? []
   };
@@ -826,6 +892,7 @@ function applySpecModifierFrontend(
     if (pk) (clone as { passiveKind?: string }).passiveKind = pk;
     else delete (clone as { passiveKind?: string }).passiveKind;
   }
+  if (typeof modify.value === 'number') (clone as PassiveSkill).value = modify.value;
   if (Array.isArray(modify.effects)) clone.effects = modify.effects;
   if (clone.type === 'PASSIVE' && isPermanentPassiveKindString(String((clone as { passiveKind?: string }).passiveKind ?? ''))) {
     delete clone.trigger;
@@ -847,6 +914,7 @@ function onPassiveModeChange(sk: FormSkill, mode: string) {
     p.passiveKind = (fromSchema && fromSchema.length > 0 ? fromSchema[0] : null) || 'DEBUFF_IMMUNITY';
     p.trigger = '';
     p.effects = [];
+    onPermanentPassiveKindChange(p);
   } else {
     delete (p as { passiveKind?: string }).passiveKind;
     if (p.trigger === undefined) p.trigger = '';
@@ -1101,14 +1169,22 @@ const passivePermanentKindOptions = computed(() => {
   return ['DEBUFF_IMMUNITY'] as string[];
 });
 
-/** Types de buff uniquement (exclut les debuffs) pour le select buffType quand type = APPLY_BUFF. */
+/**
+ * Select buffType pour APPLY_BUFF : on retire les entrées listées aussi en DEBUFF_TYPES
+ * (pour éviter doublon avec APPLY_DEBUFF), sauf DEATH_MARK qui est supporté des deux côtés
+ * et doit rester choisissable en APPLY_BUFF + buffType.
+ */
 const buffOnlyTypes = computed(() => {
   const buf = schema.value?.BUFF_TYPES as string[] | undefined;
   const deb = schema.value?.DEBUFF_TYPES as string[] | undefined;
   if (!buf || !Array.isArray(buf)) return [];
   if (!deb || !Array.isArray(deb)) return buf;
   const debSet = new Set(deb.map((d: string) => String(d).toUpperCase()));
-  return buf.filter((b: string) => !debSet.has(String(b).toUpperCase()));
+  return buf.filter((b: string) => {
+    const u = String(b).toUpperCase();
+    if (u === 'DEATH_MARK') return true;
+    return !debSet.has(u);
+  });
 });
 
 const stealableStats = computed(() => {
@@ -1147,7 +1223,10 @@ function skillLabel(sk: FormSkill): string {
   if (sk.type === 'PASSIVE') {
     if (isPermanentPassiveSkill(sk)) {
       const pk = (sk as PassiveSkill).passiveKind ?? '?';
-      return `${id} — ${typeStr} — ${pk} (permanent) — ${n} ${eff}`;
+      const v = (sk as PassiveSkill).value;
+      const valStr =
+        (pk === 'STEEL' || pk === 'MULTI_HIT_SHIELD') && v != null && !Number.isNaN(Number(v)) ? ` value=${v}` : '';
+      return `${id} — ${typeStr} — ${pk} (permanent)${valStr} — ${n} ${eff}`;
     }
     const trigger = (sk as PassiveSkill).trigger ?? '—';
     const cd = (sk as PassiveSkill).cooldown ?? 0;
@@ -1178,6 +1257,7 @@ const finalSkillPreviews = computed(() => {
         if ((next as { passiveKind?: string }).passiveKind !== (base as { passiveKind?: string }).passiveKind) {
           modifiedKeys.add('passiveKind');
         }
+        if ((next as PassiveSkill).value !== (base as PassiveSkill).value) modifiedKeys.add('value');
         base = next;
       }
     };
@@ -1209,6 +1289,7 @@ const hasInvalidSpecializations = computed(() => {
       (Array.isArray(m.effects) && m.effects.length > 0) ||
       typeof m.cd_actions === 'number' ||
       typeof m.cooldown === 'number' ||
+      typeof m.value === 'number' ||
       (typeof m.trigger === 'string' && (m.trigger ?? '').trim() !== '') ||
       (typeof m.passiveKind === 'string' && (m.passiveKind ?? '').trim() !== '')
     );
@@ -1237,6 +1318,7 @@ const hasInvalidSkills = computed(() => {
       (Array.isArray(m.effects) && m.effects.length > 0) ||
       typeof m.cd_actions === 'number' ||
       typeof m.cooldown === 'number' ||
+      typeof m.value === 'number' ||
       (typeof m.trigger === 'string' && m.trigger.trim()) ||
       (typeof m.passiveKind === 'string' && m.passiveKind.trim())
     );
@@ -1381,6 +1463,42 @@ function addDebuffImmunityPassive() {
     description: ''
   };
   form.value.skills.push(p);
+}
+
+function addSteelPassive() {
+  const id = generateSkillId();
+  const p: PassiveSkill = {
+    id,
+    type: 'PASSIVE',
+    passiveKind: 'STEEL',
+    value: 15,
+    trigger: '',
+    cooldown: 0,
+    effects: [],
+    description: ''
+  };
+  form.value.skills.push(p);
+}
+
+function addMultiHitShieldPassive() {
+  const id = generateSkillId();
+  const p: PassiveSkill = {
+    id,
+    type: 'PASSIVE',
+    passiveKind: 'MULTI_HIT_SHIELD',
+    value: 3,
+    trigger: '',
+    cooldown: 0,
+    effects: [],
+    description: ''
+  };
+  form.value.skills.push(p);
+}
+
+function onPermanentPassiveKindChange(p: PassiveSkill) {
+  const k = String(p.passiveKind ?? '').toUpperCase();
+  if (k === 'STEEL' && (p.value == null || Number.isNaN(Number(p.value)))) p.value = 15;
+  if (k === 'MULTI_HIT_SHIELD' && (p.value == null || Number.isNaN(Number(p.value)))) p.value = 3;
 }
 
 function removeSkill(idx: number) {
@@ -2062,7 +2180,8 @@ function buildPayload() {
     }
     const p = s as PassiveSkill;
     if (isPermanentPassiveSkill(p)) {
-      return {
+      const pk = String(p.passiveKind ?? '').toUpperCase();
+      const base: Record<string, unknown> = {
         id: p.id,
         type: 'PASSIVE',
         passiveKind: p.passiveKind,
@@ -2070,6 +2189,11 @@ function buildPayload() {
         effects: [],
         description: p.description ?? ''
       };
+      if ((pk === 'STEEL' || pk === 'MULTI_HIT_SHIELD') && p.value != null) {
+        const v = Number(p.value);
+        if (Number.isFinite(v)) base.value = v;
+      }
+      return base as typeof s;
     }
     return {
       id: s.id,
@@ -2094,6 +2218,7 @@ function buildPayload() {
       (Array.isArray(m.effects) && m.effects.length > 0) ||
       typeof m.cd_actions === 'number' ||
       typeof m.cooldown === 'number' ||
+      (typeof m.value === 'number' && Number.isFinite(m.value)) ||
       (typeof m.trigger === 'string' && m.trigger.trim()) ||
       (typeof m.passiveKind === 'string' && m.passiveKind.trim());
     if (!hasContent) return null;
@@ -2113,6 +2238,9 @@ function buildPayload() {
     }
     if (typeof m.passiveKind === 'string' && m.passiveKind.trim()) {
       payload.modify.passiveKind = m.passiveKind.trim();
+    }
+    if (typeof m.value === 'number' && Number.isFinite(m.value)) {
+      payload.modify.value = m.value;
     }
     return payload;
   }

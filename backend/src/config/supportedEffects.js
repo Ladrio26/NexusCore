@@ -87,16 +87,31 @@ export const SUPPORTED_EFFECTS = {
   }
 };
 
-export const VALID_TARGETS = ['SELF', 'TEAM_ALLY', 'TEAM_ENEMY', 'ENEMY_SINGLE', 'ALLY_SINGLE', 'ALLY_DEAD_SINGLE', 'LOWEST_HP_ALLY'];
+export const VALID_TARGETS = [
+  'SELF',
+  'TEAM_ALLY',
+  'TEAM_ENEMY',
+  'ENEMY_SINGLE',
+  'ALLY_SINGLE',
+  'ALLY_DEAD_SINGLE',
+  'TEAM_ALLY_DEAD',
+  'LOWEST_HP_ALLY'
+];
 
 /** Buffs et debuffs : un seul type APPLY_BUFF avec buffType (debuff = buffType *_DOWN / SLOW / etc.). */
 export const BUFF_TYPES = [
   'ATK_UP', 'DEF_UP', 'SPEED_UP', 'SHIELD', 'DEFEND', 'LIFESTEAL', 'REGEN', 'IMMUNITY', 'INVINCIBILITY', 'COUNTER_ATTACK', 'PROVOKE',
-  'ATK_DOWN', 'DEF_DOWN', 'SLOW', 'SILENCE', 'STUN', 'BLIND', 'ANTI_HEAL', 'ANTI_SHIELD', 'ANTI_BUFF', 'DOT'
+  'ATK_DOWN', 'DEF_DOWN', 'SLOW', 'SILENCE', 'STUN', 'BLIND', 'ANTI_HEAL', 'ANTI_SHIELD', 'ANTI_BUFF', 'DOT',
+  /** APPLY_BUFF + buffType (même schéma que les autres debuffs « buffType »). */
+  'DEATH_MARK'
 ];
 
 /** @deprecated Utiliser BUFF_TYPES pour APPLY_BUFF (debuff = buffType DEF_DOWN etc.). */
-export const DEBUFF_TYPES = ['ATK_DOWN', 'DEF_DOWN', 'SLOW', 'SILENCE', 'STUN', 'BLIND', 'PROVOKE', 'ANTI_HEAL', 'ANTI_SHIELD', 'ANTI_BUFF', 'DOT'];
+export const DEBUFF_TYPES = [
+  'ATK_DOWN', 'DEF_DOWN', 'SLOW', 'SILENCE', 'STUN', 'BLIND', 'PROVOKE', 'ANTI_HEAL', 'ANTI_SHIELD', 'ANTI_BUFF', 'DOT',
+  /** Expire en fin d’action : explosion 90 % PV max si fin naturelle (pas CLEANSE). */
+  'DEATH_MARK'
+];
 
 export const STEALABLE_STATS = ['attack', 'defense', 'speed', 'mastery'];
 
@@ -130,5 +145,7 @@ export const SUPPORTED_TRIGGERS = [
 /**
  * Passif sans déclencheur : permanent sur le terrain (pas d'effet à lister).
  * - DEBUFF_IMMUNITY : immunise aux débuffs, STRIP, réduction d’ATB, SET_SKILL_COOLDOWN_MAX, CD_UP, vol de stat, etc.
+ * - STEEL : value = % réduction des dégâts directs (attaques de base, DAMAGE, etc. ; pas les DoT).
+ * - MULTI_HIT_SHIELD : value = nombre de sources de dégâts absorbées par tour (directs, DoT, etc.) ; réinitialisé au début de chaque tour de l’unité.
  */
-export const PASSIVE_KINDS_PERMANENT = ['DEBUFF_IMMUNITY'];
+export const PASSIVE_KINDS_PERMANENT = ['DEBUFF_IMMUNITY', 'STEEL', 'MULTI_HIT_SHIELD'];

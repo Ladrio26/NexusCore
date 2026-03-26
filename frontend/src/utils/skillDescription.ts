@@ -1,61 +1,92 @@
+import { getMultiSkillDescriptionsForTooltip, getSkillTooltipPlainText } from '@engine/skillDescriptionTooltip.js';
+
 /**
- * Extrait la description textuelle de l'effet de la compétence principale.
- * Priorité 1 : skills[ACTIVE].description (description sur la compétence)
- * Priorité 2 : description.skill (description au niveau racine)
- * Pas de stats ni spécialisations — uniquement le texte descriptif de l'effet.
- * Utilisé pour l'affichage lors des invocations.
+ * Texte complet pour l’UI : entrées skills[] en priorité ; sinon `description.skill` (voir moteur) ;
+ * si l’unité est spécialisée (A/B) : base + **specA/specB** en dessous lorsqu’il existe.
  */
-export function getSkillEffectDescription(skillData: Record<string, unknown> | null | undefined): string {
+export function getUnitSkillDisplayText(
+  skillData: Record<string, unknown> | null | undefined,
+  specialization?: string | null
+): string {
   if (!skillData || typeof skillData !== 'object') return '';
 
-  // 1. Description sur la compétence ACTIVE (skills[].description)
+  const specLetter =
+    specialization != null && String(specialization).trim() !== ''
+      ? String(specialization).toUpperCase()
+      : null;
+
+  let base = getSkillTooltipPlainText(skillData, {}).trim();
+  if (!base) {
+    base = (buildSkillDescriptionFromSkillData(skillData) || '').trim();
+  }
+
+  let specLine = '';
+  if (specLetter === 'A' || specLetter === 'B') {
+    const desc = skillData.description;
+    if (desc && typeof desc === 'object') {
+      const d = desc as Record<string, unknown>;
+      const raw = specLetter === 'A' ? d.specA : d.specB;
+      if (typeof raw === 'string' && raw.trim()) {
+        specLine = normalizeSkillDescription(raw.trim());
+      }
+    }
+  }
+
+  if (specLine) {
+    if (base) {
+      if (base === specLine) return normalizeSkillDescription(base);
+      /** Ne pas passer le tout dans normalizeSkillDescription : les \n\n seraient effacés (\s{2,}). */
+      const baseNorm = normalizeSkillDescription(base);
+      return baseNorm ? `${baseNorm}\n\n${specLine}` : specLine;
+    }
+    return specLine;
+  }
+
+  if (base) return normalizeSkillDescription(base);
+  return '';
+}
+
+/**
+ * Description liée aux capacités (skills[]) en priorité ; sinon spé A/B ; sinon `description.skill`.
+ */
+export function getSkillEffectDescription(
+  skillData: Record<string, unknown> | null | undefined,
+  opts?: { specialization?: 'A' | 'B' | null }
+): string {
+  if (!skillData || typeof skillData !== 'object') return '';
+
   const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
-  const active = skills.find((s: unknown) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE') as Record<string, unknown> | undefined;
+  const active = skills.find(
+    (s: unknown) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE'
+  ) as Record<string, unknown> | undefined;
   if (active) {
     const d = active.description;
     if (typeof d === 'string' && d.trim()) return normalizeSkillDescription(d.trim());
   }
 
-  // 2. Fallback : description.skill au niveau racine
   const desc = skillData.description;
   if (desc && typeof desc === 'object') {
     const d = desc as Record<string, unknown>;
-    const skill = d.skill;
-    if (typeof skill === 'string' && skill.trim()) return normalizeSkillDescription(skill.trim());
+    const spec = opts?.specialization;
+    if (spec === 'A' && typeof d.specA === 'string' && d.specA.trim()) {
+      return normalizeSkillDescription(d.specA.trim());
+    }
+    if (spec === 'B' && typeof d.specB === 'string' && d.specB.trim()) {
+      return normalizeSkillDescription(d.specB.trim());
+    }
+    if (typeof d.skill === 'string' && d.skill.trim()) {
+      return normalizeSkillDescription(d.skill.trim());
+    }
   }
   return '';
 }
 
 /**
- * Uniquement le champ « Description sort principal » (skill_data.description.skill),
- * sans fallback sur specA/specB ni sur la 1re compétence ACTIVE.
- */
-export function getMainSkillSortDescription(skillData: Record<string, unknown> | null | undefined): string {
-  if (!skillData || typeof skillData !== 'object') return '';
-  const desc = skillData.description;
-  if (desc && typeof desc === 'object') {
-    const d = desc as Record<string, unknown>;
-    if (typeof d.skill === 'string' && d.skill.trim()) return d.skill.trim();
-  }
-  return '';
-}
-
-/**
- * Construit une description de compétence depuis skill_data (fallback côté client).
- * Même logique que getSkillDescriptionForTooltip backend.
+ * Construit une description de compétence depuis skill_data (fallback synthétique uniquement).
+ * N’utilise pas description.skill (texte générique).
  */
 export function buildSkillDescriptionFromSkillData(skillData: Record<string, unknown> | null | undefined): string {
   if (!skillData || typeof skillData !== 'object') return '';
-  const desc = skillData.description;
-  if (desc && typeof desc === 'object') {
-    const d = desc as Record<string, unknown>;
-    const skill = d.skill;
-    if (typeof skill === 'string' && skill.trim()) return skill.trim();
-    const specA = d.specA;
-    if (typeof specA === 'string' && specA.trim()) return specA.trim();
-    const specB = d.specB;
-    if (typeof specB === 'string' && specB.trim()) return specB.trim();
-  }
   const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
   const active = skills.find((s: unknown) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE') as Record<string, unknown> | undefined;
   const skillObj = active ?? (skillData.skill as Record<string, unknown>) ?? (skillData.basic as Record<string, unknown>) ?? skillData;
@@ -91,40 +122,12 @@ export function buildSkillDescriptionFromSkillData(skillData: Record<string, unk
 }
 
 /**
- * Bestiaire : si au moins 2 compétences ACTIVE/PASSIVE dans `skills[]`,
- * affiche le texte de chaque entrée (`description` par compétence), sans utiliser
- * `description.skill` (description globale « sort principal »).
- * Retourne une chaîne vide si la condition n’est pas remplie (comportement legacy ailleurs).
+ * Bestiaire : même logique que le combat (skills[] + passifs legacy `passives`).
+ * Si ≥2 entrées ACTIVE/PASSIVE pertinentes, texte par compétence ; sinon chaîne vide.
  */
 export function getBestiaryMultiSkillDescriptions(skillData: Record<string, unknown> | null | undefined): string {
   if (!skillData || typeof skillData !== 'object') return '';
-  const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
-  const relevant = skills.filter(
-    (s): s is Record<string, unknown> =>
-      s != null &&
-      typeof s === 'object' &&
-      ['ACTIVE', 'PASSIVE'].includes(String((s as Record<string, unknown>).type ?? '').toUpperCase())
-  );
-  if (relevant.length < 2) return '';
-
-  const parts: string[] = [];
-  for (const sk of relevant) {
-    const type = String(sk.type ?? '').toUpperCase();
-    const sameType = relevant.filter((s) => String(s.type ?? '').toUpperCase() === type);
-    const idxInType = sameType.indexOf(sk);
-    const base = type === 'PASSIVE' ? 'Passif' : 'Compétence active';
-    const label = sameType.length > 1 ? `${base} (${idxInType + 1})` : base;
-
-    const raw = sk.description;
-    let body = '';
-    if (typeof raw === 'string' && raw.trim()) {
-      body = normalizeSkillDescription(raw.trim());
-    } else {
-      body = buildSkillDescriptionFromSkillData({ skill: sk }) || '—';
-    }
-    parts.push(`${label}\n${body}`);
-  }
-  return parts.join('\n\n');
+  return getMultiSkillDescriptionsForTooltip(skillData) || '';
 }
 
 /**

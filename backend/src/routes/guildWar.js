@@ -32,7 +32,7 @@ import {
   getUnitsForGuildWarPresets
 } from '../services/guildWarService.js';
 import { query } from '../config/db.js';
-import { computeScaledStats } from '../../core/combatEngine.js';
+import { computeScaledStats } from '../../../core/combatEngine.js';
 
 function sendWarError(reply, err) {
   const code = String(err?.code ?? '');
