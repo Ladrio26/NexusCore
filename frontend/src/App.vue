@@ -33,7 +33,7 @@
         <router-link to="/team-builder" class="menu-item" @click="sidebarOpen = false">Mes Equipes</router-link>
         <router-link to="/rest-center" class="menu-item" @click="sidebarOpen = false">Centre de Repos</router-link>
         <router-link to="/sanctuary" class="menu-item menu-item-with-indicator" @click="sidebarOpen = false">
-          <span>Sanctuaire</span>
+          <span>Sanctuaires</span>
           <span v-if="hasSanctuaryNotification" class="menu-item-indicator" aria-label="Invocation disponible" title="Invocation disponible" />
         </router-link>
         <router-link to="/artifacts" class="menu-item" @click="sidebarOpen = false">Artefacts</router-link>
