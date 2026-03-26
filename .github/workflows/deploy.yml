@@ -53,9 +53,12 @@ jobs:
             npm install
             npm run build
 
-            echo "🔄 Restart (zero downtime)..."
+            echo "🔄 Restart app..."
+
+            cd /root/web/src/nexuscore.goodloss.fr
             pm2 delete all || true
-            pm2 start backend/src/index.js --name nexuscore-backend
+            pm2 start backend/src/app.js --name nexuscore-backend
+            pm2 save
 
             echo "✅ Deploy finished"
           EOF
