@@ -51,7 +51,7 @@
         </div>
         <router-link to="/classement" class="menu-item" @click="sidebarOpen = false">Classement</router-link>
         <router-link to="/bestiaire" class="menu-item" @click="sidebarOpen = false">Bestiaire</router-link>
-        <router-link to="/faq" class="menu-item" @click="sidebarOpen = false">FAQ</router-link>
+        <router-link to="/faq" class="menu-item" @click="sidebarOpen = false">F.A.Q</router-link>
         <router-link to="/news" class="menu-item menu-item-news menu-item-with-indicator" @click="sidebarOpen = false">
           <span>📰 News</span>
           <span v-if="hasNewsNotification" class="menu-item-indicator" aria-label="Nouvelle actualité" title="Nouvelle actualité" />
