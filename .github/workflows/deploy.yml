@@ -32,7 +32,6 @@ jobs:
 
           # 🔥 Ajout des clés hôtes (FIX host key verification)
           ssh-keyscan -p ${{ secrets.BASTION_PORT }} ${{ secrets.BASTION_HOST }} >> ~/.ssh/known_hosts
-          ssh-keyscan ${{ secrets.TARGET_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy to server
         run: |
