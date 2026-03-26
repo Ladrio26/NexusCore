@@ -57,15 +57,13 @@
           <div
             v-for="unit in collectionCAC"
             :key="unit.user_unit_id"
-            class="unit-card nx-card unit-card-clickable"
+            class="unit-card nx-card unit-card-clickable unit-card-collection"
             :class="[
               'rarity-' + (unit.rarity || 'common'),
               'element-' + (unit.element || 'neutral'),
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
-              { selected: selectedUnitId === unit.user_unit_id },
-              { 'unit-card-has-image': getUnitImageUrl(unit) }
+              { selected: selectedUnitId === unit.user_unit_id }
             ]"
-            :style="unitCardBgStyle(unit)"
             :title="unitTooltip(unit)"
             @click="addUnitToTeam(unit)"
           >
@@ -81,21 +79,29 @@
               <span class="level">Niv.{{ unit.level ?? 1 }}</span>
               <span class="badge nx-badge power">P{{ unit.power_level ?? 1 }}</span>
               <span class="badge nx-badge element" :class="'element-' + (unit.element || 'neutral')">{{ elementLabel(unit.element) }}</span>
+              <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
               <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
               <span v-if="unit.specialization" class="badge nx-badge spec" :class="'spec-' + String(unit.specialization).toUpperCase()">{{ unit.specialization }}</span>
+              <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
             </div>
-            <div class="unit-stats">
+            <div class="unit-combat-row" title="Score puissance (formule théorie)">
+              <span class="unit-combat-label">Puissance</span>
+              <span class="unit-combat-value">{{ computeUnitPower(unit).toLocaleString('fr-FR') }}</span>
+              <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+            </div>
+            <div class="unit-stats unit-stats-collection">
               <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
               <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
               <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
-              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
+              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
             </div>
             <div v-if="unitSkillDisplayText(unit)" class="unit-skill">⚡ {{ unitSkillDisplayText(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
               </div>
+              <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
               <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
             </div>
             <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
@@ -110,15 +116,13 @@
           <div
             v-for="unit in collectionDistance"
             :key="unit.user_unit_id"
-            class="unit-card nx-card unit-card-clickable"
+            class="unit-card nx-card unit-card-clickable unit-card-collection"
             :class="[
               'rarity-' + (unit.rarity || 'common'),
               'element-' + (unit.element || 'neutral'),
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
-              { selected: selectedUnitId === unit.user_unit_id },
-              { 'unit-card-has-image': getUnitImageUrl(unit) }
+              { selected: selectedUnitId === unit.user_unit_id }
             ]"
-            :style="unitCardBgStyle(unit)"
             :title="unitTooltip(unit)"
             @click="addUnitToTeam(unit)"
           >
@@ -134,21 +138,29 @@
               <span class="level">Niv.{{ unit.level ?? 1 }}</span>
               <span class="badge nx-badge power">P{{ unit.power_level ?? 1 }}</span>
               <span class="badge nx-badge element" :class="'element-' + (unit.element || 'neutral')">{{ elementLabel(unit.element) }}</span>
+              <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
               <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
               <span v-if="unit.specialization" class="badge nx-badge spec" :class="'spec-' + String(unit.specialization).toUpperCase()">{{ unit.specialization }}</span>
+              <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
             </div>
-            <div class="unit-stats">
+            <div class="unit-combat-row" title="Score puissance (formule théorie)">
+              <span class="unit-combat-label">Puissance</span>
+              <span class="unit-combat-value">{{ computeUnitPower(unit).toLocaleString('fr-FR') }}</span>
+              <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+            </div>
+            <div class="unit-stats unit-stats-collection">
               <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
               <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
               <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
               <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
-              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (-{{ speedReductionPercent(unit) }}%)</span>
+              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
             </div>
             <div v-if="unitSkillDisplayText(unit)" class="unit-skill">⚡ {{ unitSkillDisplayText(unit) }}</div>
             <div class="fatigue-row">
               <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
                 <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
               </div>
+              <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
               <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
             </div>
             <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
@@ -161,7 +173,7 @@
       <!-- Preset Builder -->
       <div class="preset-column nexus-panel nx-panel builder-zone builder-zone-wrap" id="presetBuilder">
         <div class="builder-zone-halo" aria-hidden="true" />
-        <div class="builder-sticky-block">
+        <div class="preset-builder-body">
         <div class="panel-header builder-header">
           <h2 class="panel-title nx-title">Équipe <span class="team-count">{{ teamUnits.length }}/{{ MAX_TEAM_UNITS }}</span></h2>
           <div class="power-badge power-badge-epic nx-glow-blue">
@@ -376,25 +388,45 @@
           </div>
         </div>
 
-        <!-- Tous les traits de l'équipe (actifs et non actifs) -->
-        <div class="traits-container">
-          <div
-            v-for="trait in traitDisplay"
-            :key="trait.name"
-            class="trait-card"
-            :class="trait.frameTierClass"
-            @mouseenter="onTraitCardEnter(trait.name, $event)"
-            @mouseleave="hoveredTrait = null; hoveredTraitTarget = null"
-            @click="onTraitCardEnter(trait.name, $event)"
-          >
-            <span class="trait-card-content" :class="{ inactive: !trait.isActive, zero: trait.count === 0 }">
-              <div class="trait-name">
+        <!-- Traits d'équipe : actifs mis en avant, puis grille complète -->
+        <div class="traits-team-section">
+          <h3 class="traits-section-title">Traits de l'équipe</h3>
+          <div v-if="activeTeamTraits.length" class="traits-active-strip">
+            <span class="traits-active-label">Actifs</span>
+            <div class="traits-active-chips">
+              <span
+                v-for="trait in activeTeamTraits"
+                :key="'a-' + trait.name"
+                class="trait-chip-active"
+                @mouseenter="onTraitCardEnter(trait.name, $event)"
+                @mouseleave="hoveredTrait = null; hoveredTraitTarget = null"
+                @click="onTraitCardEnter(trait.name, $event)"
+              >
                 {{ toTraitFr(trait.name) }}
-              </div>
-              <div class="trait-level">
-                {{ trait.progressNum }} / {{ trait.progressDen }}
-              </div>
-            </span>
+                <span class="trait-chip-count">{{ trait.count }}</span>
+              </span>
+            </div>
+          </div>
+          <p v-else class="traits-none-hint">Aucun palier actif — ajoutez des unités partageant un trait.</p>
+          <div class="traits-container">
+            <div
+              v-for="trait in traitsDisplayOrdered"
+              :key="trait.name"
+              class="trait-card"
+              :class="[trait.frameTierClass, { 'trait-card-active': trait.isActive }]"
+              @mouseenter="onTraitCardEnter(trait.name, $event)"
+              @mouseleave="hoveredTrait = null; hoveredTraitTarget = null"
+              @click="onTraitCardEnter(trait.name, $event)"
+            >
+              <span class="trait-card-content" :class="{ inactive: !trait.isActive, zero: trait.count === 0 }">
+                <div class="trait-name">
+                  {{ toTraitFr(trait.name) }}
+                </div>
+                <div class="trait-level">
+                  {{ trait.progressNum }} / {{ trait.progressDen }}
+                </div>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1198,6 +1230,21 @@ const traitDisplay = computed(() => {
   });
 });
 
+/** Traits dont l'équipe a au moins un palier actif (lisibles en un coup d'œil). */
+const activeTeamTraits = computed(() =>
+  traitDisplay.value.filter((t) => t.isActive && t.count > 0)
+);
+
+/** Grille des traits : actifs en premier, puis par nom. */
+const traitsDisplayOrdered = computed(() => {
+  const list = [...traitDisplay.value];
+  list.sort((a, b) => {
+    if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+    return toTraitFr(a.name).localeCompare(toTraitFr(b.name), 'fr');
+  });
+  return list;
+});
+
 async function loadCollection() {
   loading.value = true;
   errorMessage.value = '';
@@ -1480,7 +1527,7 @@ onMounted(() => {
 
 @media (max-width: 1400px) {
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   }
 }
 
@@ -1492,7 +1539,7 @@ onMounted(() => {
     grid-column: 1;
   }
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   }
   .collection-columns.view-mode-list {
     grid-template-columns: 1fr;
@@ -1576,8 +1623,8 @@ onMounted(() => {
 
 .collection-header {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 10px;
   flex-shrink: 0;
   align-items: center;
   flex-wrap: wrap;
@@ -1718,20 +1765,20 @@ onMounted(() => {
   min-height: 0;
   background: rgba(5, 10, 20, 0.3);
   border-radius: 12px;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid rgba(0, 255, 200, 0.1);
 }
 
 .unit-column-title-enhanced {
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   font-weight: 800;
   color: #f8fafc;
-  margin: 0 0 16px 0;
+  margin: 0 0 10px 0;
   letter-spacing: 0.5px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
   border-bottom: 2px solid rgba(0, 255, 200, 0.2);
 }
 
@@ -1775,15 +1822,15 @@ onMounted(() => {
 
 .unit-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
   align-content: start;
 }
 
 .unit-list-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .nexus-panel {
@@ -1802,15 +1849,12 @@ onMounted(() => {
   min-height: 0;
 }
 
-.builder-sticky-block {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  margin: -6px -8px 0;
-  padding: 8px 8px 10px;
-  background: linear-gradient(180deg, rgba(10, 15, 30, 0.97) 0%, rgba(10, 15, 30, 0.92) 85%, transparent 100%);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid rgba(0, 255, 200, 0.12);
+/* Bloc preset (slots + en-tête) : flux normal pour que noyau / traits ne passent pas sous un calque sticky */
+.preset-builder-body {
+  flex-shrink: 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(0, 255, 200, 0.1);
+  margin-bottom: 8px;
 }
 
 .panel-header {
@@ -1960,39 +2004,46 @@ onMounted(() => {
   color: #fca5a5;
 }
 
-.unit-list-grid .unit-card {
+.unit-list-grid .unit-card.unit-card-collection {
   margin-bottom: 0;
-  padding: 10px 12px;
-  gap: 6px;
-  font-size: 0.85rem;
+  padding: 12px 14px;
+  gap: 8px;
+  font-size: 0.9rem;
+  min-height: 9.5rem;
 }
 
-.unit-list-grid .unit-name {
-  font-size: 1rem;
+.unit-list-grid .unit-card.unit-card-collection .unit-name {
+  font-size: 1.05rem;
 }
 
-.unit-list-grid .unit-meta {
-  font-size: 0.78rem;
-  gap: 6px;
-}
-
-.unit-list-grid .unit-stats {
-  padding: 6px 8px;
+.unit-list-grid .unit-card.unit-card-collection .unit-meta {
   font-size: 0.82rem;
-  gap: 4px 8px;
+  gap: 6px;
 }
 
-.unit-list-grid .unit-skill {
+.unit-list-grid .unit-card.unit-card-collection .unit-stats-collection {
+  padding: 8px 10px;
+  font-size: 0.88rem;
+  gap: 6px 10px;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .unit-skill {
+  font-size: 0.84rem;
+  padding: 7px 9px;
+  line-height: 1.4;
+}
+
+.unit-list-grid .unit-card.unit-card-collection .traits {
   font-size: 0.8rem;
-  padding: 6px 8px;
+  padding: 7px 9px;
+  max-height: 5.2em;
+  overflow-y: auto;
   line-height: 1.35;
 }
 
-.unit-list-grid .traits {
-  font-size: 0.78rem;
-  padding: 6px 8px;
-  max-height: 4.5em;
-  overflow-y: auto;
+.unit-list-list .unit-card.unit-card-collection {
+  padding: 12px 14px;
+  gap: 8px;
 }
 
 .unit-list-list .unit-card {
@@ -2036,6 +2087,88 @@ onMounted(() => {
 .unit-card.unit-card-has-image .traits {
   position: relative;
   z-index: 1;
+}
+
+/* Collection (gauche) : pas d'image de fond — lisibilité max pour théorycraft */
+.unit-card.unit-card-collection {
+  background: rgba(15, 23, 42, 0.92);
+  border-width: 2px;
+}
+
+.unit-card.unit-card-collection .rarity-bar,
+.unit-card.unit-card-collection .unit-card-header,
+.unit-card.unit-card-collection .unit-meta,
+.unit-card.unit-card-collection .unit-combat-row,
+.unit-card.unit-card-collection .unit-stats,
+.unit-card.unit-card-collection .unit-skill,
+.unit-card.unit-card-collection .fatigue-row,
+.unit-card.unit-card-collection .traits {
+  position: relative;
+  z-index: 1;
+}
+
+.unit-stats-collection {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  font-size: 0.92rem;
+  color: #e2e8f0;
+}
+
+.unit-combat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(0, 255, 200, 0.12);
+  font-size: 0.88rem;
+}
+
+.unit-combat-label {
+  color: #94a3b8;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+}
+
+.unit-combat-value {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #fde68a;
+  font-size: 1rem;
+}
+
+.unit-mastery-tag {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #c4b5fd;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.unit-role-tag {
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(51, 65, 85, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fatigue-pct-collection {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  font-weight: 700;
+  min-width: 2.5em;
+  text-align: right;
 }
 
 .rarity-bar {
@@ -2708,11 +2841,14 @@ onMounted(() => {
 }
 
 .noyau-block {
-  margin-top: 12px;
+  position: relative;
+  z-index: 2;
+  margin-top: 4px;
   padding: 10px 12px;
-  background: rgba(30, 41, 59, 0.5);
+  background: rgba(30, 41, 59, 0.88);
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(0, 255, 200, 0.22);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
 }
 
 .noyau-block h3 {
@@ -2835,16 +2971,89 @@ onMounted(() => {
   border-top: 1px solid rgba(165, 180, 252, 0.2);
 }
 
+.traits-team-section {
+  margin-top: 6px;
+}
+
+.traits-section-title {
+  margin: 0 0 8px 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.03em;
+}
+
+.traits-active-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.traits-active-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6ee7b7;
+}
+
+.traits-active-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trait-chip-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(6, 78, 59, 0.55);
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  color: #ecfdf5;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: default;
+}
+
+.trait-chip-active:hover {
+  border-color: rgba(110, 231, 183, 0.85);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.25);
+}
+
+.trait-chip-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  opacity: 0.9;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.traits-none-hint {
+  margin: 0 0 10px 0;
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
 .traits-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: 5px;
-  margin-top: 8px;
-  max-height: min(40vh, 320px);
-  overflow-y: auto;
-  padding-right: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 255, 200, 0.25) rgba(15, 23, 42, 0.5);
+  margin-top: 0;
+  padding-right: 2px;
+}
+
+.trait-card.trait-card-active {
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.12);
 }
 
 .trait-card {
