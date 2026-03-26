@@ -11,44 +11,50 @@ jobs:
 
     steps:
       - name: Setup SSH
-  run: |
-    mkdir -p ~/.ssh
-    echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-    chmod 600 ~/.ssh/id_ed25519
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
-    echo "Host bastion" >> ~/.ssh/config
-    echo "  HostName ${{ secrets.BASTION_HOST }}" >> ~/.ssh/config
-    echo "  User ${{ secrets.BASTION_USER }}" >> ~/.ssh/config
-    echo "  Port ${{ secrets.BASTION_PORT }}" >> ~/.ssh/config
-    echo "  IdentityFile ~/.ssh/id_ed25519" >> ~/.ssh/config
+          # Config bastion
+          echo "Host bastion" >> ~/.ssh/config
+          echo "  HostName ${{ secrets.BASTION_HOST }}" >> ~/.ssh/config
+          echo "  User ${{ secrets.BASTION_USER }}" >> ~/.ssh/config
+          echo "  Port ${{ secrets.BASTION_PORT }}" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/id_ed25519" >> ~/.ssh/config
 
-    echo "Host target" >> ~/.ssh/config
-    echo "  HostName ${{ secrets.TARGET_HOST }}" >> ~/.ssh/config
-    echo "  User ${{ secrets.TARGET_USER }}" >> ~/.ssh/config
-    echo "  ProxyJump bastion" >> ~/.ssh/config
-    echo "  IdentityFile ~/.ssh/id_ed25519" >> ~/.ssh/config
+          # Config target via bastion
+          echo "Host target" >> ~/.ssh/config
+          echo "  HostName ${{ secrets.TARGET_HOST }}" >> ~/.ssh/config
+          echo "  User ${{ secrets.TARGET_USER }}" >> ~/.ssh/config
+          echo "  ProxyJump bastion" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/id_ed25519" >> ~/.ssh/config
 
-    # 🔥 AJOUT IMPORTANT
-    ssh-keyscan -p ${{ secrets.BASTION_PORT }} ${{ secrets.BASTION_HOST }} >> ~/.ssh/known_hosts
-    ssh-keyscan ${{ secrets.TARGET_HOST }} >> ~/.ssh/known_hosts
+          # 🔥 Ajout des clés hôtes (FIX host key verification)
+          ssh-keyscan -p ${{ secrets.BASTION_PORT }} ${{ secrets.BASTION_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan ${{ secrets.TARGET_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy
+      - name: Deploy to server
         run: |
           ssh target << 'EOF'
+            set -e
+
             cd /root/web/src/nexuscore.goodloss.fr
+
+            echo "📥 Pull latest code..."
             git pull origin main
 
-            echo "📦 Backend..."
+            echo "📦 Backend install..."
             cd backend
             npm install --production
 
-            echo "🎨 Frontend..."
+            echo "🎨 Frontend build..."
             cd ../frontend
             npm install
             npm run build
 
-            echo "🔄 Restart..."
+            echo "🔄 Restart (zero downtime)..."
             pm2 reload all || pm2 start ecosystem.config.js
 
-            echo "✅ Done"
+            echo "✅ Deploy finished"
           EOF
