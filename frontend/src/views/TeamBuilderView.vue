@@ -19,7 +19,7 @@
             />
             <select
               v-model="selectedEffectFilter"
-              class="nexus-input effect-filter-select-enhanced"
+              class="effect-filter-select-enhanced"
               title="Filtrer par buff/débuff/effet"
             >
               <option value="">✨ Tous les effets</option>
@@ -161,6 +161,7 @@
       <!-- Preset Builder -->
       <div class="preset-column nexus-panel nx-panel builder-zone builder-zone-wrap" id="presetBuilder">
         <div class="builder-zone-halo" aria-hidden="true" />
+        <div class="builder-sticky-block">
         <div class="panel-header builder-header">
           <h2 class="panel-title nx-title">Équipe <span class="team-count">{{ teamUnits.length }}/{{ MAX_TEAM_UNITS }}</span></h2>
           <div class="power-badge power-badge-epic nx-glow-blue">
@@ -246,14 +247,24 @@
               >
                 <span class="slot-name">{{ slot.name }}</span>
                 <span class="slot-meta">
+                  <span class="badge nx-badge element" :class="'element-' + (slot.element || 'neutral')">{{ elementLabel(slot.element) }}</span>
                   Niv.{{ slot.level }}
+                  <span class="slot-power" title="Puissance unité">P{{ computeUnitPower(slot).toLocaleString('fr-FR') }}</span>
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                   <span v-if="slot.specialization" class="badge nx-badge spec" :class="'spec-' + String(slot.specialization).toUpperCase()">{{ slot.specialization }}</span>
                 </span>
+                <div class="slot-stats-compact" aria-label="Stats rapides">
+                  <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
+                  <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
+                  <span title="Défense">🛡 {{ slot.defense ?? slot.base_defense ?? '—' }}</span>
+                  <span title="Vitesse">⚡ {{ (slot.fatigue ?? 0) > 0 ? effectiveSpeed(slot) : (slot.speed ?? slot.base_speed ?? '—') }}</span>
+                  <span v-if="(slot.mastery ?? 0) > 0" title="Maîtrise">✦ {{ slot.mastery }}</span>
+                </div>
                 <div class="slot-fatigue">
                   <div class="fatigue-bar mini" :class="{ 'fatigue-red': (slot.fatigue ?? 0) > 50 }">
                     <div class="fatigue-fill" :style="{ width: Math.min(100, (slot.fatigue ?? 0)) + '%' }" />
                   </div>
+                  <span class="slot-fatigue-pct" :title="'Fatigue ' + (slot.fatigue ?? 0) + '%'">{{ slot.fatigue ?? 0 }}%</span>
                   <span v-if="(slot.fatigue ?? 0) > 70" class="fatigue-icon">⚠</span>
                 </div>
               </div>
@@ -286,14 +297,24 @@
               >
                 <span class="slot-name">{{ slot.name }}</span>
                 <span class="slot-meta">
+                  <span class="badge nx-badge element" :class="'element-' + (slot.element || 'neutral')">{{ elementLabel(slot.element) }}</span>
                   Niv.{{ slot.level }}
+                  <span class="slot-power" title="Puissance unité">P{{ computeUnitPower(slot).toLocaleString('fr-FR') }}</span>
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                   <span v-if="slot.specialization" class="badge nx-badge spec" :class="'spec-' + String(slot.specialization).toUpperCase()">{{ slot.specialization }}</span>
                 </span>
+                <div class="slot-stats-compact" aria-label="Stats rapides">
+                  <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
+                  <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
+                  <span title="Défense">🛡 {{ slot.defense ?? slot.base_defense ?? '—' }}</span>
+                  <span title="Vitesse">⚡ {{ (slot.fatigue ?? 0) > 0 ? effectiveSpeed(slot) : (slot.speed ?? slot.base_speed ?? '—') }}</span>
+                  <span v-if="(slot.mastery ?? 0) > 0" title="Maîtrise">✦ {{ slot.mastery }}</span>
+                </div>
                 <div class="slot-fatigue">
                   <div class="fatigue-bar mini" :class="{ 'fatigue-red': (slot.fatigue ?? 0) > 50 }">
                     <div class="fatigue-fill" :style="{ width: Math.min(100, (slot.fatigue ?? 0)) + '%' }" />
                   </div>
+                  <span class="slot-fatigue-pct" :title="'Fatigue ' + (slot.fatigue ?? 0) + '%'">{{ slot.fatigue ?? 0 }}%</span>
                   <span v-if="(slot.fatigue ?? 0) > 70" class="fatigue-icon">⚠</span>
                 </div>
               </div>
@@ -301,6 +322,7 @@
               </Transition>
             </div>
           </div>
+        </div>
         </div>
 
         <div
@@ -312,12 +334,20 @@
           <div class="tooltip-title">
             {{ hoveredTeamUnit.name }} (Nv.{{ hoveredTeamUnit.level ?? 1 }})
           </div>
-          <div class="tooltip-meta">{{ elementLabel(hoveredTeamUnit.element) }}</div>
+          <div class="tooltip-meta">
+            {{ elementLabel(hoveredTeamUnit.element) }}
+            · Puissance {{ computeUnitPower(hoveredTeamUnit).toLocaleString('fr-FR') }}
+            · Fatigue {{ hoveredTeamUnit.fatigue ?? 0 }}%
+          </div>
           <div class="tooltip-stats">
-            <div>HP : {{ hoveredTeamUnit.maxHp ?? '—' }} / {{ hoveredTeamUnit.maxHp ?? '—' }}</div>
-            <div>ATQ : {{ hoveredTeamUnit.attack ?? '—' }}</div>
-            <div>DEF : {{ hoveredTeamUnit.defense ?? '—' }}</div>
-            <div>VIT : {{ (hoveredTeamUnit.fatigue ?? 0) > 0 ? effectiveSpeed(hoveredTeamUnit) : (hoveredTeamUnit.speed ?? '—') }}{{ (hoveredTeamUnit.fatigue ?? 0) > 0 ? ` (-${speedReductionPercent(hoveredTeamUnit)}%)` : '' }}</div>
+            <div>PV max : {{ hoveredTeamUnit.maxHp ?? hoveredTeamUnit.base_hp ?? '—' }}</div>
+            <div>ATQ : {{ hoveredTeamUnit.attack ?? hoveredTeamUnit.base_attack ?? '—' }}</div>
+            <div>DEF : {{ hoveredTeamUnit.defense ?? hoveredTeamUnit.base_defense ?? '—' }}</div>
+            <div>
+              VIT : {{ (hoveredTeamUnit.fatigue ?? 0) > 0 ? effectiveSpeed(hoveredTeamUnit) : (hoveredTeamUnit.speed ?? hoveredTeamUnit.base_speed ?? '—')
+              }}{{ (hoveredTeamUnit.fatigue ?? 0) > 0 ? ` (−${speedReductionPercent(hoveredTeamUnit)}% fatigue)` : '' }}
+            </div>
+            <div v-if="(hoveredTeamUnit.mastery ?? 0) > 0">Maîtrise : {{ hoveredTeamUnit.mastery }}</div>
           </div>
           <div v-if="traitsList(hoveredTeamUnit).length" class="tooltip-traits">
             Traits : {{ traitsList(hoveredTeamUnit).map(toTraitFr).join(', ') }}
@@ -1450,7 +1480,7 @@ onMounted(() => {
 
 @media (max-width: 1400px) {
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
 }
 
@@ -1462,7 +1492,7 @@ onMounted(() => {
     grid-column: 1;
   }
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   }
   .collection-columns.view-mode-list {
     grid-template-columns: 1fr;
@@ -1590,8 +1620,15 @@ onMounted(() => {
   min-width: 220px;
   max-width: 300px;
   padding: 12px 16px;
+  padding-right: 40px;
   border-radius: 12px;
-  background: linear-gradient(145deg, rgba(15, 28, 43, 0.95), rgba(10, 20, 35, 0.95));
+  background-color: #0f172a;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M2.5 4.5L6 8l3.5-3.5'/%3E%3C/svg%3E"),
+    linear-gradient(145deg, rgba(15, 28, 43, 0.95), rgba(10, 20, 35, 0.95));
+  background-repeat: no-repeat, no-repeat;
+  background-position: right 14px center, 0 0;
+  background-size: 12px 12px, 100% 100%;
   border: 2px solid rgba(0, 255, 200, 0.2);
   color: #f8fafc;
   font-size: 0.95rem;
@@ -1599,6 +1636,16 @@ onMounted(() => {
   outline: none;
   transition: all 0.3s ease;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  /* Évite fond/texte blanc natif (Chrome / certains OS) dans la liste déroulante */
+  color-scheme: dark;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.effect-filter-select-enhanced option,
+.effect-filter-select-enhanced optgroup {
+  background-color: #0f172a;
+  color: #f1f5f9;
 }
 
 .effect-filter-select-enhanced:focus,
@@ -1650,8 +1697,18 @@ onMounted(() => {
   min-height: 0;
 }
 
-.collection-columns.view-mode-grid {
-  grid-template-columns: 1fr;
+/* Mode grille : CAC + Distance côte à côte sur grand écran pour moins de défilement */
+@media (min-width: 900px) {
+  .collection-columns.view-mode-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+
+@media (max-width: 899px) {
+  .collection-columns.view-mode-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .unit-column {
@@ -1718,8 +1775,8 @@ onMounted(() => {
 
 .unit-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
   align-content: start;
 }
 
@@ -1743,6 +1800,17 @@ onMounted(() => {
   flex-direction: column;
   overflow-y: auto;
   min-height: 0;
+}
+
+.builder-sticky-block {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -6px -8px 0;
+  padding: 8px 8px 10px;
+  background: linear-gradient(180deg, rgba(10, 15, 30, 0.97) 0%, rgba(10, 15, 30, 0.92) 85%, transparent 100%);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(0, 255, 200, 0.12);
 }
 
 .panel-header {
@@ -1849,6 +1917,7 @@ onMounted(() => {
   color: #ffffff;
   font-size: 0.85rem;
   outline: none;
+  color-scheme: dark;
 }
 
 .nexus-select:focus,
@@ -1893,6 +1962,37 @@ onMounted(() => {
 
 .unit-list-grid .unit-card {
   margin-bottom: 0;
+  padding: 10px 12px;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.unit-list-grid .unit-name {
+  font-size: 1rem;
+}
+
+.unit-list-grid .unit-meta {
+  font-size: 0.78rem;
+  gap: 6px;
+}
+
+.unit-list-grid .unit-stats {
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  gap: 4px 8px;
+}
+
+.unit-list-grid .unit-skill {
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  line-height: 1.35;
+}
+
+.unit-list-grid .traits {
+  font-size: 0.78rem;
+  padding: 6px 8px;
+  max-height: 4.5em;
+  overflow-y: auto;
 }
 
 .unit-list-list .unit-card {
@@ -2358,8 +2458,8 @@ onMounted(() => {
 
 .preset-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .team-slots {
@@ -2369,14 +2469,14 @@ onMounted(() => {
 }
 
 .preset-slot {
-  min-height: 72px;
-  padding: 7px;
+  min-height: 0;
+  padding: 5px;
   border-radius: 10px;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
 .team-slot {
-  min-height: 72px;
+  min-height: 88px;
   height: auto;
   border-radius: 10px;
   padding: 7px;
@@ -2463,13 +2563,14 @@ onMounted(() => {
 .slot-unit {
   position: relative;
   border-radius: 10px;
-  padding: 6px 8px;
+  padding: 5px 6px;
   border: 1px solid rgba(148, 163, 184, 0.4);
   width: 100%;
-  min-height: 50px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
+  align-items: stretch;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.2);
 }
 
@@ -2498,6 +2599,7 @@ onMounted(() => {
 
 .slot-unit.slot-unit-has-image .slot-name,
 .slot-unit.slot-unit-has-image .slot-meta,
+.slot-unit.slot-unit-has-image .slot-stats-compact,
 .slot-unit.slot-unit-has-image .slot-fatigue,
 .slot-unit.slot-unit-has-image .slot-targeting {
   position: relative;
@@ -2523,13 +2625,17 @@ onMounted(() => {
 .slot-name {
   display: block;
   font-weight: 700;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .slot-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.25rem;
   font-size: 0.7rem;
   color: rgba(203, 213, 225, 0.85);
@@ -2541,11 +2647,36 @@ onMounted(() => {
   padding: 0.05rem 0.25rem;
 }
 
+.slot-power {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: rgba(250, 204, 21, 0.95);
+  font-size: 0.68rem;
+}
+
+.slot-stats-compact {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 6px;
+  margin-top: 4px;
+  font-size: 0.65rem;
+  line-height: 1.25;
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+
 .slot-fatigue {
   display: flex;
   align-items: center;
   gap: 0.2rem;
   margin-top: 2px;
+}
+
+.slot-fatigue-pct {
+  font-size: 0.62rem;
+  color: rgba(148, 163, 184, 0.95);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2em;
 }
 
 .slot-targeting {
@@ -2706,9 +2837,14 @@ onMounted(() => {
 
 .traits-container {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 5px;
   margin-top: 8px;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 255, 200, 0.25) rgba(15, 23, 42, 0.5);
 }
 
 .trait-card {
