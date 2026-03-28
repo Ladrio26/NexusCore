@@ -1,6 +1,35 @@
 // Gestion des buffs / debuffs non stackables (on ne cumule pas les valeurs
 // d'un même type, on réinitialise la durée en actions de la cible).
 
+/** STUN / PROVOKE / SILENCE — immunisés pour boss (tag, DB, slot boss campagne). */
+const CC_CONTROL_DEBUFF_TYPES = new Set(['STUN', 'PROVOKE', 'SILENCE']);
+
+/** Utilisé par le moteur (onBeforeApplyDebuff) pour aligner les logs « immune » avec applyEffect. */
+export function isControlCcDebuffType(debuffType) {
+  const dt = String(debuffType || '').toUpperCase();
+  return CC_CONTROL_DEBUFF_TYPES.has(dt);
+}
+
+/**
+ * Immunisation permanente au contrôle : STUN, PROVOKE, SILENCE ne s’appliquent pas.
+ * — Unités avec trait `Boss` (traits JSON)
+ * — Unités `is_boss` en base (colonne)
+ * — Unité « boss » de campagne (slot boss_unit_code, même si ce n’est pas un boss BOSS_CH)
+ * — Flag combat `isBoss` (boss de stage)
+ */
+export function unitImmuneToControlCc(target) {
+  if (!target) return false;
+  if (target.permanentControlImmunity === true) return true;
+  if (target.campaignBossSlot === true) return true;
+  if (target.isBoss === true) return true;
+  if (target.is_boss === true || target.is_boss === 1) return true;
+  const traits = target.traits;
+  if (Array.isArray(traits)) {
+    if (traits.some((t) => String(t).toLowerCase() === 'boss')) return true;
+  }
+  return false;
+}
+
 export const EffectType = {
   SILENCE: 'SILENCE',
   PROVOKE: 'PROVOKE',
@@ -143,6 +172,13 @@ export function applyEffect(target, effect) {
   if (!target.alive) return;
   const typeToMatch = effect.type || effect.buffType || effect.debuffType;
   if (!typeToMatch) return;
+
+  if (effect.isDebuff) {
+    const dt = String(typeToMatch || '').toUpperCase();
+    if (CC_CONTROL_DEBUFF_TYPES.has(dt) && unitImmuneToControlCc(target)) {
+      return;
+    }
+  }
 
   // ANTI_BUFF : empêche l'unité de recevoir de nouveaux buffs (pas les debuffs, pas SHIELD qui passe par applyShield).
   if (!effect.isDebuff && typeToMatch !== EffectType.SHIELD && hasDebuff(target, EffectType.ANTI_BUFF)) {

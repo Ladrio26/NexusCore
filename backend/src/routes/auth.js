@@ -57,7 +57,7 @@ export function registerAuthRoutes(fastify) {
         }
 
         const insertResult = await tx.query(
-          'INSERT INTO users (email, password_hash, display_name, role, elo) VALUES (?, ?, ?, ?, ?)',
+          'INSERT INTO users (email, password_hash, display_name, role, elo, combat_tutorial_completed) VALUES (?, ?, ?, ?, ?, 0)',
           [normalizedEmail, passwordHash, displayName, 'player', 0]
         );
         const insertId = insertResult?.insertId;
@@ -157,7 +157,7 @@ export function registerAuthRoutes(fastify) {
       let rows;
       try {
         rows = await query(
-          'SELECT id, email, display_name, avatar_url, role FROM users WHERE id = ?',
+          'SELECT id, email, display_name, avatar_url, role, combat_tutorial_completed FROM users WHERE id = ?',
           [request.user.id]
         );
       } catch (err) {
@@ -165,14 +165,29 @@ export function registerAuthRoutes(fastify) {
           (err.message && (
             err.message.includes('avatar_url')
             || err.message.includes('role')
+            || err.message.includes('combat_tutorial_completed')
             || err.message.includes('Unknown column')
           ));
         if (missingColumn) {
-          rows = await query(
-            'SELECT id, email, display_name FROM users WHERE id = ?',
-            [request.user.id]
-          );
-          if (rows.length) rows[0].avatar_url = null;
+          try {
+            rows = await query(
+              'SELECT id, email, display_name, avatar_url, role FROM users WHERE id = ?',
+              [request.user.id]
+            );
+            for (const r of rows) {
+              r.combat_tutorial_completed = 1;
+            }
+          } catch (err2) {
+            rows = await query(
+              'SELECT id, email, display_name FROM users WHERE id = ?',
+              [request.user.id]
+            );
+            for (const r of rows) {
+              r.avatar_url = null;
+              r.combat_tutorial_completed = 1;
+            }
+          }
+          if (rows.length && rows[0].avatar_url === undefined) rows[0].avatar_url = null;
         } else {
           request.log?.error?.(err, 'auth/me error');
           return reply.code(500).send({ error: 'SERVER_ERROR' });
@@ -185,7 +200,8 @@ export function registerAuthRoutes(fastify) {
           email: user.email,
           display_name: user.display_name,
           avatar_url: user.avatar_url ?? null,
-          role: resolveEffectiveRole(user)
+          role: resolveEffectiveRole(user),
+          combat_tutorial_completed: Number(user.combat_tutorial_completed) === 1
         }
       };
     }

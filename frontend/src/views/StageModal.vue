@@ -39,6 +39,7 @@
                   </button>
                 </template>
                 <button
+                  v-if="!isTutorialBattle"
                   type="button"
                   class="auto-mode-btn"
                   :class="{ active: autoMode }"
@@ -89,10 +90,11 @@
               </button>
             </div>
             <div v-if="showDecisionPanelVisible" class="manual-decision-panel" :class="{ 'is-waiting': isDecisionPanelWaiting }">
+              <div v-if="tutorialActionHint" class="tutorial-action-hint">{{ tutorialActionHint }}</div>
               <div class="manual-decision-title">
                 Tour de {{ manualDecisionContext?.actorName ?? 'votre unité' }}.
               </div>
-              <div class="manual-decision-actions">
+              <div class="manual-decision-actions" data-tutorial-target="skills-panel">
                 <button
                   type="button"
                   class="manual-action-btn"
@@ -177,7 +179,7 @@
             </div>
           </template>
 
-        <template v-if="!battleResult && !dungeonMode">
+        <template v-if="!battleResult && !dungeonMode && !tutorialMode">
           <div v-if="hardChapterModifierText" class="hard-modifier-preview">
             <strong>Effet du chapitre difficile :</strong> {{ hardChapterModifierText }}
           </div>
@@ -334,6 +336,18 @@
         </div>
       </div>
     </div>
+    <CombatTutorialOverlay
+      v-if="isTutorialBattle && battleResult"
+      :active="combatTutorialOverlayActive"
+      :steps="combatTutorialSteps"
+      :step-index="tutorialStepIndex"
+      :free-play="tutorialFreePlay"
+      :battle-won="battleResult?.result === 'win'"
+      :actor-combat-index="manualDecisionContext?.actorCombatIndex ?? null"
+      @next="onCombatTutorialNext"
+      @skip="onCombatTutorialSkip"
+      @finish="onCombatTutorialFinish"
+    />
   </Teleport>
 </template>
 
@@ -342,9 +356,10 @@
 import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { getHardChapterModifierLabelsFr } from '@engine/campaignHardModifiers.js';
 // @ts-expect-error moteur JS sans types
-import { simulateBattle, MAX_ROUNDS } from '@engine/combatEngine.js';
+import { simulateBattle, MAX_ROUNDS, TUTORIAL_COMBAT_SEED } from '@engine/combatEngine.js';
 import api, { getToken } from '../api';
 import Battlefield from '../components/Battlefield.vue';
+import CombatTutorialOverlay from '../components/CombatTutorialOverlay.vue';
 import { getBuffVisual } from '../utils/buffVisualMap';
 import { getUnitImageUrl } from '../utils/unitImage';
 import { toTraitFr, combatRoleLabel } from '../utils/i18nFr';
@@ -370,8 +385,9 @@ const props = defineProps<{
   campaignTeam: Array<{ user_unit_id: number; position: 'front' | 'back' }>;
   pendingBattle?: {
     id: number;
-    battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon';
+    battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon' | 'tutorial';
     title?: string;
+    tutorialScript?: Array<Record<string, unknown>>;
     result?: string;
     success?: boolean;
     battleLog?: unknown[];
@@ -379,7 +395,13 @@ const props = defineProps<{
     initialUnits?: BattlefieldUnit[] | unknown[];
     summary?: { totalTurns?: number; playerUnitsAlive?: number; enemyUnitsAlive?: number } | unknown;
     enemyTeamLabel?: string;
-    interactiveSession?: { seed: number; bossModifier?: unknown; teamA: unknown[]; teamB: unknown[] };
+    interactiveSession?: {
+      seed: number;
+      bossModifier?: unknown;
+      teamA: unknown[];
+      teamB: unknown[];
+      isTutorial?: boolean;
+    };
   } | null;
   /** Replay autonome (ex: PvP). Quand défini, affiche uniquement le visualiseur de combat. */
   standaloneReplay?: {
@@ -407,6 +429,8 @@ const props = defineProps<{
   dungeonMode?: boolean;
   /** Donjon : mode Auto/Manuel à appliquer à l’ouverture (ex. mémorisé depuis le combat précédent). */
   dungeonInitialAutoMode?: boolean;
+  /** Tutoriel combat : équipe fictive, pas d'écran preset. */
+  tutorialMode?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -508,7 +532,12 @@ const battleResult = ref<{
     skillTargets: Array<{ combatIndex: number; name: string }>;
   } | null;
 } | null>(null);
-const activePendingBattle = ref<{ id: number; battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon'; title?: string; enemyTeamLabel?: string } | null>(null);
+const activePendingBattle = ref<{
+  id: number;
+  battleType: 'campaign' | 'pvp' | 'guild_war' | 'dungeon' | 'tutorial';
+  title?: string;
+  enemyTeamLabel?: string;
+} | null>(null);
 const finalizeDataRef = ref<{ team?: Array<{ user_unit_id: number }>; attackerUserUnitIds?: number[]; attackerUnitIds?: number[] } | null>(null);
 const battleFinalizeResult = ref<Record<string, unknown> | null>(null);
 const hasFinalized = ref(false);
@@ -576,11 +605,78 @@ const showBattleResult = computed(() => !!battleResult.value?.result);
 const isStandaloneReplay = computed(() => !!props.standaloneReplay || activePendingBattle.value?.battleType === 'pvp' || activePendingBattle.value?.battleType === 'guild_war');
 const isCampaignBattle = computed(() => activePendingBattle.value?.battleType === 'campaign');
 const isDungeonBattle = computed(() => activePendingBattle.value?.battleType === 'dungeon');
+const isTutorialBattle = computed(() => activePendingBattle.value?.battleType === 'tutorial');
 const isCampaignLikeBattle = computed(
-  () => activePendingBattle.value?.battleType === 'campaign' || activePendingBattle.value?.battleType === 'dungeon'
+  () =>
+    activePendingBattle.value?.battleType === 'campaign' ||
+    activePendingBattle.value?.battleType === 'dungeon' ||
+    activePendingBattle.value?.battleType === 'tutorial'
 );
 const isPvpBattle = computed(() => activePendingBattle.value?.battleType === 'pvp');
 const dungeonMode = computed(() => props.dungeonMode === true);
+const tutorialMode = computed(() => props.tutorialMode === true);
+
+const engineIsTutorial = ref(false);
+const tutorialStepIndex = ref(0);
+const tutorialFreePlay = ref(false);
+const tutorialScriptRef = ref<Array<Record<string, unknown>> | null>(null);
+
+const combatTutorialSteps = computed(() => tutorialScriptRef.value ?? []);
+
+const currentTutorialStep = computed(() => combatTutorialSteps.value[tutorialStepIndex.value] ?? null);
+
+const combatTutorialOverlayActive = computed(() => {
+  if (!isTutorialBattle.value) return false;
+  const t = currentTutorialStep.value?.type;
+  if (tutorialFreePlay.value) return false;
+  if (t === 'action') return false;
+  return true;
+});
+
+const tutorialActionHint = computed(() => {
+  if (!isTutorialBattle.value || tutorialFreePlay.value) return '';
+  const s = currentTutorialStep.value;
+  if (s && String(s.type) === 'action' && s.text) return String(s.text);
+  return '';
+});
+
+function onCombatTutorialNext() {
+  const steps = tutorialScriptRef.value ?? [];
+  const step = steps[tutorialStepIndex.value];
+  if (!step) return;
+  if (String(step.type) === 'free') {
+    tutorialFreePlay.value = true;
+  }
+  if (tutorialStepIndex.value < steps.length - 1) {
+    tutorialStepIndex.value += 1;
+  }
+}
+
+async function onCombatTutorialSkip() {
+  try {
+    await api.post('/tutorial/skip-combat');
+    window.dispatchEvent(new CustomEvent('profile-updated'));
+  } catch (err) {
+    console.error('[StageModal] tutorial skip', err);
+  }
+  closeAndNotify(false);
+}
+
+function onCombatTutorialFinish() {
+  closeAndNotify(false);
+}
+
+watch(
+  () => [battleResult.value?.result, activePendingBattle.value?.battleType] as const,
+  ([r, bt]) => {
+    if (r !== 'win' || bt !== 'tutorial') return;
+    const steps = tutorialScriptRef.value;
+    if (!steps?.length) return;
+    const lastIdx = steps.length - 1;
+    if (steps[lastIdx]?.requireVictory) tutorialStepIndex.value = lastIdx;
+  }
+);
+
 const hasNextStage = computed(() => props.stage < 10 || (props.stage === 10 && props.chapter < 10));
 
 /** Appelle /battle/finalize et stocke le résultat pour l'affichage des récompenses. */
@@ -605,6 +701,9 @@ async function finalizeAndStore() {
     if (activePendingBattle.value?.battleType === 'campaign' && data?.progressUpdated && !progressionAlreadySent.value) {
       progressionAlreadySent.value = true;
       emit('campaign-updated');
+    }
+    if (data?.combat_tutorial_completed) {
+      window.dispatchEvent(new CustomEvent('profile-updated'));
     }
     emit('battle-finalized', data ?? {});
   } catch (e) {
@@ -828,6 +927,8 @@ const hoveredUnit = ref<BattlefieldUnit | null>(null);
 const replayFrames = ref<ReplayFrame[]>([]);
 const replayFrameIndex = ref(0);
 let replayTimer: ReturnType<typeof setInterval> | null = null;
+/** Pendant un lot de frames (onglet masqué), évite que le watch ne redémarre setInterval à chaque frame. */
+const hiddenReplayBatching = ref(false);
 const replayLogScrollLock = ref(false);
 
 /** État du moteur local : équipes, seed, modificateur boss, décisions accumulées. */
@@ -847,6 +948,13 @@ const manualSkillHoverKey = ref<string | null>(null);
 /** Slot choisi quand plusieurs compétences actives (clé moteur). */
 const manualSelectedSkillKey = ref<string | null>(null);
 const autoMode = ref(props.dungeonMode ? !!props.dungeonInitialAutoMode : false);
+watch(
+  () => props.tutorialMode,
+  (tm) => {
+    if (tm) autoMode.value = false;
+  },
+  { immediate: true }
+);
 
 let __lastAppliedSnapshot: ReplaySnapshot | null = null;
 let __lastAppliedTick: number | null = null;
@@ -1771,8 +1879,9 @@ function averagePresetFatigue(p: PresetItem): number | null {
 
 function hydrateBattleState(payload: {
   id?: number;
-  battleType?: 'campaign' | 'pvp' | 'guild_war' | 'dungeon';
+  battleType?: 'campaign' | 'pvp' | 'guild_war' | 'dungeon' | 'tutorial';
   title?: string;
+  tutorialScript?: Array<Record<string, unknown>>;
   result?: string;
   finalizeData?: { team?: Array<{ user_unit_id: number }>; attackerUserUnitIds?: number[]; attackerUnitIds?: number[] };
   battleLog?: unknown[];
@@ -1790,12 +1899,19 @@ function hydrateBattleState(payload: {
     skillTargets: Array<{ combatIndex: number; name: string }>;
   } | null;
   enemyTeamLabel?: string;
-  interactiveSession?: { seed: number; bossModifier?: unknown; teamA: unknown[]; teamB: unknown[] };
+  interactiveSession?: {
+    seed: number;
+    bossModifier?: unknown;
+    teamA: unknown[];
+    teamB: unknown[];
+    isTutorial?: boolean;
+  };
 }) {
   hasFinalized.value = false;
   battleFinalizeResult.value = null;
   // Extraire et stocker les paramètres du moteur local
   const session = payload.interactiveSession;
+  const sessionIsTutorial = session && (session as { isTutorial?: boolean }).isTutorial === true;
   const pPayload = payload as { chapter?: number; stage?: number; mode?: string };
   const ch10St10 = Number(pPayload.chapter) === 10 && Number(pPayload.stage) === 10;
   const bossModifierFallback = ch10St10
@@ -1806,16 +1922,31 @@ function hydrateBattleState(payload: {
   const effectiveBossModifier = ch10St10 && !sessionMod?.resurrectOnce
     ? bossModifierFallback
     : (session?.bossModifier ?? bossModifierFallback);
+  engineIsTutorial.value = sessionIsTutorial;
   if (session?.teamA?.length && session?.teamB?.length) {
     engineTeamA.value = session.teamA;
     engineTeamB.value = session.teamB;
-    engineSeed.value = Number(session.seed) || (Date.now() % 2147483647);
+    engineSeed.value = sessionIsTutorial
+      ? TUTORIAL_COMBAT_SEED
+      : (Number(session.seed) || (Date.now() % 2147483647));
     engineBossModifier.value = effectiveBossModifier;
     combatDecisions.value = [];
   } else {
     engineTeamA.value = [];
     engineTeamB.value = [];
     engineBossModifier.value = null;
+    engineIsTutorial.value = false;
+  }
+
+  const pBattleType = String(payload.battleType || '');
+  if (pBattleType === 'tutorial') {
+    tutorialScriptRef.value = Array.isArray(payload.tutorialScript) ? payload.tutorialScript : [];
+    tutorialStepIndex.value = 0;
+    tutorialFreePlay.value = false;
+  } else {
+    tutorialScriptRef.value = null;
+    tutorialStepIndex.value = 0;
+    tutorialFreePlay.value = false;
   }
 
   activePendingBattle.value = payload.id && payload.battleType
@@ -1867,7 +1998,8 @@ function hydrateBattleState(payload: {
 
 /**
  * Après un tour de moteur : positionner l'index de replay, réappliquer la snapshot, relancer le flux auto/replay.
- * En onglet masqué, exécution synchrone (sans nextTick) pour ne pas dépendre des timers ralentis par le navigateur.
+ * L'aftermath est toujours planifiée via nextTick depuis runEngineLocally pour éviter la récursion synchrone
+ * (performAutoDecision → moteur → startManualAutoFlow → tick masqué → performAutoDecision jusqu'à la fin du combat).
  */
 function applyEngineRunAftermath(isFirstRun: boolean, prevFrameIdx: number) {
   if (isFirstRun) {
@@ -1893,7 +2025,8 @@ function applyEngineRunAftermath(isFirstRun: boolean, prevFrameIdx: number) {
   }
   applyReplaySnapshotToBattlefield(currentReplaySnapshot.value);
   stopReplayTimer();
-  startManualAutoFlow();
+  // Macrotâche : évite d'enchaîner startManualAutoFlow dans la même file de microtâches que le moteur / Vue.
+  setTimeout(() => startManualAutoFlow(), 0);
 }
 
 /**
@@ -1929,7 +2062,8 @@ function runEngineLocally(isFirstRun = false) {
     seed: engineSeed.value,
     bossModifier: bossMod || undefined,
     interactive: true,
-    decisions: [...combatDecisions.value]
+    decisions: [...combatDecisions.value],
+    isTutorial: engineIsTutorial.value
   });
 
   const winner = log.summary?.winner;
@@ -1957,12 +2091,11 @@ function runEngineLocally(isFirstRun = false) {
   manualSkillHoverKey.value = null;
   manualDecisionError.value = '';
 
+  // Toujours différer l'aftermath (microtâche) : en synchrone depuis tickReplay/performAutoDecision,
+  // startManualAutoFlow() rappelait tickReplayWhileDocumentHidden() tout de suite → récursion synchrone
+  // et résolution du combat entier avant le prochain rendu (bug « fin instantanée » au retour d'onglet).
   const scheduleAftermath = () => applyEngineRunAftermath(isFirstRun, prevFrameIdx);
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-    scheduleAftermath();
-  } else {
-    nextTick(scheduleAftermath);
-  }
+  nextTick(scheduleAftermath);
 }
 
 watch(
@@ -1986,7 +2119,7 @@ watch(
 watch(
   () => [props.show, props.chapter, props.stage, props.mode] as const,
   async ([show, ch, st, mode]) => {
-    if (props.standaloneReplay || props.pendingBattle || props.dungeonMode) return;
+    if (props.standaloneReplay || props.pendingBattle || props.dungeonMode || props.tutorialMode) return;
     battleResult.value = null;
     battleError.value = '';
     if (!show || !ch || !st) {
@@ -2950,12 +3083,11 @@ function advanceReplayOneFrame(force = false) {
   return true;
 }
 
-/** Même logique qu'advanceReplayOneFrame mais application synchrone (onglet masqué : pas de nextTick). */
+/** Avance synchrone (sans nextTick) — utilisé par lots quand l’onglet est masqué (setInterval throttlé ~1s). */
 function advanceReplayOneFrameSync(force = false) {
   if (replayFrameIndex.value >= replayFrames.value.length - 1) return false;
   if (!force && !canAdvanceReplayManuallyWithoutChoice()) return false;
   replayFrameIndex.value++;
-  applyReplaySnapshotToBattlefield(currentReplaySnapshot.value);
   return true;
 }
 
@@ -2968,31 +3100,51 @@ function replayEnd() {
   nextTick(() => applyReplaySnapshotToBattlefield(currentReplaySnapshot.value));
 }
 const REPLAY_TICK_MS = 80;
+/** En arrière-plan, Chrome/Edge throttlent souvent à ~1000 ms minimum. */
+const REPLAY_HIDDEN_INTERVAL_MS = 1000;
+const FRAMES_PER_HIDDEN_TICK = Math.max(1, Math.floor(REPLAY_HIDDEN_INTERVAL_MS / REPLAY_TICK_MS));
+
+function isReplayDocumentHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
 
 /**
- * Quand l'onglet est en arrière-plan, les navigateurs ralentissent fortement setInterval/requestAnimationFrame.
- * On enchaîne alors les frames et les décisions auto de façon synchrone jusqu'à la fin ou une décision manuelle.
+ * Décision auto en arrière-plan : jamais dans la même pile synchrone que tickReplay → moteur → startManualAutoFlow
+ * (sinon enchaînement jusqu'à la fin du combat avant le prochain rendu).
  */
-function flushHiddenReplayCatchUp() {
-  if (typeof document === 'undefined' || document.visibilityState !== 'hidden' || !hasReplayMode.value) return;
-  const MAX_STEPS = 100000;
-  let steps = 0;
-  while (document.visibilityState === 'hidden' && steps++ < MAX_STEPS && hasReplayMode.value && battleResult.value) {
-    if (replayFrames.value.length === 0) break;
-    if (replayFrameIndex.value < replayFrames.value.length - 1) {
+function scheduleHiddenAutoDecision() {
+  if (!hasReplayMode.value || !battleResult.value) return;
+  if (!isReplayDocumentHidden()) return;
+  if (!autoMode.value || !battleResult.value.decisionRequest) return;
+  if (replayFrameIndex.value < replayFrames.value.length - 1) return;
+  const ctx = manualDecisionContext.value;
+  if (!ctx || ctx.isStunned || ctx.isProvoked) return;
+  setTimeout(() => {
+    if (!hasReplayMode.value || !battleResult.value?.decisionRequest) return;
+    if (!autoMode.value) return;
+    if (replayFrameIndex.value < replayFrames.value.length - 1) return;
+    const c = manualDecisionContext.value;
+    if (!c || c.isStunned || c.isProvoked) return;
+    performAutoDecision();
+  }, 0);
+}
+
+/**
+ * Avance plusieurs frames par tick pour garder un débit proche de REPLAY_TICK_MS sans boucle jusqu’à la fin du combat.
+ */
+function tickReplayWhileDocumentHidden() {
+  if (!hasReplayMode.value || !battleResult.value) return;
+  if (!isReplayDocumentHidden()) return;
+  hiddenReplayBatching.value = true;
+  try {
+    let n = FRAMES_PER_HIDDEN_TICK;
+    while (n-- > 0 && replayFrameIndex.value < replayFrames.value.length - 1) {
       if (!advanceReplayOneFrameSync()) break;
-      continue;
     }
-    const dr = battleResult.value.decisionRequest;
-    if (!dr) break;
-    if (autoMode.value) {
-      const ctx = manualDecisionContext.value;
-      if (ctx && (ctx.isStunned || ctx.isProvoked)) break;
-      performAutoDecision();
-      continue;
-    }
-    break;
+  } finally {
+    hiddenReplayBatching.value = false;
   }
+  scheduleHiddenAutoDecision();
 }
 
 function startReplayPlaybackFromStart() {
@@ -3014,13 +3166,36 @@ function stopReplayTimer() {
 function startManualAutoFlow() {
   if (!hasReplayMode.value) return;
   stopReplayTimer();
-  // Onglet masqué : ne pas s'appuyer sur setInterval (throttlé à ~1s ou figé).
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-    flushHiddenReplayCatchUp();
+
+  const atLastWithDecision =
+    Boolean(battleResult.value?.decisionRequest) &&
+    replayFrameIndex.value >= replayFrames.value.length - 1;
+
+  // Dernier frame + décision : en avant-plan le watch auto appelle performAutoDecision.
+  // En arrière-plan ce watch est désactivé : il faut un timer dédié sinon le combat reste figé.
+  if (atLastWithDecision) {
+    if (isReplayDocumentHidden() && autoMode.value) {
+      const ctx = manualDecisionContext.value;
+      if (ctx && !ctx.isStunned && !ctx.isProvoked) {
+        replayTimer = setInterval(() => {
+          scheduleHiddenAutoDecision();
+        }, REPLAY_HIDDEN_INTERVAL_MS);
+        setTimeout(() => scheduleHiddenAutoDecision(), 0);
+      }
+    }
     return;
   }
-  // En avant-plan : dernier frame + attente de décision joueur → le watch auto / manuel prend le relais.
-  if (battleResult.value?.decisionRequest && replayFrameIndex.value >= replayFrames.value.length - 1) return;
+
+  if (isReplayDocumentHidden()) {
+    replayTimer = setInterval(() => {
+      tickReplayWhileDocumentHidden();
+    }, REPLAY_HIDDEN_INTERVAL_MS);
+    setTimeout(() => {
+      if (isReplayDocumentHidden()) tickReplayWhileDocumentHidden();
+    }, 0);
+    return;
+  }
+
   replayTimer = setInterval(() => {
     if (replayFrameIndex.value >= replayFrames.value.length - 1) {
       stopReplayTimer();
@@ -3036,6 +3211,16 @@ function startManualAutoFlow() {
 
 function selectManualAction(action: ManualAction, skillKey?: string | null) {
   manualDecisionError.value = '';
+  if (isTutorialBattle.value && !tutorialFreePlay.value) {
+    const step = currentTutorialStep.value;
+    if (step && String(step.type) === 'action') {
+      const allowed = Array.isArray(step.allowedActions) ? step.allowedActions.map(String) : [];
+      if (allowed.length && action === 'SKILL' && allowed.includes('basic_attack') && !allowed.includes('skill')) {
+        manualDecisionError.value = 'Pour cette étape, utilise uniquement l’attaque de base.';
+        return;
+      }
+    }
+  }
   const ctx = manualDecisionContext.value;
   if (action === 'SKILL' && (!ctx || !ctx.skillAvailable)) {
     manualDecisionError.value = 'Compétence indisponible (cooldown actif ou effet empêchant son lancement).';
@@ -3062,6 +3247,16 @@ function submitInteractiveAction(action: ManualAction, targetCombatIndex: number
   combatDecisions.value = [...combatDecisions.value, entry];
   try {
     runEngineLocally(false);
+    if (isTutorialBattle.value && !tutorialFreePlay.value) {
+      const st = currentTutorialStep.value;
+      if (st && String(st.type) === 'action') {
+        const allowed = Array.isArray(st.allowedActions) ? st.allowedActions.map(String) : [];
+        if (allowed.includes('basic_attack') && entry.action === 'BASIC') {
+          const maxIdx = Math.max(0, (tutorialScriptRef.value?.length ?? 1) - 1);
+          tutorialStepIndex.value = Math.min(tutorialStepIndex.value + 1, maxIdx);
+        }
+      }
+    }
   } catch (e: unknown) {
     const err = e as Error & { response?: { data?: { message?: string; error?: string } } };
     const msg = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Impossible de jouer cette action.';
@@ -3208,7 +3403,9 @@ watch([replayFrameIndex, hasReplayMode], () => {
   manualTargetChoice.value = null;
   manualSelectedSkillKey.value = null;
   manualSkillHoverKey.value = null;
-  nextTick(() => startManualAutoFlow());
+  if (!hiddenReplayBatching.value) {
+    nextTick(() => startManualAutoFlow());
+  }
 });
 
 watch(manualDecisionContext, (ctx) => {
@@ -3237,14 +3434,15 @@ watch(
     if (!autoMode.value || !battleResult.value?.decisionRequest || replayFrameIndex.value < replayFrames.value.length - 1) return;
     const ctx = manualDecisionContext.value;
     if (!ctx || ctx.isStunned || ctx.isProvoked) return;
-    // Onglet masqué : performAutoDecision est enchaîné par flushHiddenReplayCatchUp (évite double soumission).
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    // Onglet masqué : les décisions auto sont pilotées par scheduleHiddenAutoDecision() (timer ~1s), pas ce watch
+    // (évite double soumission + conflit avec tickReplayWhileDocumentHidden).
+    if (isReplayDocumentHidden()) return;
     nextTick(() => performAutoDecision());
   },
   { flush: 'post' }
 );
 
-/** Reprendre l'intervalle de replay en avant-plan ; rattraper le combat en arrière-plan. */
+/** Reprendre l'intervalle de replay ; ne pas « fast-forward » tout le combat en arrière-plan. */
 function onCombatDocumentVisibilityChange() {
   if (!hasReplayMode.value || !battleResult.value) return;
   if (document.visibilityState === 'visible') {
@@ -3261,7 +3459,10 @@ function onCombatDocumentVisibilityChange() {
       }
     }
   } else {
-    flushHiddenReplayCatchUp();
+    startManualAutoFlow();
+    setTimeout(() => {
+      if (isReplayDocumentHidden()) tickReplayWhileDocumentHidden();
+    }, 0);
   }
 }
 
@@ -3274,6 +3475,7 @@ onUnmounted(() => {
 
 function triggerReplayAttackAnimations() {
   if (!hasReplayMode.value || !battlefieldRef.value) return;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
   const frames = replayFrames.value;
   const idx = replayFrameIndex.value;
   const frame = frames[idx];
@@ -5269,6 +5471,18 @@ function handleBeforeUnload() {
   background: rgba(0, 255, 200, 0.2);
   color: #a5f3fc;
   border-color: rgba(0, 255, 200, 0.5);
+}
+.tutorial-action-hint {
+  width: 100%;
+  max-width: 520px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e0f2fe;
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  background: rgba(30, 27, 10, 0.85);
+  border-radius: 8px;
 }
 .manual-decision-panel {
   margin: 8px 14px 10px;

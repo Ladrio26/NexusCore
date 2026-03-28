@@ -11,7 +11,9 @@ import {
   consumeShieldBuffs,
   applyEffect,
   applyStatus,
-  EffectType
+  EffectType,
+  unitImmuneToControlCc,
+  isControlCcDebuffType
 } from './effects.js';
 import { BUFF_FIXED_VALUES } from './buffFixedValues.js';
 import { getPowerStatMultiplier } from './unitPower.js';
@@ -100,6 +102,10 @@ function onBeforeApplyDebuff(target, effect) {
     return { blocked: true };
   }
   if (targetHasStatus(target, EffectType.IMMUNITY)) {
+    return { blocked: true };
+  }
+  const dt = String(effect?.debuffType || effect?.debuff || effect?.type || '').toUpperCase();
+  if (isControlCcDebuffType(dt) && unitImmuneToControlCc(target)) {
     return { blocked: true };
   }
   return { blocked: false };
@@ -320,7 +326,12 @@ function syncActorSkillMirror(actor) {
   actor.skillCd = Number.isFinite(Number(first.skillCd)) ? first.skillCd : 0;
 }
 
-function decrementSkillCooldownsOnBasic(actor) {
+/**
+ * Décrémente de 1 les CDs de TOUTES les compétences de l'acteur.
+ * Appelé systématiquement en fin de tour, quelle que soit l'action effectuée
+ * (attaque de base, compétence, ou tour perdu sur stun).
+ */
+function decrementAllSkillCooldowns(actor) {
   if (Array.isArray(actor.activeSkillSlots) && actor.activeSkillSlots.length > 0) {
     for (const slot of actor.activeSkillSlots) {
       if (slot.skillCd > 0) slot.skillCd -= 1;
@@ -1567,7 +1578,7 @@ function performBasicAction(state, actor, arg2, arg3, arg4, arg5, options = {}) 
   }
 
   // Lifesteal (buff LIFESTEAL ou BERSERKERS) est appliqué dans applyDamageToTarget pour basic et skills
-  decrementSkillCooldownsOnBasic(actor);
+  decrementAllSkillCooldowns(actor);
 
   if (damageResult.died && !damageResult.selfResurrected) {
     onKillSynergies(state, actor, target, (e) => logEvent(state, e));
@@ -2598,6 +2609,8 @@ function performSkillAction(state, actor, round, atbBefore, logEventFn, forcedTa
         syncActorSkillMirror(actor);
       }
     }
+    // Fin de tour : tous les CDs (y compris la compétence utilisée) sont décrémentés de 1
+    decrementAllSkillCooldowns(actor);
     // BERSERKERS 6 : prochaine attaque de base aura +50 % dégâts (uniquement pour les berserkers)
     if (actor.berserkerHasSkillBonus === false && actor.traits?.includes('BERSERKERS') && (state.synergies?.[actor.side]?.BERSERKERS ?? 0) >= 6) {
       actor.berserkerHasSkillBonus = true;
@@ -3079,8 +3092,12 @@ function buildBattleLog(state, log) {
 /** Limite de rounds avant match nul (6 unités/équipe × 2 = 12 unités, 400 rounds ≈ 33 tours/unité). */
 export const MAX_ROUNDS = 400;
 
+/** Graine fixe pour le tutoriel combat (décisions reproductibles côté client). */
+export const TUTORIAL_COMBAT_SEED = 9001337;
+
 export function simulateBattle(teamAInput, teamBInput, config = {}) {
-  const seed = config.seed ?? 1;
+  const isTutorial = config.isTutorial === true;
+  const seed = isTutorial ? TUTORIAL_COMBAT_SEED : (config.seed ?? 1);
   const rng = createRng(seed);
 
   const teamA = deepClone(teamAInput).map((u) => ({ ...u, side: 'A' }));
@@ -3387,6 +3404,7 @@ export function simulateBattle(teamAInput, teamBInput, config = {}) {
         handlePassiveTrigger(state, actor, 'ON_ACTION_START', {}, (ev) => logEvent(state, ev));
         actor.atb = 0;
         handlePassiveTrigger(state, actor, 'ON_ACTION_END', {}, (ev) => logEvent(state, ev));
+        decrementAllSkillCooldowns(actor);
         decrementPassiveCooldowns(actor);
         tickStatuses(state, actor, (e) => logEvent(state, e));
         onUnitActionEndSynergies(state, actor, (e) => logEvent(state, e));

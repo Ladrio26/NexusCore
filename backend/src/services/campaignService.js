@@ -10,6 +10,14 @@ import {
 } from './restCenterService.js';
 import { getUnitIdsWithXpBoost } from './artifactService.js';
 import { applyUnitSpecializationToSkillData } from './battleTeamService.js';
+import { getEffectiveCampaignStageConfig } from './campaignStageLevelService.js';
+import {
+  ensureCampaignMonthGenerated,
+  getMonthlyNonBossTemplate,
+  getBossAssignmentForChapter,
+  getBossTeamById,
+  pickCampaignSpecialization
+} from './campaignMonthlyService.js';
 
 const MIN_UNITS_TO_UNLOCK = 5;
 const HARD_MODE_UNLOCK_NORMAL_CHAPTER = 5;
@@ -68,9 +76,10 @@ export async function isCampaignUnlocked(userId) {
 }
 
 export async function isHardCampaignUnlocked(userId) {
+  const key = getSeasonKey();
   const rows = await query(
-    'SELECT cleared FROM campaign_progress_normal WHERE user_id = ? AND chapter = ? AND stage = ? LIMIT 1',
-    [userId, HARD_MODE_UNLOCK_NORMAL_CHAPTER, HARD_MODE_UNLOCK_NORMAL_STAGE]
+    'SELECT cleared FROM campaign_progress_normal WHERE user_id = ? AND season_key = ? AND chapter = ? AND stage = ? LIMIT 1',
+    [userId, key, HARD_MODE_UNLOCK_NORMAL_CHAPTER, HARD_MODE_UNLOCK_NORMAL_STAGE]
   );
   return !!rows[0]?.cleared;
 }
@@ -78,7 +87,7 @@ export async function isHardCampaignUnlocked(userId) {
 /**
  * @param {number} userId
  * @param {'normal'|'hard'} mode
- * @param {string} [seasonKey] requis si mode === 'hard'
+ * @param {string} [seasonKey] défaut : mois courant (YYYY-MM) — normal et hard sont saisonniers
  */
 export async function getCampaignStatus(userId, mode, seasonKey = null) {
   const unlocked = await isCampaignUnlocked(userId);
@@ -86,26 +95,29 @@ export async function getCampaignStatus(userId, mode, seasonKey = null) {
     return { unlocked: false, requiredUnits: MIN_UNITS_TO_UNLOCK, hardUnlocked: false, chapters: null };
   }
   const hardUnlocked = await isHardCampaignUnlocked(userId);
-  const key = mode === 'hard' ? (seasonKey || getSeasonKey()) : null;
-  const progressRows = mode === 'normal'
-    ? await query('SELECT chapter, stage, cleared, reward_claimed FROM campaign_progress_normal WHERE user_id = ?', [userId])
-    : await query('SELECT chapter, stage, cleared, reward_claimed FROM campaign_progress_hard WHERE user_id = ? AND season_key = ?', [userId, key]);
+  const key = seasonKey || getSeasonKey();
+  const progressRows =
+    mode === 'normal'
+      ? await query(
+          'SELECT chapter, stage, cleared, reward_claimed FROM campaign_progress_normal WHERE user_id = ? AND season_key = ?',
+          [userId, key]
+        )
+      : await query(
+          'SELECT chapter, stage, cleared, reward_claimed FROM campaign_progress_hard WHERE user_id = ? AND season_key = ?',
+          [userId, key]
+        );
 
   const byKey = new Map(progressRows.map((r) => [`${r.chapter}-${r.stage}`, r]));
-  let byKeyNormal = null;
-  if (mode === 'normal') {
-    const normalProgressRows = await query('SELECT chapter, stage, cleared FROM campaign_progress_normal WHERE user_id = ?', [userId]);
-    byKeyNormal = new Map(normalProgressRows.map((r) => [`${r.chapter}-${r.stage}`, r]));
-  }
 
   const stages = await query('SELECT chapter, stage, is_boss FROM campaign_stages ORDER BY chapter, stage');
   const stageMap = new Map(stages.map((row) => [`${row.chapter}-${row.stage}`, row]));
   const chapters = {};
   for (let c = 1; c <= 10; c++) {
     const chapterHasStages = stages.some((row) => row.chapter === c);
-    const chapterAvailable = mode === 'normal'
-      ? (chapterHasStages && (c === 1 || !!byKeyNormal?.get(`${c - 1}-10`)?.cleared))
-      : (chapterHasStages && hardUnlocked && !!key && (c === 1 || !!byKey.get(`${c - 1}-10`)?.cleared));
+    const chapterAvailable =
+      mode === 'normal'
+        ? chapterHasStages && (c === 1 || !!byKey.get(`${c - 1}-10`)?.cleared)
+        : chapterHasStages && hardUnlocked && !!key && (c === 1 || !!byKey.get(`${c - 1}-10`)?.cleared);
     chapters[c] = { chapterAvailable, stages: [] };
     for (let s = 1; s <= 10; s++) {
       const row = stageMap.get(`${c}-${s}`);
@@ -148,7 +160,8 @@ async function getUnitByCode(code) {
     `SELECT id, code, name, rarity, role, attack_type, element, archetype,
             base_hp, base_attack, base_defense, base_speed, mastery, traits, skill_data, image_url,
             specA_bonus_stat, specB_bonus_stat,
-            specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive
+            specA_skill_modifier, specB_skill_modifier, specA_passive, specB_passive,
+            COALESCE(is_boss, 0) AS is_boss
      FROM units WHERE code = ?`,
     [code]
   );
@@ -160,6 +173,11 @@ async function getUnitByCode(code) {
  * Pour les boss, retourne aussi le modifier à passer au combat (config.bossModifier).
  */
 export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = null) {
+  const monthKey = seasonKey || getSeasonKey();
+  await ensureCampaignMonthGenerated(monthKey);
+  const cfg = await getEffectiveCampaignStageConfig(mode, chapter, stage);
+  const level = cfg.level;
+
   const rows = await query(
     'SELECT * FROM campaign_stages WHERE chapter = ? AND stage = ?',
     [chapter, stage]
@@ -171,8 +189,15 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
   let bossModifier = null;
 
   if (isBoss) {
-    const template =
+    let template =
       row.enemy_template && (typeof row.enemy_template === 'string' ? JSON.parse(row.enemy_template) : row.enemy_template);
+    const assignment = await getBossAssignmentForChapter(monthKey, mode, chapter);
+    if (assignment) {
+      const bossTeam = await getBossTeamById(assignment.boss_team_id);
+      if (bossTeam?.composition?.units?.length) {
+        template = bossTeam.composition;
+      }
+    }
     const unitSpecs = template?.units || [];
     const team = [];
     for (let i = 0; i < unitSpecs.length; i++) {
@@ -182,14 +207,14 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
       const unit = await getUnitByCode(code);
       if (!unit) continue;
       const pos = spec.position === 'back' ? 'back' : 'front';
-      const unitLevel = mode === 'hard' ? (spec.hard_level ?? spec.level ?? null) : (spec.level ?? null);
-      const unitSpec = mode === 'hard' ? (spec.hard_specialization ?? null) : (spec.specialization ?? null);
-      const u = buildUnitForCombat(unit, mult, i + 1, false, unitLevel, unitSpec);
+      const unitSpec = pickCampaignSpecialization(monthKey, mode, chapter, stage, `u${i}`);
+      const u = buildUnitForCombat(unit, mult, i + 1, false, level, unitSpec);
       u.position = pos;
       team.push(u);
     }
 
-    const unit = await getUnitByCode(row.boss_unit_code);
+    const bossCode = template?.boss_unit_code || row.boss_unit_code;
+    const unit = await getUnitByCode(bossCode);
     if (!unit) throw new Error('BOSS_UNIT_NOT_FOUND');
     // Boss chapitre 10 : résurrection unique à 100% HP (normal + hard)
     // En hard uniquement : après résurrection, applique DOT 1 tour à tous les ennemis à chaque action du boss
@@ -198,15 +223,20 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
         ? { resurrectOnce: true, resurrectThenDot: true }
         : { resurrectOnce: true };
     }
-    const bossLevel = mode === 'hard' ? (template?.boss_hard_level ?? template?.boss_level ?? null) : (template?.boss_level ?? null);
-    const bossSpec = mode === 'hard' ? (template?.boss_hard_specialization ?? 'A') : (template?.boss_specialization ?? 'A');
-    const enemy = buildUnitForCombat(unit, mult, team.length + 1, true, bossLevel, bossSpec);
+    const bossSpec = pickCampaignSpecialization(monthKey, mode, chapter, stage, 'boss');
+    const enemy = buildUnitForCombat(unit, mult, team.length + 1, true, level, bossSpec);
     enemy.isBoss = true;
+    /** Slot « unité boss » de l’équipe (boss_unit_code) — immunité CC même si l’unité n’est pas un boss BOSS_CH en base. */
+    enemy.campaignBossSlot = true;
     team.push(enemy);
     return { team, bossModifier };
   }
 
-  const template = row.enemy_template && (typeof row.enemy_template === 'string' ? JSON.parse(row.enemy_template) : row.enemy_template);
+  let template = await getMonthlyNonBossTemplate(monthKey, mode, chapter, stage);
+  if (!template?.units?.length) {
+    template =
+      row.enemy_template && (typeof row.enemy_template === 'string' ? JSON.parse(row.enemy_template) : row.enemy_template);
+  }
   const unitSpecs = template?.units || [];
   const team = [];
   for (let i = 0; i < unitSpecs.length; i++) {
@@ -216,9 +246,8 @@ export async function buildEnemyTeamFromStage(chapter, stage, mode, seasonKey = 
     const unit = await getUnitByCode(code);
     if (!unit) continue;
     const pos = spec.position === 'back' ? 'back' : 'front';
-    const unitLevel = mode === 'hard' ? (spec.hard_level ?? spec.level ?? null) : (spec.level ?? null);
-    const unitSpec = mode === 'hard' ? (spec.hard_specialization ?? null) : (spec.specialization ?? null);
-    const u = buildUnitForCombat(unit, mult, i + 1, false, unitLevel, unitSpec);
+    const unitSpec = pickCampaignSpecialization(monthKey, mode, chapter, stage, `u${i}`);
+    const u = buildUnitForCombat(unit, mult, i + 1, false, level, unitSpec);
     u.position = pos;
     team.push(u);
   }
@@ -258,6 +287,7 @@ function buildUnitForCombat(unitRow, multiplier, index, isBoss, levelOverride, s
     specialization,
     fatigue: 0,
     traits: parseJson(unitRow.traits) ?? unitRow.traits,
+    is_boss: Number(unitRow.is_boss) === 1 || unitRow.is_boss === true,
     skill_data: skillData,
     skillData,
     specA_bonus_stat: unitRow.specA_bonus_stat ?? null,
@@ -290,25 +320,24 @@ export async function computeStageRewards(userId, chapter, stage, mode, seasonKe
   if (!rewardRows.length) return null;
   const reward = rewardRows[0];
   const progressTable = mode === 'normal' ? 'campaign_progress_normal' : 'campaign_progress_hard';
-  const progressWhere = mode === 'normal'
-    ? 'user_id = ? AND chapter = ? AND stage = ?'
-    : 'user_id = ? AND season_key = ? AND chapter = ? AND stage = ?';
-  const progressParams = mode === 'normal' ? [userId, chapter, stage] : [userId, seasonKey || getSeasonKey(), chapter, stage];
+  const sk = seasonKey || getSeasonKey();
+  const progressWhere =
+    mode === 'normal'
+      ? 'user_id = ? AND season_key = ? AND chapter = ? AND stage = ?'
+      : 'user_id = ? AND season_key = ? AND chapter = ? AND stage = ?';
+  const progressParams = mode === 'normal' ? [userId, sk, chapter, stage] : [userId, sk, chapter, stage];
   const progressRows = await query(
     `SELECT cleared, reward_claimed FROM ${progressTable} WHERE ${progressWhere}`,
     progressParams
   );
   const prog = progressRows[0];
   if (prog?.reward_claimed) return null;
-  {
-    return {
-      credits: Number(reward.credits ?? 0),
-      cores: Number(reward.cores ?? 0),
-      fragments: Number(reward.fragments ?? 0),
-      ascension_essence: Number(reward.ascension_essence ?? 0)
-    };
-  }
-  return null;
+  return {
+    credits: Number(reward.credits ?? 0),
+    cores: Number(reward.cores ?? 0),
+    fragments: Number(reward.fragments ?? 0),
+    ascension_essence: Number(reward.ascension_essence ?? 0)
+  };
 }
 
 export async function applyRewardsTransaction(userId, rewards) {
@@ -328,13 +357,13 @@ export async function applyRewardsTransaction(userId, rewards) {
 }
 
 export async function markProgress(userId, chapter, stage, mode, seasonKey = null) {
-  const key = mode === 'hard' ? (seasonKey || getSeasonKey()) : null;
+  const key = seasonKey || getSeasonKey();
   if (mode === 'normal') {
     await query(
-      `INSERT INTO campaign_progress_normal (user_id, chapter, stage, cleared, reward_claimed, cleared_at)
-       VALUES (?, ?, ?, 1, 1, NOW())
+      `INSERT INTO campaign_progress_normal (user_id, season_key, chapter, stage, cleared, reward_claimed, cleared_at)
+       VALUES (?, ?, ?, ?, 1, 1, NOW())
        ON DUPLICATE KEY UPDATE cleared = 1, reward_claimed = 1, cleared_at = NOW()`,
-      [userId, chapter, stage]
+      [userId, key, chapter, stage]
     );
   } else {
     await query(
@@ -490,7 +519,11 @@ export async function applyCampaignFatigue(userUnitIds) {
  */
 export async function isChapterAvailable(userId, chapter, mode, seasonKey = null) {
   if (mode === 'normal') {
-    const normalRows = await query('SELECT chapter, stage, cleared FROM campaign_progress_normal WHERE user_id = ?', [userId]);
+    const key = seasonKey || getSeasonKey();
+    const normalRows = await query(
+      'SELECT chapter, stage, cleared FROM campaign_progress_normal WHERE user_id = ? AND season_key = ?',
+      [userId, key]
+    );
     const byKey = new Map(normalRows.map((r) => [`${r.chapter}-${r.stage}`, r]));
     return chapter === 1 || !!byKey.get(`${chapter - 1}-10`)?.cleared;
   }

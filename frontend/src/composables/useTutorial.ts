@@ -13,6 +13,9 @@ export function startTutorial(force = false): boolean {
 export function closeTutorial() {
   tutorialVisible.value = false;
   localStorage.setItem(STORAGE_KEY, '1');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('nca:tutorial-general-closed'));
+  }
 }
 
 export function resetTutorial() {

@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
   role VARCHAR(32) NOT NULL DEFAULT 'player',
   elo INT NOT NULL DEFAULT 0,
   pvp_elo INT NOT NULL DEFAULT 0,
+  pvp_energy TINYINT UNSIGNED NOT NULL DEFAULT 10 COMMENT 'Combats PvP 0-10, reset chaque heure UTC',
+  pvp_energy_hour_key VARCHAR(32) DEFAULT NULL COMMENT 'Heure UTC du dernier reset (YYYY-MM-DDTHH)',
   last_login_at DATETIME DEFAULT NULL,
   last_daily_reward_claim_at DATETIME DEFAULT NULL,
   last_opponent_id INT UNSIGNED DEFAULT NULL,
@@ -208,15 +210,16 @@ CREATE TABLE IF NOT EXISTS campaign_stages (
   PRIMARY KEY (chapter, stage)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Progression campagne normale
+-- Progression campagne normale (saison mensuelle YYYY-MM, comme le hard)
 CREATE TABLE IF NOT EXISTS campaign_progress_normal (
   user_id INT UNSIGNED NOT NULL,
+  season_key VARCHAR(7) NOT NULL,
   chapter TINYINT UNSIGNED NOT NULL,
   stage TINYINT UNSIGNED NOT NULL,
   cleared TINYINT(1) NOT NULL DEFAULT 0,
   reward_claimed TINYINT(1) NOT NULL DEFAULT 0,
   cleared_at DATETIME DEFAULT NULL,
-  PRIMARY KEY (user_id, chapter, stage),
+  PRIMARY KEY (user_id, season_key, chapter, stage),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -243,6 +246,56 @@ CREATE TABLE IF NOT EXISTS campaign_rewards (
   fragments INT UNSIGNED NOT NULL DEFAULT 0,
   ascension_essence INT UNSIGNED NOT NULL DEFAULT 0,
   PRIMARY KEY (chapter, stage, mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Contenu campagne mensuel (stages 1–9 : composition RNG figée par mois)
+CREATE TABLE IF NOT EXISTS campaign_monthly_enemies (
+  month_key VARCHAR(7) NOT NULL,
+  mode VARCHAR(16) NOT NULL,
+  chapter TINYINT UNSIGNED NOT NULL,
+  stage TINYINT UNSIGNED NOT NULL,
+  enemy_template JSON NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (month_key, mode, chapter, stage),
+  KEY idx_cme_month (month_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Équipes boss éditables (Normal / Hard séparés)
+CREATE TABLE IF NOT EXISTS campaign_boss_teams (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  mode VARCHAR(16) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  notes TEXT NULL,
+  composition JSON NOT NULL,
+  fixed_chapter TINYINT UNSIGNED NULL DEFAULT NULL COMMENT 'Si 10 : toujours boss chapitre 10 (non mélangé)',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_cbt_mode (mode, active, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Affectation boss → chapitre (stage 10) pour un mois donné
+CREATE TABLE IF NOT EXISTS campaign_boss_assignments (
+  month_key VARCHAR(7) NOT NULL,
+  mode VARCHAR(16) NOT NULL,
+  chapter TINYINT UNSIGNED NOT NULL,
+  boss_team_id INT UNSIGNED NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (month_key, mode, chapter),
+  KEY idx_cba_team (boss_team_id),
+  CONSTRAINT fk_cba_boss_team FOREIGN KEY (boss_team_id) REFERENCES campaign_boss_teams(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Surcharges manuelles des niveaux ennemis par chapitre / stage / mode (sinon matrice code)
+CREATE TABLE IF NOT EXISTS campaign_stage_level_overrides (
+  mode VARCHAR(16) NOT NULL,
+  chapter TINYINT UNSIGNED NOT NULL,
+  stage TINYINT UNSIGNED NOT NULL,
+  level TINYINT UNSIGNED NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (mode, chapter, stage),
+  KEY idx_cslo_mode (mode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Modificateurs des boss de campagne
@@ -405,6 +458,43 @@ CREATE TABLE IF NOT EXISTS guild_chat_messages (
   KEY idx_guild_chat_messages_guild_created (guild_id, created_at),
   KEY idx_guild_chat_messages_user (user_id),
   FOREIGN KEY (guild_id) REFERENCES guilds(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── Système de bots joueurs ─────────────────────────────────────────────────
+
+-- Profil et activation de chaque bot
+CREATE TABLE IF NOT EXISTS bot_profiles (
+  user_id    INT UNSIGNED NOT NULL,
+  profile    VARCHAR(32)  NOT NULL DEFAULT 'balanced',
+  enabled    TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at DATETIME     DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- État runtime par bot (cooldowns, état donjon, next_action_at)
+CREATE TABLE IF NOT EXISTS bot_runtime_state (
+  user_id            INT UNSIGNED NOT NULL,
+  current_action     VARCHAR(64)  DEFAULT NULL,
+  next_action_at     DATETIME     DEFAULT NULL,
+  cooldowns_json     JSON         DEFAULT NULL,
+  dungeon_state_json JSON         DEFAULT NULL,
+  last_action_at     DATETIME     DEFAULT NULL,
+  action_count       INT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Journal des actions bot (audit / debug)
+CREATE TABLE IF NOT EXISTS bot_action_logs (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id     INT UNSIGNED    NOT NULL,
+  action      VARCHAR(64)     NOT NULL,
+  success     TINYINT(1)      NOT NULL DEFAULT 1,
+  detail_json JSON            DEFAULT NULL,
+  created_at  DATETIME        DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_bal_user_created (user_id, created_at),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

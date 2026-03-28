@@ -1,7 +1,25 @@
 import fs from 'fs';
 import path from 'path';
+import bcrypt from 'bcryptjs';
 import sharp from 'sharp';
 import { query, getPool } from '../config/db.js';
+import { getSeasonKey } from '../services/campaignService.js';
+import {
+  listBossTeams,
+  createBossTeam,
+  updateBossTeam,
+  deleteBossTeam,
+  duplicateBossTeam,
+  listBossAssignments,
+  regenerateCampaignMonth
+} from '../services/campaignMonthlyService.js';
+import {
+  getStageLevelsGridForAdmin,
+  upsertStageLevelOverride,
+  deleteStageLevelOverride,
+  deleteAllStageLevelOverridesForMode
+} from '../services/campaignStageLevelService.js';
+import { getCampaignStageLevel } from '../modules/campaign/config/campaignStageMatrix.js';
 
 const MAX_UNIT_IMAGE_SIZE = 10 * 1024 * 1024; // 10 Mo
 const ALLOWED_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/jpg']);
@@ -20,6 +38,17 @@ import {
   PASSIVE_KINDS_PERMANENT
 } from '../config/supportedEffects.js';
 import { ARTIFACT_STAT_KEYS, ARTIFACT_STAT_LABELS_FR } from '../../../core/artifacts.js';
+import { getBotAdminStats, getBotAdminArtifacts } from '../services/adminBotInsightService.js';
+import {
+  rebuildBotProfileCache,
+  getAllAssignableProfileIds,
+  BOT_DECISION_ACTIONS,
+  DEFAULT_ACTION_PRIORITY,
+  normalizeActionPriority,
+  getProfile,
+  isBuiltInProfileKey,
+  profileKeyFromParam
+} from '../bots/BotProfiles.js';
 
 /** Normalise le flag boss depuis le payload admin (booléen, 0/1, chaîne). */
 export function normalizeIsBoss(payload) {
@@ -1702,6 +1731,276 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
     }
   );
 
+  function normalizeCampaignMode(raw) {
+    const m = String(raw || '').toLowerCase();
+    if (m === 'normal' || m === 'hard') return m;
+    return null;
+  }
+
+  /** GET /admin/campaign/boss-teams?mode=normal|hard */
+  fastify.get(
+    '/admin/campaign/boss-teams',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const mode = normalizeCampaignMode(request.query?.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode query requis (normal|hard)' });
+      }
+      try {
+        const teams = await listBossTeams(mode);
+        return { teams };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-teams list');
+        return reply.code(500).send({ error: 'List failed', message: err.message });
+      }
+    }
+  );
+
+  /** POST /admin/campaign/boss-teams */
+  fastify.post(
+    '/admin/campaign/boss-teams',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const body = request.body || {};
+      const mode = normalizeCampaignMode(body.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode requis (normal|hard)' });
+      }
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) {
+        return reply.code(400).send({ error: 'name requis' });
+      }
+      const composition = body.composition;
+      if (!composition || typeof composition !== 'object') {
+        return reply.code(400).send({ error: 'composition requis (objet JSON)' });
+      }
+      try {
+        const id = await createBossTeam({
+          mode,
+          name,
+          sort_order: body.sort_order,
+          active: body.active,
+          notes: body.notes,
+          composition,
+          fixed_chapter: body.fixed_chapter
+        });
+        return { ok: true, id };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-teams create');
+        return reply.code(500).send({ error: 'Create failed', message: err.message });
+      }
+    }
+  );
+
+  /** PUT /admin/campaign/boss-teams/:id */
+  fastify.put(
+    '/admin/campaign/boss-teams/:id',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const id = Number(request.params?.id);
+      if (!Number.isInteger(id) || id < 1) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const body = request.body || {};
+      try {
+        const n = await updateBossTeam(id, body);
+        if (!n) {
+          return reply.code(404).send({ error: 'Boss team not found' });
+        }
+        return { ok: true };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-teams update');
+        return reply.code(500).send({ error: 'Update failed', message: err.message });
+      }
+    }
+  );
+
+  /** DELETE /admin/campaign/boss-teams/:id */
+  fastify.delete(
+    '/admin/campaign/boss-teams/:id',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const id = Number(request.params?.id);
+      if (!Number.isInteger(id) || id < 1) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      try {
+        const n = await deleteBossTeam(id);
+        if (!n) {
+          return reply.code(404).send({ error: 'Boss team not found' });
+        }
+        return { ok: true };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-teams delete');
+        return reply.code(500).send({ error: 'Delete failed', message: err.message });
+      }
+    }
+  );
+
+  /** POST /admin/campaign/boss-teams/:id/duplicate */
+  fastify.post(
+    '/admin/campaign/boss-teams/:id/duplicate',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const id = Number(request.params?.id);
+      if (!Number.isInteger(id) || id < 1) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      try {
+        const newId = await duplicateBossTeam(id);
+        if (!newId) {
+          return reply.code(404).send({ error: 'Boss team not found' });
+        }
+        return { ok: true, id: newId };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-teams duplicate');
+        return reply.code(500).send({ error: 'Duplicate failed', message: err.message });
+      }
+    }
+  );
+
+  /** GET /admin/campaign/boss-assignments?mode=normal&month=YYYY-MM */
+  fastify.get(
+    '/admin/campaign/boss-assignments',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const mode = normalizeCampaignMode(request.query?.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode query requis (normal|hard)' });
+      }
+      const month = String(request.query?.month || '').trim() || getSeasonKey();
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return reply.code(400).send({ error: 'month invalide (YYYY-MM)' });
+      }
+      try {
+        const assignments = await listBossAssignments(month, mode);
+        return { month_key: month, mode, assignments };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin boss-assignments');
+        return reply.code(500).send({ error: 'List failed', message: err.message });
+      }
+    }
+  );
+
+  /** POST /admin/campaign/regenerate — régénère le mois indiqué (défaut : mois courant) */
+  fastify.post(
+    '/admin/campaign/regenerate',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const body = request.body || {};
+      const month = String(body.month || '').trim() || getSeasonKey();
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return reply.code(400).send({ error: 'month invalide (YYYY-MM)' });
+      }
+      try {
+        await regenerateCampaignMonth(month);
+        return { ok: true, month_key: month };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign regenerate');
+        return reply.code(500).send({ error: 'Regenerate failed', message: err.message });
+      }
+    }
+  );
+
+  /** GET /admin/campaign/stage-levels?mode=normal|hard — grille 10×10 (niveaux effectifs + indicateur surcharge) */
+  fastify.get(
+    '/admin/campaign/stage-levels',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const mode = normalizeCampaignMode(request.query?.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode query requis (normal|hard)' });
+      }
+      try {
+        const grid = await getStageLevelsGridForAdmin(mode);
+        return grid;
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign stage-levels get');
+        return reply.code(500).send({ error: 'Failed', message: err.message });
+      }
+    }
+  );
+
+  /** PUT /admin/campaign/stage-levels — body: { mode, chapter, stage, level } (si level = défaut matrice, la ligne est supprimée) */
+  fastify.put(
+    '/admin/campaign/stage-levels',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const body = request.body || {};
+      const mode = normalizeCampaignMode(body.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode requis (normal|hard)' });
+      }
+      const chapter = Number(body.chapter);
+      const stage = Number(body.stage);
+      const level = Number(body.level);
+      if (!Number.isInteger(chapter) || chapter < 1 || chapter > 10) {
+        return reply.code(400).send({ error: 'chapter invalide (1–10)' });
+      }
+      if (!Number.isInteger(stage) || stage < 1 || stage > 10) {
+        return reply.code(400).send({ error: 'stage invalide (1–10)' });
+      }
+      if (!Number.isFinite(level) || level < 1 || level > 100) {
+        return reply.code(400).send({ error: 'level invalide (1–100)' });
+      }
+      try {
+        const result = await upsertStageLevelOverride(mode, chapter, stage, Math.round(level));
+        return { ok: true, ...result };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign stage-levels put');
+        return reply.code(500).send({ error: 'Save failed', message: err.message });
+      }
+    }
+  );
+
+  /** DELETE /admin/campaign/stage-levels?mode=&chapter=&stage= — revient au niveau matrice */
+  fastify.delete(
+    '/admin/campaign/stage-levels',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const mode = normalizeCampaignMode(request.query?.mode);
+      const chapter = Number(request.query?.chapter);
+      const stage = Number(request.query?.stage);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode query requis (normal|hard)' });
+      }
+      if (!Number.isInteger(chapter) || chapter < 1 || chapter > 10) {
+        return reply.code(400).send({ error: 'chapter invalide (1–10)' });
+      }
+      if (!Number.isInteger(stage) || stage < 1 || stage > 10) {
+        return reply.code(400).send({ error: 'stage invalide (1–10)' });
+      }
+      try {
+        await deleteStageLevelOverride(mode, chapter, stage);
+        const defLevel = getCampaignStageLevel(mode, chapter, stage);
+        return { ok: true, defaultLevel: defLevel };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign stage-levels delete');
+        return reply.code(500).send({ error: 'Delete failed', message: err.message });
+      }
+    }
+  );
+
+  /** POST /admin/campaign/stage-levels/reset-all — body: { mode } — supprime toutes les surcharges du mode */
+  fastify.post(
+    '/admin/campaign/stage-levels/reset-all',
+    { preHandler: preAdmin },
+    async (request, reply) => {
+      const body = request.body || {};
+      const mode = normalizeCampaignMode(body.mode);
+      if (!mode) {
+        return reply.code(400).send({ error: 'mode requis (normal|hard)' });
+      }
+      try {
+        const r = await deleteAllStageLevelOverridesForMode(mode);
+        return { ok: true, ...r };
+      } catch (err) {
+        fastify.log?.error?.(err, 'Admin campaign stage-levels reset-all');
+        return reply.code(500).send({ error: 'Reset failed', message: err.message });
+      }
+    }
+  );
+
   // --- Donjon Admin (compositions ennemies : 3 combats par niveau × élément) ---
   const DUNGEON_ELEMENTS = new Set(['fire', 'water', 'plant', 'light', 'dark']);
   const MAX_DUNGEON_LEVEL = 10;
@@ -1808,4 +2107,379 @@ export function registerAdminRoutes(fastify, authenticate, requireAdminUser) {
       }
     }
   );
+
+  // ── Gestion des bots ──────────────────────────────────────────────────────
+
+  function botProfileAssignableError(profileKey) {
+    const ids = getAllAssignableProfileIds();
+    if (!ids.includes(profileKey)) {
+      return `profile invalide — valeurs possibles : ${ids.join(', ')}`;
+    }
+    return null;
+  }
+
+  /** GET /admin/bot-profile-catalog — catalogue d’actions + définitions de profils */
+  fastify.get('/admin/bot-profile-catalog', { preHandler: preAdmin }, async (request, reply) => {
+    try {
+      const rows = await query(
+        'SELECT profile_key, display_label, extends_key FROM bot_profile_definitions'
+      ).catch(() => []);
+      const rowByKey = new Map(rows.map((r) => [r.profile_key, r]));
+      const ids = getAllAssignableProfileIds();
+      const profiles = ids.map((key) => {
+        const row = rowByKey.get(key);
+        const resolved = getProfile(key);
+        return {
+          profile_key: key,
+          display_label: row?.display_label ?? key,
+          extends_key: row?.extends_key ?? null,
+          is_built_in: isBuiltInProfileKey(key),
+          has_db_row: Boolean(row),
+          action_priority: resolved.actionPriority
+        };
+      });
+      return {
+        actions: BOT_DECISION_ACTIONS,
+        default_priority: [...DEFAULT_ACTION_PRIORITY],
+        profiles
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * PUT /admin/bot-profile-definitions/:profileKey
+   * Body: { display_label, extends_key?, action_priority?, overrides_json? }
+   */
+  fastify.put('/admin/bot-profile-definitions/:profileKey', { preHandler: preAdmin }, async (request, reply) => {
+    const key = profileKeyFromParam(request.params.profileKey);
+    if (!key) {
+      return reply
+        .code(400)
+        .send({ error: 'Clé de profil invalide (lettre minuscule, chiffres, underscore).' });
+    }
+    const { display_label, extends_key, action_priority, overrides_json } = request.body || {};
+    const label = String(display_label || key).trim().slice(0, 128);
+    if (!label) return reply.code(400).send({ error: 'display_label requis' });
+
+    let ext =
+      extends_key != null && String(extends_key).trim()
+        ? String(extends_key).trim().toLowerCase()
+        : null;
+
+    if (!isBuiltInProfileKey(key)) {
+      if (!ext || !isBuiltInProfileKey(ext)) {
+        return reply.code(400).send({
+          error: 'Pour un profil personnalisé, extends_key doit être un profil de base (balanced, farmer, …).'
+        });
+      }
+    } else {
+      ext = null;
+    }
+
+    const prio = normalizeActionPriority(action_priority);
+
+    let overridesToStore = null;
+    if (overrides_json !== undefined) {
+      if (overrides_json === null || overrides_json === '') {
+        overridesToStore = null;
+      } else if (typeof overrides_json === 'object' && !Array.isArray(overrides_json)) {
+        overridesToStore = JSON.stringify(overrides_json);
+      } else if (typeof overrides_json === 'string') {
+        try {
+          JSON.parse(overrides_json);
+          overridesToStore = overrides_json;
+        } catch {
+          return reply.code(400).send({ error: 'overrides_json JSON invalide' });
+        }
+      } else {
+        return reply.code(400).send({ error: 'overrides_json doit être un objet ou une chaîne JSON' });
+      }
+    } else {
+      const existingRows = await query(
+        'SELECT overrides_json FROM bot_profile_definitions WHERE profile_key = ?',
+        [key]
+      );
+      const ex = existingRows[0]?.overrides_json;
+      if (ex != null && ex !== '') {
+        overridesToStore = typeof ex === 'string' ? ex : JSON.stringify(ex);
+      }
+    }
+
+    try {
+      await query(
+        `INSERT INTO bot_profile_definitions (profile_key, display_label, extends_key, action_priority_json, overrides_json)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           display_label = VALUES(display_label),
+           extends_key = VALUES(extends_key),
+           action_priority_json = VALUES(action_priority_json),
+           overrides_json = VALUES(overrides_json)`,
+        [key, label, ext, JSON.stringify(prio), overridesToStore]
+      );
+      await rebuildBotProfileCache();
+      const prof = getProfile(key);
+      return {
+        success: true,
+        profile: {
+          profile_key: key,
+          display_label: label,
+          extends_key: ext,
+          action_priority: prof.actionPriority
+        }
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /** DELETE /admin/bot-profile-definitions/:profileKey */
+  fastify.delete('/admin/bot-profile-definitions/:profileKey', { preHandler: preAdmin }, async (request, reply) => {
+    const key = profileKeyFromParam(request.params.profileKey);
+    if (!key) return reply.code(400).send({ error: 'Clé de profil invalide' });
+    try {
+      const inUse = await query('SELECT COUNT(*) AS n FROM bot_profiles WHERE profile = ?', [key]);
+      if (Number(inUse[0]?.n) > 0) {
+        return reply
+          .code(400)
+          .send({ error: 'Ce profil est encore assigné à un ou plusieurs bots.' });
+      }
+      const del = await query('DELETE FROM bot_profile_definitions WHERE profile_key = ?', [key]);
+      const affected = Number(del?.affectedRows ?? 0);
+      await rebuildBotProfileCache();
+      if (!isBuiltInProfileKey(key) && affected === 0) {
+        return reply.code(404).send({ error: 'Définition introuvable' });
+      }
+      return { success: true };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /** GET /admin/bots — liste tous les bots avec leur état runtime et profil */
+  fastify.get('/admin/bots', { preHandler: preAdmin }, async (request, reply) => {
+    try {
+      const bots = await query(
+        `SELECT
+           bp.user_id,
+           bp.profile,
+           bp.enabled,
+           bp.created_at,
+           u.display_name,
+           u.email,
+           brs.current_action,
+           brs.next_action_at,
+           brs.last_action_at,
+           brs.action_count,
+           (SELECT COUNT(*) FROM bot_action_logs bal WHERE bal.user_id = bp.user_id) AS total_logs
+         FROM bot_profiles bp
+         JOIN users u ON u.id = bp.user_id
+         LEFT JOIN bot_runtime_state brs ON brs.user_id = bp.user_id
+         ORDER BY bp.created_at DESC`,
+        []
+      );
+      return { bots };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /** GET /admin/bots/:userId/stats — campagne, donjons, PvP, logs agrégés, presets, unités */
+  fastify.get('/admin/bots/:userId/stats', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+    try {
+      const stats = await getBotAdminStats(userId);
+      if (!stats) return reply.code(404).send({ error: 'Bot introuvable' });
+      return { stats };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /** GET /admin/bots/:userId/artifacts — artefacts du bot (équipés / inventaire) */
+  fastify.get('/admin/bots/:userId/artifacts', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+    try {
+      const data = await getBotAdminArtifacts(userId);
+      if (!data) return reply.code(404).send({ error: 'Bot introuvable' });
+      return data;
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /** GET /admin/bots/:userId/logs — 50 dernières actions d'un bot */
+  fastify.get('/admin/bots/:userId/logs', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+    try {
+      const logs = await query(
+        `SELECT id, action, success, detail_json, created_at
+         FROM bot_action_logs
+         WHERE user_id = ?
+         ORDER BY created_at DESC
+         LIMIT 100`,
+        [userId]
+      );
+      return { logs };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * POST /admin/bots — crée un nouveau bot (utilisateur + profil)
+   * Body: { display_name, profile }
+   */
+  fastify.post('/admin/bots', { preHandler: preAdmin }, async (request, reply) => {
+    const { display_name, profile = 'balanced' } = request.body || {};
+    const name = String(display_name || '').trim().slice(0, 64);
+    if (!name) return reply.code(400).send({ error: 'display_name requis' });
+    const profileKey = String(profile || 'balanced').trim().toLowerCase();
+    const pErr = botProfileAssignableError(profileKey);
+    if (pErr) return reply.code(400).send({ error: pErr });
+    try {
+      const email = `bot_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}@nexuscore.bot`;
+      // Vérifier unicité
+      const existing = await query('SELECT id FROM users WHERE display_name = ? OR email = ? LIMIT 1', [name, email]);
+      if (existing.length) return reply.code(409).send({ error: 'Ce nom ou email est déjà pris.' });
+
+      const randomPassword = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+      const result = await query(
+        'INSERT INTO users (email, password_hash, display_name, role, elo) VALUES (?, ?, ?, ?, ?)',
+        [email, passwordHash, name, 'player', 0]
+      );
+      const userId = result.insertId;
+
+      // Wallet de départ : assez pour invoquer via le portail standard (100 crédits/tirage)
+      // Les cores sont volontairement à 0 : le Core Portal coûte 10 cores, il vaut mieux
+      // que le bot accumule des cores via les récompenses avant de les utiliser.
+      await query(
+        'INSERT INTO user_wallet (user_id, credits, cores, gold, fragments) VALUES (?, ?, ?, ?, ?)',
+        [userId, 2000, 0, 20000, 0]
+      );
+
+      await query(
+        'INSERT INTO bot_profiles (user_id, profile, enabled) VALUES (?, ?, 1)',
+        [userId, profileKey]
+      );
+
+      return {
+        success: true,
+        bot: { user_id: userId, display_name: name, email, profile: profileKey, enabled: 1 }
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * PATCH /admin/bots/:userId — met à jour le profil ou l'état enabled
+   * Body: { profile?, enabled? }
+   */
+  fastify.patch('/admin/bots/:userId', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+
+    const { profile, enabled } = request.body || {};
+    const updates = [];
+    const values = [];
+
+    if (profile !== undefined) {
+      const profileKey = String(profile || '').trim().toLowerCase();
+      const pErr = botProfileAssignableError(profileKey);
+      if (pErr) return reply.code(400).send({ error: pErr });
+      updates.push('profile = ?');
+      values.push(profileKey);
+    }
+    if (enabled !== undefined) {
+      updates.push('enabled = ?');
+      values.push(enabled ? 1 : 0);
+    }
+    if (!updates.length) return reply.code(400).send({ error: 'Aucun champ à modifier' });
+
+    try {
+      values.push(userId);
+      await query(`UPDATE bot_profiles SET ${updates.join(', ')} WHERE user_id = ?`, values);
+      // Réinitialiser l'état runtime si on désactive
+      if (enabled === false || enabled === 0) {
+        await query('DELETE FROM bot_runtime_state WHERE user_id = ?', [userId]);
+      }
+      const rows = await query(
+        `SELECT bp.*, u.display_name, u.email
+         FROM bot_profiles bp JOIN users u ON u.id = bp.user_id
+         WHERE bp.user_id = ?`,
+        [userId]
+      );
+      return { success: true, bot: rows[0] ?? null };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * POST /admin/bots/:userId/give-wallet — donne des ressources de départ au bot
+   * Body: { credits?, cores?, gold?, fragments?, divine_credits?, divine_cores? }
+   */
+  fastify.post('/admin/bots/:userId/give-wallet', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+
+    const { credits = 0, cores = 0, gold = 0, fragments = 0, divine_credits = 0, divine_cores = 0 } = request.body || {};
+    try {
+      await query(
+        `INSERT INTO user_wallet (user_id, credits, cores, gold, fragments, divine_credits, divine_cores)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           credits        = credits        + VALUES(credits),
+           cores          = cores          + VALUES(cores),
+           gold           = gold           + VALUES(gold),
+           fragments      = fragments      + VALUES(fragments),
+           divine_credits = divine_credits + VALUES(divine_credits),
+           divine_cores   = divine_cores   + VALUES(divine_cores)`,
+        [userId, Number(credits), Number(cores), Number(gold), Number(fragments), Number(divine_credits), Number(divine_cores)]
+      );
+      const rows = await query('SELECT * FROM user_wallet WHERE user_id = ?', [userId]);
+      return { success: true, wallet: rows[0] ?? null };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * POST /admin/bots/:userId/reset-state — réinitialise l'état runtime (cooldowns)
+   */
+  fastify.post('/admin/bots/:userId/reset-state', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+    try {
+      await query('DELETE FROM bot_runtime_state WHERE user_id = ?', [userId]);
+      return { success: true };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
+
+  /**
+   * DELETE /admin/bots/:userId — supprime le bot (bot_profiles + user)
+   * Le compte utilisateur est également supprimé (ON DELETE CASCADE gère les données liées).
+   */
+  fastify.delete('/admin/bots/:userId', { preHandler: preAdmin }, async (request, reply) => {
+    const userId = Number(request.params?.userId);
+    if (!Number.isInteger(userId) || userId < 1) return reply.code(400).send({ error: 'Invalid userId' });
+    try {
+      // Vérifier que c'est bien un bot
+      const rows = await query('SELECT user_id FROM bot_profiles WHERE user_id = ?', [userId]);
+      if (!rows.length) return reply.code(404).send({ error: 'Bot introuvable' });
+      await query('DELETE FROM users WHERE id = ?', [userId]);
+      return { success: true };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed', message: err.message });
+    }
+  });
 }

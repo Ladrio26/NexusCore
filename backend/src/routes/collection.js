@@ -240,10 +240,56 @@ async function handleCollection(request, reply) {
 
   const parseJson = (v) => {
       if (v == null) return null;
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) {
+        try {
+          return JSON.parse(v.toString('utf8'));
+        } catch {
+          return null;
+        }
+      }
       if (typeof v === 'object') return v;
       if (typeof v !== 'string') return v;
-      try { return JSON.parse(v); } catch { return null; }
+      try {
+        return JSON.parse(v);
+      } catch {
+        return null;
+      }
     };
+
+    /**
+     * Colonne units.traits (JSON) + repli synergy_tag si vide.
+     * Tolère tableau, chaîne JSON, texte brut, ou objet { tags } / { traits }.
+     */
+    function parseTraitsColumn(rawTraits, synergyTag) {
+      const parsed = parseJson(rawTraits);
+      let out = [];
+      if (Array.isArray(parsed)) {
+        out = parsed.map((x) => String(x)).filter((s) => s.length > 0);
+      } else if (typeof parsed === 'string') {
+        const s = parsed.trim();
+        if (s) {
+          try {
+            const j = JSON.parse(s);
+            if (Array.isArray(j)) out = j.map((x) => String(x)).filter(Boolean);
+            else out = [s];
+          } catch {
+            out = [s];
+          }
+        }
+      } else if (parsed && typeof parsed === 'object') {
+        const o = parsed;
+        if (Array.isArray(o.tags)) out = o.tags.map((x) => String(x)).filter(Boolean);
+        else if (Array.isArray(o.traits)) out = o.traits.map((x) => String(x)).filter(Boolean);
+        else {
+          const vals = Object.values(o).filter((v) => typeof v === 'string');
+          if (vals.length) out = vals.map(String);
+        }
+      }
+      if (out.length === 0 && synergyTag != null && String(synergyTag).trim()) {
+        out = [String(synergyTag).trim()];
+      }
+      return out;
+    }
 
     const toSafeNumber = (v) => (typeof v === 'bigint' ? Number(v) : v);
 
@@ -315,7 +361,7 @@ async function handleCollection(request, reply) {
         base_defense: toSafeNumber(r.base_defense),
         base_speed: toSafeNumber(r.base_speed),
         mastery: toSafeNumber(r.mastery),
-        traits: parseJson(r.traits),
+        traits: parseTraitsColumn(r.traits, r.synergy_tag),
         skill_data: parseJson(r.skill_data),
         synergy_tag: r.synergy_tag,
         core_type: r.core_type,

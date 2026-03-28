@@ -2,7 +2,10 @@
   <section class="pvp">
     <div class="card nx-panel">
       <div class="pvp-header-row">
-        <h1 class="nx-title">PvP</h1>
+        <h1 class="nx-title">
+          PvP
+          <span v-if="pvpMe && typeof pvpMe.pvp_energy === 'number'" class="pvp-energy-inline">({{ pvpMe.pvp_energy }}/10)</span>
+        </h1>
         <div class="pvp-elo">
           <span class="pvp-elo-label">Elo actuel</span>
           <span class="pvp-elo-value">{{ pvpMe?.pvp_elo ?? 0 }}</span>
@@ -11,7 +14,7 @@
           <span class="pvp-rewards-label">Récompenses en cas de victoire / défaite</span>
           <div class="pvp-rewards-content">
             <p><strong>Victoire :</strong> +3 crédits, 1000 XP par unité, mise à jour de l’Elo. Aucun or ni artefact en fin de combat.</p>
-            <p><strong>Défaite :</strong> aucun or ni artefact ; fatigue d’équipe (+3).</p>
+            <p><strong>Défaite :</strong> aucun or ni artefact. Pas de fatigue en PvP (limite = compteur horaire).</p>
             <p class="pvp-rewards-note">En atteignant un nouveau palier Elo (Argent, Or, Platine, etc.), tu débloques des récompenses : crédits, cores, fragments, essence d’ascension.</p>
           </div>
         </div>
@@ -23,6 +26,11 @@
       </div>
 
       <template v-else>
+        <div v-if="(pvpMe?.pvp_energy ?? 0) <= 0" class="pvp-energy-alert">
+          <p>
+            Plus de combats PvP disponibles. Le compteur se réinitialise à chaque heure pile (UTC), jusqu’à 10 combats.
+          </p>
+        </div>
         <div class="pvp-setup-row">
           <div class="pvp-defense-link">
             <span class="pvp-defense-label">Défense :</span>
@@ -43,7 +51,7 @@
           <div class="pvp-unit-row">
             <span class="pvp-unit-row-label">CAC</span>
             <div class="pvp-unit-list">
-              <div v-for="unit in selectedAttackPreset.front_units" :key="`att-front-${unit.user_unit_id}`" class="pvp-unit-card" :title="`Fatigue : ${unit.fatigue ?? 0}`">
+              <div v-for="unit in selectedAttackPreset.front_units" :key="`att-front-${unit.user_unit_id}`" class="pvp-unit-card" :title="unit.name">
                 <img :src="unitImage(unit)" :alt="unit.name" class="pvp-unit-avatar" />
                 <span class="pvp-unit-name">{{ unit.name }}</span>
                 <span class="pvp-unit-level">Nv.{{ unit.level }}</span>
@@ -54,7 +62,7 @@
           <div class="pvp-unit-row">
             <span class="pvp-unit-row-label">Distance</span>
             <div class="pvp-unit-list">
-              <div v-for="unit in selectedAttackPreset.back_units" :key="`att-back-${unit.user_unit_id}`" class="pvp-unit-card" :title="`Fatigue : ${unit.fatigue ?? 0}`">
+              <div v-for="unit in selectedAttackPreset.back_units" :key="`att-back-${unit.user_unit_id}`" class="pvp-unit-card" :title="unit.name">
                 <img :src="unitImage(unit)" :alt="unit.name" class="pvp-unit-avatar" />
                 <span class="pvp-unit-name">{{ unit.name }}</span>
                 <span class="pvp-unit-level">Nv.{{ unit.level }}</span>
@@ -68,7 +76,7 @@
           <button
             type="button"
             class="nx-btn nx-glow-blue pvp-btn-find"
-            :disabled="loading || !attackerPresetId || !!pendingBattle || attackPresetHasUnfitUnits"
+            :disabled="loading || !attackerPresetId || !!pendingBattle || attackPresetHasUnfitUnits || (pvpMe?.pvp_energy ?? 0) <= 0"
             @click="findAndFight"
           >
             {{ loading ? 'Recherche & combat…' : 'Trouver un adversaire' }}
@@ -169,7 +177,7 @@ type Preset = {
   back_units: PresetUnit[];
 };
 
-const pvpMe = ref<{ pvp_elo: number; defense: { preset_id: number } | null } | null>(null);
+const pvpMe = ref<{ pvp_elo: number; pvp_energy?: number; defense: { preset_id: number } | null } | null>(null);
 const presets = ref<Preset[]>([]);
 const loading = ref(false);
 const battleError = ref('');
@@ -192,6 +200,9 @@ async function loadPvpMe() {
   try {
     const { data } = await api.get('/pvp/me');
     pvpMe.value = data;
+    window.dispatchEvent(
+      new CustomEvent('pvp-me-updated', { detail: { pvp_energy: data.pvp_energy } })
+    );
   } catch {
     pvpMe.value = null;
   }
@@ -235,6 +246,11 @@ const attackPresetHasUnfitUnits = computed(() => {
 
 async function findAndFight() {
   if (!attackerPresetId.value) return;
+  if ((pvpMe.value?.pvp_energy ?? 0) <= 0) {
+    battleError.value =
+      'Plus de combats PvP disponibles. Le compteur se réinitialise à chaque heure pile (UTC).';
+    return;
+  }
   if (attackPresetHasUnfitUnits.value) {
     battleError.value = PRESET_UNFIT_MSG;
     return;
@@ -386,6 +402,12 @@ onMounted(() => {
   margin-bottom: 0.5rem;
 }
 .pvp-header-row .nx-title { margin: 0; }
+.pvp-energy-inline {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #93c5fd;
+  margin-left: 0.25rem;
+}
 .pvp-header-row .pvp-elo { margin-bottom: 0; }
 .pvp-rewards-summary {
   width: 100%;
@@ -435,6 +457,19 @@ onMounted(() => {
   background: rgba(100, 116, 139, 0.2);
   border-radius: 0.5rem;
   margin-top: 0.5rem;
+}
+.pvp-energy-alert {
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.75rem;
+  border-radius: 0.5rem;
+  background: rgba(127, 29, 29, 0.25);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+}
+.pvp-energy-alert p {
+  margin: 0;
+  color: #fecaca;
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 .pvp-alert p { margin-bottom: 0.75rem; }
 .pvp-setup-row {

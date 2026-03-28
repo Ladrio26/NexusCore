@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { ensureDatabaseSchema, getPool } from './config/db.js';
+import { rebuildBotProfileCache } from './bots/BotProfiles.js';
 import { authMiddleware } from './middleware/auth.js';
 import { requireAdminUser } from './middleware/requireAdminUser.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -26,13 +27,17 @@ import { registerFeedbackRoutes } from './routes/feedback.js';
 import { registerNotificationsRoutes } from './routes/notifications.js';
 import { registerRestCenterRoutes } from './routes/restCenter.js';
 import { registerDungeonRoutes } from './routes/dungeon.js';
+import { registerTutorialRoutes } from './routes/tutorial.js';
 import { registerCustomUnitRoutes } from './routes/customUnit.js';
 import { startGuildWarCron } from './services/guildWarCronService.js';
+import { startCampaignMonthlyCron } from './services/campaignCronService.js';
+import { registerBotSystem } from './registerBotSystem.js';
 
 export async function buildApp({ logger = true } = {}) {
   const fastify = Fastify({ logger });
 
   await ensureDatabaseSchema();
+  await rebuildBotProfileCache();
 
   fastify.decorate('authenticate', authMiddleware);
 
@@ -79,9 +84,12 @@ export async function buildApp({ logger = true } = {}) {
   registerNotificationsRoutes(fastify, authMiddleware);
   registerRestCenterRoutes(fastify, authMiddleware);
   registerDungeonRoutes(fastify, authMiddleware);
+  registerTutorialRoutes(fastify, authMiddleware);
   registerCustomUnitRoutes(fastify, authMiddleware, requireAdminUser);
 
   startGuildWarCron();
+  startCampaignMonthlyCron();
+  registerBotSystem();
 
   return fastify;
 }

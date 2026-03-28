@@ -105,6 +105,7 @@ export async function buildDungeonEnemyTeam(element, level, combatIndex) {
   if (!Array.isArray(unitSpecs) || unitSpecs.length === 0) return null;
   const mult = Number(template?.stat_multiplier ?? 1) || 1;
   const team = [];
+  const isDungeonBossFight = combatIndex === COMBATS_PER_LEVEL;
   for (let i = 0; i < unitSpecs.length; i++) {
     const spec = unitSpecs[i];
     const code = spec?.code;
@@ -116,7 +117,16 @@ export async function buildDungeonEnemyTeam(element, level, combatIndex) {
     const unitSpec = spec.specialization ?? null;
     const u = buildUnitForCombat(unit, mult, i + 1, unitLevel, unitSpec);
     u.position = pos;
+    if (isDungeonBossFight && (spec.is_boss === true || spec.isBoss === true)) {
+      u.isBoss = true;
+      u.campaignBossSlot = true;
+    }
     team.push(u);
+  }
+  if (isDungeonBossFight && team.length > 0 && !team.some((u) => u.isBoss)) {
+    const bossUnit = team[team.length - 1];
+    bossUnit.isBoss = true;
+    bossUnit.campaignBossSlot = true;
   }
   return team.length > 0 ? team : null;
 }

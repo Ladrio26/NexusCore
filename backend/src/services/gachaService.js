@@ -8,6 +8,7 @@ import {
   resolveUserGuildId,
   GUILD_NOTIFICATION_TYPES
 } from './guildNotificationService.js';
+import { getAllCampaignBossUnitCodes } from './campaignMonthlyService.js';
 
 // --- Raretés normalisées (une seule valeur par pool en DB)
 const VALID_RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
@@ -170,10 +171,7 @@ export async function hasGuaranteedNextLegendaryStandard(userId) {
  * Ces unités ne doivent pas être tirées au Sanctuaire.
  */
 export async function getBossUnitCodes() {
-  const rows = await query(
-    'SELECT DISTINCT boss_unit_code FROM campaign_stages WHERE boss_unit_code IS NOT NULL AND boss_unit_code != ""'
-  );
-  return rows.map((row) => row.boss_unit_code);
+  return getAllCampaignBossUnitCodes();
 }
 
 /** Éléments pour portails classiques (feu, eau, plante) vs divins (lumière, ténèbres). */

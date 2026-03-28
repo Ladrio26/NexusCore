@@ -8,7 +8,7 @@ function rarityLeq(a, b) {
 }
 
 // RNG déterministe simple (mulberry32-like)
-function hashSeed(seed) {
+export function hashSeed(seed) {
   let h = 1779033703 ^ seed.length;
   for (let i = 0; i < seed.length; i++) {
     h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
@@ -276,7 +276,7 @@ function computeRewards(mode, chapter, stage, isBoss) {
 /**
  * Charge et catégorise les unités éligibles à la campagne.
  */
-async function loadUnitPool() {
+export async function loadUnitPool() {
   const rows = await query(
     "SELECT code, rarity, role, attack_type, element, archetype FROM units WHERE element IN ('water','fire','plant') AND COALESCE(is_boss, 0) = 0 AND code NOT LIKE 'BOSS_CH%'"
   );
@@ -450,5 +450,93 @@ function computeLevelForEnemy(mode, chapter) {
   // Hard : +10 niveaux (cap 50)
   const boosted = Math.min(50, base[1] + 10);
   return boosted;
+}
+
+/**
+ * Composition aléatoire pour un stage non-boss (1–9), déterministe via seedString.
+ * Retourne uniquement code + position ; niveau et spécialisation viennent de campaignStageMatrix au combat.
+ *
+ * @param {{ mode: 'normal'|'hard', chapter: number, stage: number, seedString: string }} opts
+ */
+export async function generateNonBossEnemyComposition({ mode, chapter, stage, seedString }) {
+  const rng = hashSeed(seedString);
+  const pools = await loadUnitPool();
+  const isBoss = false;
+  const dominantElement = pickDominantElement(rng);
+  const enemyCount = getEnemyCount(chapter, isBoss, mode);
+  const template = pickTemplate(mode, rng);
+  let roleCounts = computeRoleCounts(template, enemyCount);
+
+  if (roleCounts.tank + roleCounts.dps + roleCounts.support !== enemyCount) {
+    roleCounts.tank = 1;
+    roleCounts.support = 0;
+    roleCounts.dps = Math.max(1, enemyCount - 1);
+  }
+
+  const maxRarity = getMaxRarity(mode, chapter, isBoss);
+  const usedCounts = new Map();
+  let rangeCounts = { cac: 0, distance: 0 };
+
+  const roleSlots = [];
+  for (let i = 0; i < roleCounts.tank; i++) roleSlots.push('tank');
+  for (let i = 0; i < roleCounts.dps; i++) roleSlots.push('dps');
+  for (let i = 0; i < roleCounts.support; i++) roleSlots.push('support');
+
+  for (let i = roleSlots.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = roleSlots[i];
+    roleSlots[i] = roleSlots[j];
+    roleSlots[j] = tmp;
+  }
+
+  const units = [];
+  for (let idx = 0; idx < roleSlots.length; idx++) {
+    const roleCat = roleSlots[idx];
+    const desiredRange = pickRangeCategoryForSlot(dominantElement, rangeCounts, enemyCount, rng);
+
+    let unit = pickUnitForSlot(pools, {
+      rng,
+      dominantElement,
+      roleCategory: roleCat,
+      desiredRange,
+      maxRarity,
+      usedCounts
+    });
+
+    if (!unit) {
+      const relaxedPool = pools.filter((u) => {
+        if (u.roleCategory !== roleCat) return false;
+        if (u.rangeCategory !== desiredRange) return false;
+        if (!rarityLeq(u.rarity, maxRarity)) return false;
+        const used = usedCounts.get(u.code) ?? 0;
+        if (used >= 2) return false;
+        return true;
+      });
+      if (relaxedPool.length) {
+        unit = choice(rng, relaxedPool);
+        usedCounts.set(unit.code, (usedCounts.get(unit.code) ?? 0) + 1);
+      }
+    }
+
+    if (!unit) {
+      const anyPool = pools.filter((u) => {
+        if (!rarityLeq(u.rarity, maxRarity)) return false;
+        const used = usedCounts.get(u.code) ?? 0;
+        return used < 2;
+      });
+      unit = choice(rng, anyPool) || pools[0];
+      usedCounts.set(unit.code, (usedCounts.get(unit.code) ?? 0) + 1);
+    }
+
+    if (unit.rangeCategory === 'cac') rangeCounts.cac += 1;
+    else rangeCounts.distance += 1;
+
+    units.push({
+      code: unit.code,
+      position: unit.rangeCategory === 'cac' ? 'front' : 'back'
+    });
+  }
+
+  return { units, dominantElement };
 }
 

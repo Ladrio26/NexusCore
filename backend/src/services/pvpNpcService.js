@@ -4,6 +4,7 @@
  */
 import { query } from '../config/db.js';
 import { computeScaledStats } from '../../../core/combatEngine.js';
+import { getAllCampaignBossUnitCodes } from './campaignMonthlyService.js';
 
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 
@@ -186,10 +187,7 @@ function warnIfAbnormalNpcStats(unit, context) {
 
 /** Codes d'unités qui sont des boss de chapitre (campagne). À exclure des équipes PNJ PvP. */
 async function getBossUnitCodes() {
-  const rows = await query(
-    'SELECT DISTINCT boss_unit_code FROM campaign_stages WHERE boss_unit_code IS NOT NULL AND boss_unit_code != ""'
-  );
-  return rows.map((r) => r.boss_unit_code);
+  return getAllCampaignBossUnitCodes();
 }
 
 /**

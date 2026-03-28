@@ -16,11 +16,11 @@ import {
   getPresetSlots,
   findOpponent,
   recordPvpBattle,
-  grantPvpXp,
-  applyPvpFatigue
+  grantPvpXp
 } from '../services/pvpService.js';
 import { generateNpcDefense } from '../services/pvpNpcService.js';
-import { query } from '../config/db.js';
+import { query, withTransaction } from '../config/db.js';
+import { syncPvpEnergyForDisplay, assertPvpEnergyAndConsumeTx } from '../services/pvpEnergyService.js';
 import { MAX_TEAM_PRESETS } from '../constants/teamPresets.js';
 import { createPendingBattle, serializePendingBattle } from '../services/pendingBattleService.js';
 import { getSkillDescriptionForTooltip } from '../utils/skillDescription.js';
@@ -31,8 +31,10 @@ export function registerPvpRoutes(fastify, authenticate) {
     const userId = request.user.id;
     const elo = await getPlayerElo(userId);
     const defense = await getDefense(userId);
+    const pvp_energy = await syncPvpEnergyForDisplay(userId);
     return {
       pvp_elo: elo,
+      pvp_energy,
       defense: defense ? { preset_id: defense.preset_id } : null
     };
   });
@@ -72,6 +74,14 @@ export function registerPvpRoutes(fastify, authenticate) {
       return reply.code(400).send({
         error: 'NO_DEFENSE',
         message: 'Configurez une défense (preset) pour accéder au PvP.'
+      });
+    }
+    const energy = await syncPvpEnergyForDisplay(userId);
+    if (energy <= 0) {
+      return reply.code(400).send({
+        error: 'PVP_NO_ENERGY',
+        message:
+          "Plus de combats PvP disponibles. Le compteur se réinitialise à chaque heure pile (UTC)."
       });
     }
     let excludeDefenderId = request.query?.exclude_defender_id != null ? Number(request.query.exclude_defender_id) : null;
@@ -205,6 +215,11 @@ export function registerPvpRoutes(fastify, authenticate) {
     }
     const attackerUserUnitIds = attackerSlotsData.slots.map((s) => Number(s.user_unit_id)).filter(Boolean);
 
+    // PvP attaquant : pas de fatigue en combat (limite = compteur horaire côté joueur)
+    for (const u of teamA) {
+      u.fatigue = 0;
+    }
+
     const initialUnits = [
       ...teamA.map((u, i) => ({
         id: `A-${i}`,
@@ -223,7 +238,7 @@ export function registerPvpRoutes(fastify, authenticate) {
         rarity: (u.rarity || 'common').toLowerCase(),
         archetype: u.archetype ?? null,
         role: u.role ?? null,
-        fatigue: u.fatigue ?? 0
+        fatigue: 0
       })),
       ...teamB.map((u, i) => ({
         id: `B-${i}`,
@@ -245,7 +260,7 @@ export function registerPvpRoutes(fastify, authenticate) {
       }))
     ];
 
-    const pendingBattle = await createPendingBattle(userId, 'pvp', {
+    const payload = {
       title: 'Combat PvP',
       result: null,
       success: null,
@@ -266,10 +281,26 @@ export function registerPvpRoutes(fastify, authenticate) {
         defenderEloBefore,
         attackerUserUnitIds
       }
-    });
+    };
+
+    let pendingRow;
+    try {
+      pendingRow = await withTransaction(async (tx) => {
+        await assertPvpEnergyAndConsumeTx(userId, tx);
+        return createPendingBattle(userId, 'pvp', payload, tx);
+      });
+    } catch (err) {
+      if (err?.code === 'PVP_NO_ENERGY') {
+        return reply.code(400).send({
+          error: 'PVP_NO_ENERGY',
+          message: err.message || 'Énergie PvP insuffisante.'
+        });
+      }
+      throw err;
+    }
 
     return {
-      pendingBattle: serializePendingBattle(pendingBattle)
+      pendingBattle: serializePendingBattle(pendingRow)
     };
   });
 

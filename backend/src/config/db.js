@@ -176,6 +176,21 @@ export async function ensureDatabaseSchema() {
     }
 
     try {
+      await query(
+        'ALTER TABLE users ADD COLUMN combat_tutorial_completed TINYINT(1) NOT NULL DEFAULT 1'
+      );
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_FIELDNAME') {
+        lastError = err;
+        if (attempt < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    try {
       await query('ALTER TABLE guild_war_defenses ADD COLUMN preset_id INT UNSIGNED NULL');
     } catch (err) {
       if (err?.code !== 'ER_DUP_FIELDNAME') {
@@ -774,6 +789,109 @@ export async function ensureDatabaseSchema() {
     } catch (e) {
       console.warn('[ensureDatabaseSchema] sync custom_skill_tree_nodes.power_cost:', e?.message || e);
     }
+    // Campagne normale : même découpage mensuel (YYYY-MM) que le hard — progression + récompenses first-clear par saison
+    try {
+      const colRows = await query(`
+        SELECT COLUMN_NAME FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'campaign_progress_normal' AND COLUMN_NAME = 'season_key'
+      `);
+      if (!colRows.length) {
+        await query('ALTER TABLE campaign_progress_normal ADD COLUMN season_key VARCHAR(7) NULL AFTER user_id');
+        await query(
+          `UPDATE campaign_progress_normal SET season_key = DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m') WHERE season_key IS NULL`
+        );
+        await query('ALTER TABLE campaign_progress_normal MODIFY COLUMN season_key VARCHAR(7) NOT NULL');
+        await query(
+          'ALTER TABLE campaign_progress_normal DROP PRIMARY KEY, ADD PRIMARY KEY (user_id, season_key, chapter, stage)'
+        );
+      } else {
+        const keyCols = await query(`
+          SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'campaign_progress_normal' AND CONSTRAINT_NAME = 'PRIMARY'
+          ORDER BY ORDINAL_POSITION
+        `);
+        const hasSeasonInPk = keyCols.some((k) => k.COLUMN_NAME === 'season_key');
+        if (!hasSeasonInPk) {
+          await query(
+            `UPDATE campaign_progress_normal SET season_key = DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m') WHERE season_key IS NULL OR season_key = ''`
+          );
+          await query('ALTER TABLE campaign_progress_normal MODIFY COLUMN season_key VARCHAR(7) NOT NULL');
+          await query(
+            'ALTER TABLE campaign_progress_normal DROP PRIMARY KEY, ADD PRIMARY KEY (user_id, season_key, chapter, stage)'
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('[ensureDatabaseSchema] campaign_progress_normal.season_key:', e?.message || e);
+    }
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS campaign_monthly_enemies (
+        month_key VARCHAR(7) NOT NULL,
+        mode VARCHAR(16) NOT NULL,
+        chapter TINYINT UNSIGNED NOT NULL,
+        stage TINYINT UNSIGNED NOT NULL,
+        enemy_template JSON NOT NULL COMMENT 'Forme: { units: [{ code, position }] } — niveaux via matrice au combat',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (month_key, mode, chapter, stage),
+        KEY idx_cme_month (month_key)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS campaign_boss_teams (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        mode VARCHAR(16) NOT NULL,
+        name VARCHAR(128) NOT NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        notes TEXT NULL,
+        composition JSON NOT NULL COMMENT '{ units: [{code,position}], boss_unit_code }',
+        fixed_chapter TINYINT UNSIGNED NULL DEFAULT NULL COMMENT 'Si 10 : toujours affectée au boss chapitre 10 (non mélangée)',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_cbt_mode (mode, active, sort_order)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    try {
+      await query(
+        'ALTER TABLE campaign_boss_teams ADD COLUMN fixed_chapter TINYINT UNSIGNED NULL DEFAULT NULL COMMENT \'Si 10 : boss final ch.10, non mélangé\' AFTER composition'
+      );
+    } catch (e) {
+      if (e?.code !== 'ER_DUP_FIELDNAME') {
+        console.warn('[ensureDatabaseSchema] campaign_boss_teams.fixed_chapter:', e?.message || e);
+      }
+    }
+    try {
+      await query(
+        'UPDATE campaign_boss_teams SET fixed_chapter = 10 WHERE sort_order = 10 AND (fixed_chapter IS NULL OR fixed_chapter = 0)'
+      );
+    } catch (e) {
+      console.warn('[ensureDatabaseSchema] campaign_boss_teams fixed_chapter seed:', e?.message || e);
+    }
+    await query(`
+      CREATE TABLE IF NOT EXISTS campaign_boss_assignments (
+        month_key VARCHAR(7) NOT NULL,
+        mode VARCHAR(16) NOT NULL,
+        chapter TINYINT UNSIGNED NOT NULL,
+        boss_team_id INT UNSIGNED NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (month_key, mode, chapter),
+        KEY idx_cba_team (boss_team_id),
+        CONSTRAINT fk_cba_boss_team FOREIGN KEY (boss_team_id) REFERENCES campaign_boss_teams(id) ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS campaign_stage_level_overrides (
+        mode VARCHAR(16) NOT NULL,
+        chapter TINYINT UNSIGNED NOT NULL,
+        stage TINYINT UNSIGNED NOT NULL,
+        level TINYINT UNSIGNED NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (mode, chapter, stage),
+        KEY idx_cslo_mode (mode)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
     await query(`
       CREATE TABLE IF NOT EXISTS gacha_sanctuary_pull_log (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -797,6 +915,63 @@ export async function ensureDatabaseSchema() {
         FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE RESTRICT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    // ── Système de bots joueurs ──────────────────────────────────────────────
+    await query(`
+      CREATE TABLE IF NOT EXISTS bot_profiles (
+        user_id    INT UNSIGNED NOT NULL,
+        profile    VARCHAR(32)  NOT NULL DEFAULT 'balanced',
+        enabled    TINYINT(1)   NOT NULL DEFAULT 1,
+        created_at DATETIME     DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS bot_runtime_state (
+        user_id            INT UNSIGNED NOT NULL,
+        current_action     VARCHAR(64)  DEFAULT NULL,
+        next_action_at     DATETIME     DEFAULT NULL,
+        cooldowns_json     JSON         DEFAULT NULL,
+        dungeon_state_json JSON         DEFAULT NULL,
+        last_action_at     DATETIME     DEFAULT NULL,
+        action_count       INT UNSIGNED NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS bot_action_logs (
+        id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id     INT UNSIGNED    NOT NULL,
+        action      VARCHAR(64)     NOT NULL,
+        success     TINYINT(1)      NOT NULL DEFAULT 1,
+        detail_json JSON            DEFAULT NULL,
+        created_at  DATETIME        DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_bal_user_created (user_id, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS bot_profile_definitions (
+        profile_key           VARCHAR(64)  NOT NULL PRIMARY KEY,
+        display_label         VARCHAR(128) NOT NULL,
+        extends_key           VARCHAR(64)  DEFAULT NULL COMMENT 'Profil code de base (balanced, farmer, …) pour les profils custom',
+        action_priority_json  JSON         NOT NULL,
+        overrides_json        JSON         DEFAULT NULL,
+        updated_at            DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    try {
+      await query(
+        "ALTER TABLE bot_profiles MODIFY COLUMN profile VARCHAR(64) NOT NULL DEFAULT 'balanced'"
+      );
+    } catch {
+      /* Déjà appliqué ou table absente sur vieux dump — ignoré */
+    }
+
     return;
   }
 

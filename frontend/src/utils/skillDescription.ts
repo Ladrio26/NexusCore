@@ -56,6 +56,28 @@ export function getUnitSkillBaseText(skillData: Record<string, unknown> | null |
   return base ? normalizeSkillDescription(base) : '';
 }
 
+/** Bloc contenant specA/specB : `description` racine ou `description` de la compétence ACTIVE dans skills[]. */
+function getSpecBranchDescriptionObject(
+  skillData: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  if (!skillData || typeof skillData !== 'object') return null;
+  const root = skillData.description;
+  if (root && typeof root === 'object') {
+    const d = root as Record<string, unknown>;
+    if (typeof d.specA === 'string' || typeof d.specB === 'string') return d;
+  }
+  const skills = Array.isArray(skillData.skills) ? skillData.skills : [];
+  const active = skills.find(
+    (s: unknown) => s && typeof s === 'object' && String((s as Record<string, unknown>).type ?? '').toUpperCase() === 'ACTIVE'
+  ) as Record<string, unknown> | undefined;
+  const ad = active?.description;
+  if (ad && typeof ad === 'object') {
+    const d = ad as Record<string, unknown>;
+    if (typeof d.specA === 'string' || typeof d.specB === 'string') return d;
+  }
+  return null;
+}
+
 /** Texte de la branche spécialisée (specA / specB) si l’unité a choisi A ou B. */
 export function getUnitSpecializationText(
   skillData: Record<string, unknown> | null | undefined,
@@ -63,12 +85,11 @@ export function getUnitSpecializationText(
 ): string {
   const specLetter =
     specialization != null && String(specialization).trim() !== ''
-      ? String(specialization).toUpperCase()
+      ? String(specialization).trim().toUpperCase()
       : null;
   if (specLetter !== 'A' && specLetter !== 'B') return '';
-  const desc = skillData?.description;
-  if (!desc || typeof desc !== 'object') return '';
-  const d = desc as Record<string, unknown>;
+  const d = getSpecBranchDescriptionObject(skillData);
+  if (!d) return '';
   const raw = specLetter === 'A' ? d.specA : d.specB;
   return typeof raw === 'string' && raw.trim() ? normalizeSkillDescription(raw.trim()) : '';
 }

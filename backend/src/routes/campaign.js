@@ -129,7 +129,7 @@ export function registerCampaignRoutes(fastify, authenticate) {
     if (mode !== 'normal' && mode !== 'hard') {
       return reply.code(400).send({ error: 'INVALID_MODE', message: 'mode doit être normal ou difficile' });
     }
-    const seasonKey = mode === 'hard' ? getSeasonKey() : null;
+    const seasonKey = getSeasonKey();
     const status = await getCampaignStatus(userId, mode, seasonKey);
     if (!status.unlocked) {
       return reply.code(403).send({
@@ -180,7 +180,7 @@ export function registerCampaignRoutes(fastify, authenticate) {
       return reply.code(403).send({ error: 'CAMPAIGN_LOCKED', requiredUnits: 5 });
     }
 
-    const seasonKey = m === 'hard' ? getSeasonKey() : null;
+    const seasonKey = getSeasonKey();
     const chapterAvailable = await isChapterAvailable(userId, ch, m, seasonKey);
     if (!chapterAvailable) {
       return reply.code(403).send({ error: 'CHAPTER_LOCKED', message: 'Chapitre non débloqué' });
@@ -232,9 +232,10 @@ export function registerCampaignRoutes(fastify, authenticate) {
     }
 
     const variantKey = m === 'hard' ? getHardVariantKey(seasonKey, ch) : null;
-    const seedStr = m === 'normal'
-      ? `${userId}-${ch}-${st}`
-      : `${userId}-${seasonKey}-${ch}-${st}-${variantKey}`;
+    const seedStr =
+      m === 'normal'
+        ? `${userId}-${seasonKey}-${ch}-${st}`
+        : `${userId}-${seasonKey}-${ch}-${st}-${variantKey}`;
     const seed = hashSeed(seedStr);
 
     const initialUnits = [

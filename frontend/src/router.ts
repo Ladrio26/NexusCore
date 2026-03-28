@@ -45,6 +45,7 @@ const routes = [
   { path: '/admin/feedback', component: () => import('./views/AdminFeedbackView.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
   { path: '/admin/campaign', component: () => import('./views/AdminCampaignView.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
   { path: '/admin/dungeon', component: AdminDungeonView, meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
+  { path: '/admin/bots', component: () => import('./views/AdminBotsView.vue'), meta: { requiresAuth: true, fullWidth: true, requiresAdmin: true } },
   {
     path: '/admin/custom-unit',
     component: () => import('./views/CustomUnitView.vue'),

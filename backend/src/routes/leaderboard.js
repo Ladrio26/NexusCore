@@ -32,9 +32,10 @@ export function registerLeaderboardRoutes(fastify, authenticate) {
            LEFT JOIN (
              SELECT user_id, MAX(CASE WHEN chapter = 5 AND stage = 10 AND cleared = 1 THEN 1 ELSE 0 END) AS hard_unlocked
              FROM campaign_progress_normal
+             WHERE season_key = ?
              GROUP BY user_id
            ) n ON n.user_id = u.id`,
-          [seasonKey]
+          [seasonKey, seasonKey]
         );
 
         function computeUnlockedScore(hardUnlocked, maxClearedScore) {

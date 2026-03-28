@@ -49,6 +49,82 @@
             </button>
           </div>
         </div>
+        <!-- Filtre par traits -->
+        <div v-if="availableTraits.length" class="trait-filter-bar">
+          <span class="trait-filter-label">Traits :</span>
+          <button
+            type="button"
+            class="trait-filter-btn"
+            :class="{ active: selectedTraitFilters.size === 0 }"
+            @click="clearTraitFilters()"
+          >Tous</button>
+          <button
+            v-for="trait in availableTraits"
+            :key="trait"
+            type="button"
+            class="trait-filter-btn"
+            :class="{ active: selectedTraitFilters.has(trait) }"
+            @click="toggleTraitFilter(trait)"
+          >{{ toTraitFr(trait) }}</button>
+        </div>
+
+        <div class="collection-filter-extra-wrap">
+          <button
+            type="button"
+            class="collection-filter-extra-toggle"
+            :class="{ open: showPowerRarityFilters, 'has-active': extraPowerRarityFiltersActive }"
+            :aria-expanded="showPowerRarityFilters"
+            aria-controls="collection-filters-power-rarity"
+            @click="showPowerRarityFilters = !showPowerRarityFilters"
+          >
+            <span class="collection-filter-extra-toggle-label">
+              {{ showPowerRarityFilters ? 'Masquer filtres puissance & rareté' : 'Filtres puissance & rareté' }}
+            </span>
+            <span v-if="extraPowerRarityFiltersActive && !showPowerRarityFilters" class="collection-filter-extra-badge" title="Filtres actifs">●</span>
+            <span class="collection-filter-extra-chevron" aria-hidden="true">{{ showPowerRarityFilters ? '▴' : '▾' }}</span>
+          </button>
+          <div
+            v-show="showPowerRarityFilters"
+            id="collection-filters-power-rarity"
+            class="collection-filters-secondary"
+          >
+            <div class="trait-filter-bar trait-filter-bar--split">
+              <span class="trait-filter-label">Puissance :</span>
+              <button
+                type="button"
+                class="trait-filter-btn"
+                :class="{ active: selectedPowerLevelFilters.size === 0 }"
+                @click="clearPowerLevelFilters()"
+              >Tous</button>
+              <button
+                v-for="pl in POWER_LEVEL_FILTER_VALUES"
+                :key="'p' + pl"
+                type="button"
+                class="trait-filter-btn"
+                :class="{ active: selectedPowerLevelFilters.has(pl) }"
+                @click="togglePowerLevelFilter(pl)"
+              >P{{ pl }}</button>
+            </div>
+            <div class="trait-filter-bar trait-filter-bar--split">
+              <span class="trait-filter-label">Rareté :</span>
+              <button
+                type="button"
+                class="trait-filter-btn"
+                :class="{ active: selectedRarityFilters.size === 0 }"
+                @click="clearRarityFilters()"
+              >Tous</button>
+              <button
+                v-for="opt in RARITY_FILTER_OPTIONS"
+                :key="opt.key"
+                type="button"
+                class="trait-filter-btn"
+                :class="{ active: selectedRarityFilters.has(opt.key) }"
+                @click="toggleRarityFilter(opt.key)"
+              >{{ opt.label }}</button>
+            </div>
+          </div>
+        </div>
+
         <div class="collection-columns" :class="'view-mode-' + viewMode">
           <div class="unit-column" id="cacColumn">
             <h2 class="unit-column-title-enhanced">⚔️ Corps à Corps <span class="unit-count-badge">{{ collectionCAC.length }}</span></h2>
@@ -62,58 +138,76 @@
               'rarity-' + (unit.rarity || 'common'),
               'element-' + (unit.element || 'neutral'),
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
-              { selected: selectedUnitId === unit.user_unit_id }
+              { selected: selectedUnitId === unit.user_unit_id },
+              { 'card-expanded': expandedUnitIds.has(unit.user_unit_id) }
             ]"
-            :title="collectionUnitHoverTitle(unit)"
             @click="addUnitToTeam(unit)"
+            @mouseenter="showUnitTooltip(unit, $event)"
+            @mouseleave="hideUnitTooltip()"
           >
             <div class="rarity-bar" :class="'rarity-' + (unit.rarity || 'common')" aria-hidden="true" />
             <div class="unit-card-header">
               <div class="unit-name">{{ unit.name }}</div>
-              <label class="favorite-checkbox" title="Favori" @click.stop>
-                <input type="checkbox" :checked="favoriteIds.has(unit.user_unit_id)" @change="toggleFavorite(unit.user_unit_id)" />
-                <span class="favorite-star">★</span>
-              </label>
+              <div class="card-header-actions">
+                <label class="favorite-checkbox" title="Favori" @click.stop>
+                  <input type="checkbox" :checked="favoriteIds.has(unit.user_unit_id)" @change="toggleFavorite(unit.user_unit_id)" />
+                  <span class="favorite-star">★</span>
+                </label>
+                <button
+                  class="expand-btn"
+                  :title="expandedUnitIds.has(unit.user_unit_id) ? 'Réduire' : 'Voir les détails'"
+                  @click.stop="toggleExpandUnit(unit.user_unit_id)"
+                >{{ expandedUnitIds.has(unit.user_unit_id) ? '▾' : '▸' }}</button>
+              </div>
             </div>
-            <div class="unit-meta">
+            <div class="unit-meta-compact">
               <span class="level">Niv.{{ unit.level ?? 1 }}</span>
               <span class="badge nx-badge power">P{{ unit.power_level ?? 1 }}</span>
               <span class="badge nx-badge element" :class="'element-' + (unit.element || 'neutral')">{{ elementLabel(unit.element) }}</span>
-              <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
-              <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
-              <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
             </div>
-            <template v-for="sk in [unitSkillPanel(unit)]" :key="'sk-cac-' + unit.user_unit_id">
-              <div class="unit-skill-block">
-                <div class="unit-skill-panel-head">
-                  <span class="unit-skill-panel-label">Compétence</span>
-                  <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+            <template v-if="expandedUnitIds.has(unit.user_unit_id)">
+              <div class="unit-meta">
+                <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
+                <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
+                <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
+                <span
+                  class="badge nx-badge fatigue-meta-badge"
+                  :class="{ 'fatigue-meta-high': (unit.fatigue ?? 0) > 50 }"
+                  title="Fatigue — réduit la VIT en combat"
+                >Fatigue {{ unit.fatigue ?? 0 }}%</span>
+              </div>
+              <template v-for="sk in [unitSkillPanel(unit)]" :key="'sk-cac-' + unit.user_unit_id">
+                <div class="unit-skill-block">
+                  <div class="unit-skill-panel-head">
+                    <span class="unit-skill-panel-label">Compétence</span>
+                    <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+                  </div>
+                  <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
+                  <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
+                  <p v-if="hasCollectionUnitSpecialization(unit)" class="unit-spec-desc">
+                    <strong>Spécialisation {{ specializationDisplayLabel(unit) }}</strong>
+                    <template v-if="sk.specText">
+                      <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                    </template>
+                  </p>
                 </div>
-                <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
-                <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
-                <p v-if="isSpecializedCollectionUnit(unit)" class="unit-spec-desc">
-                  <strong>Spécialisation {{ String(unit.specialization).toUpperCase() }}</strong>
-                  <template v-if="sk.specText">
-                    <span class="unit-spec-dash"> — </span>{{ sk.specText }}
-                  </template>
-                </p>
+              </template>
+              <div class="unit-stats unit-stats-collection">
+                <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
+                <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
+                <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
+                <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
+                <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
               </div>
+              <div class="fatigue-row">
+                <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
+                  <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
+                </div>
+                <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
+                <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
+              </div>
+              <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
             </template>
-            <div class="unit-stats unit-stats-collection">
-              <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
-              <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
-              <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
-              <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
-              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
-            </div>
-            <div class="fatigue-row">
-              <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
-                <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
-              </div>
-              <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
-              <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
-            </div>
-            <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
           </div>
             </div>
           </div>
@@ -130,58 +224,76 @@
               'rarity-' + (unit.rarity || 'common'),
               'element-' + (unit.element || 'neutral'),
               { 'fatigue-high': (unit.fatigue ?? 0) > 50 },
-              { selected: selectedUnitId === unit.user_unit_id }
+              { selected: selectedUnitId === unit.user_unit_id },
+              { 'card-expanded': expandedUnitIds.has(unit.user_unit_id) }
             ]"
-            :title="collectionUnitHoverTitle(unit)"
             @click="addUnitToTeam(unit)"
+            @mouseenter="showUnitTooltip(unit, $event)"
+            @mouseleave="hideUnitTooltip()"
           >
             <div class="rarity-bar" :class="'rarity-' + (unit.rarity || 'common')" aria-hidden="true" />
             <div class="unit-card-header">
               <div class="unit-name">{{ unit.name }}</div>
-              <label class="favorite-checkbox" title="Favori" @click.stop>
-                <input type="checkbox" :checked="favoriteIds.has(unit.user_unit_id)" @change="toggleFavorite(unit.user_unit_id)" />
-                <span class="favorite-star">★</span>
-              </label>
+              <div class="card-header-actions">
+                <label class="favorite-checkbox" title="Favori" @click.stop>
+                  <input type="checkbox" :checked="favoriteIds.has(unit.user_unit_id)" @change="toggleFavorite(unit.user_unit_id)" />
+                  <span class="favorite-star">★</span>
+                </label>
+                <button
+                  class="expand-btn"
+                  :title="expandedUnitIds.has(unit.user_unit_id) ? 'Réduire' : 'Voir les détails'"
+                  @click.stop="toggleExpandUnit(unit.user_unit_id)"
+                >{{ expandedUnitIds.has(unit.user_unit_id) ? '▾' : '▸' }}</button>
+              </div>
             </div>
-            <div class="unit-meta">
+            <div class="unit-meta-compact">
               <span class="level">Niv.{{ unit.level ?? 1 }}</span>
               <span class="badge nx-badge power">P{{ unit.power_level ?? 1 }}</span>
               <span class="badge nx-badge element" :class="'element-' + (unit.element || 'neutral')">{{ elementLabel(unit.element) }}</span>
-              <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
-              <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
-              <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
             </div>
-            <template v-for="sk in [unitSkillPanel(unit)]" :key="'sk-dist-' + unit.user_unit_id">
-              <div class="unit-skill-block">
-                <div class="unit-skill-panel-head">
-                  <span class="unit-skill-panel-label">Compétence</span>
-                  <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+            <template v-if="expandedUnitIds.has(unit.user_unit_id)">
+              <div class="unit-meta">
+                <span class="badge nx-badge archetype" :class="archetypeClass(unit)">{{ archetypeLabel(unit) }}</span>
+                <span v-if="(unit.ascension_count ?? 0) > 0" class="badge nx-badge ascended" title="Ascension">↑</span>
+                <span v-if="unit.role" class="unit-role-tag" :title="unit.role">{{ unit.role }}</span>
+                <span
+                  class="badge nx-badge fatigue-meta-badge"
+                  :class="{ 'fatigue-meta-high': (unit.fatigue ?? 0) > 50 }"
+                  title="Fatigue — réduit la VIT en combat"
+                >Fatigue {{ unit.fatigue ?? 0 }}%</span>
+              </div>
+              <template v-for="sk in [unitSkillPanel(unit)]" :key="'sk-dist-' + unit.user_unit_id">
+                <div class="unit-skill-block">
+                  <div class="unit-skill-panel-head">
+                    <span class="unit-skill-panel-label">Compétence</span>
+                    <span class="unit-mastery-tag" title="Maîtrise">✦ {{ unit.mastery ?? 0 }}</span>
+                  </div>
+                  <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
+                  <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
+                  <p v-if="hasCollectionUnitSpecialization(unit)" class="unit-spec-desc">
+                    <strong>Spécialisation {{ specializationDisplayLabel(unit) }}</strong>
+                    <template v-if="sk.specText">
+                      <span class="unit-spec-dash"> — </span>{{ sk.specText }}
+                    </template>
+                  </p>
                 </div>
-                <p v-if="sk.baseText" class="unit-skill-desc">{{ sk.baseText }}</p>
-                <p v-else-if="sk.fullText" class="unit-skill-desc">{{ sk.fullText }}</p>
-                <p v-if="isSpecializedCollectionUnit(unit)" class="unit-spec-desc">
-                  <strong>Spécialisation {{ String(unit.specialization).toUpperCase() }}</strong>
-                  <template v-if="sk.specText">
-                    <span class="unit-spec-dash"> — </span>{{ sk.specText }}
-                  </template>
-                </p>
+              </template>
+              <div class="unit-stats unit-stats-collection">
+                <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
+                <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
+                <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
+                <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
+                <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
               </div>
+              <div class="fatigue-row">
+                <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
+                  <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
+                </div>
+                <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
+                <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
+              </div>
+              <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
             </template>
-            <div class="unit-stats unit-stats-collection">
-              <span title="PV">❤ {{ unit.maxHp ?? unit.base_hp ?? '—' }}</span>
-              <span title="Attaque">⚔ {{ unit.attack ?? unit.base_attack ?? '—' }}</span>
-              <span title="Défense">🛡 {{ unit.defense ?? unit.base_defense ?? '—' }}</span>
-              <span title="Vitesse">⚡ {{ (unit.fatigue ?? 0) > 0 ? effectiveSpeed(unit) : (unit.speed ?? unit.base_speed ?? '—') }}</span>
-              <span v-if="(unit.fatigue ?? 0) > 0" class="speed-fatigue-hint" :title="'Vitesse réduite de ' + speedReductionPercent(unit) + '% en combat (fatigue)'"> (−{{ speedReductionPercent(unit) }}%)</span>
-            </div>
-            <div class="fatigue-row">
-              <div class="fatigue-bar" :class="{ 'fatigue-red': (unit.fatigue ?? 0) > 50 }">
-                <div class="fatigue-fill" :style="{ width: Math.min(100, (unit.fatigue ?? 0)) + '%' }" />
-              </div>
-              <span class="fatigue-pct-collection" :title="'Fatigue ' + (unit.fatigue ?? 0) + '%'">{{ unit.fatigue ?? 0 }}%</span>
-              <span v-if="(unit.fatigue ?? 0) > 70" class="fatigue-icon" title="Fatigue élevée">⚠</span>
-            </div>
-            <div v-if="traitsList(unit).length" class="traits">{{ traitsList(unit).map(toTraitFr).join(', ') }}</div>
           </div>
             </div>
           </div>
@@ -281,13 +393,6 @@
                   Niv.{{ slot.level }}
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                 </span>
-                <div class="slot-stats-compact" aria-label="Stats rapides">
-                  <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
-                  <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
-                  <span title="Défense">🛡 {{ slot.defense ?? slot.base_defense ?? '—' }}</span>
-                  <span title="Vitesse">⚡ {{ (slot.fatigue ?? 0) > 0 ? effectiveSpeed(slot) : (slot.speed ?? slot.base_speed ?? '—') }}</span>
-                  <span v-if="(slot.mastery ?? 0) > 0" title="Maîtrise">✦ {{ slot.mastery }}</span>
-                </div>
                 <div class="slot-fatigue">
                   <div class="fatigue-bar mini" :class="{ 'fatigue-red': (slot.fatigue ?? 0) > 50 }">
                     <div class="fatigue-fill" :style="{ width: Math.min(100, (slot.fatigue ?? 0)) + '%' }" />
@@ -329,13 +434,6 @@
                   Niv.{{ slot.level }}
                   <span v-if="(slot.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
                 </span>
-                <div class="slot-stats-compact" aria-label="Stats rapides">
-                  <span title="PV">❤ {{ slot.maxHp ?? slot.base_hp ?? '—' }}</span>
-                  <span title="Attaque">⚔ {{ slot.attack ?? slot.base_attack ?? '—' }}</span>
-                  <span title="Défense">🛡 {{ slot.defense ?? slot.base_defense ?? '—' }}</span>
-                  <span title="Vitesse">⚡ {{ (slot.fatigue ?? 0) > 0 ? effectiveSpeed(slot) : (slot.speed ?? slot.base_speed ?? '—') }}</span>
-                  <span v-if="(slot.mastery ?? 0) > 0" title="Maîtrise">✦ {{ slot.mastery }}</span>
-                </div>
                 <div class="slot-fatigue">
                   <div class="fatigue-bar mini" :class="{ 'fatigue-red': (slot.fatigue ?? 0) > 50 }">
                     <div class="fatigue-fill" :style="{ width: Math.min(100, (slot.fatigue ?? 0)) + '%' }" />
@@ -363,7 +461,6 @@
           <div class="tooltip-meta">
             {{ elementLabel(hoveredTeamUnit.element) }}
             · Fatigue {{ hoveredTeamUnit.fatigue ?? 0 }}%
-            <span v-if="hoveredTeamUnit.specialization"> · Spé. {{ String(hoveredTeamUnit.specialization).toUpperCase() }}</span>
           </div>
           <div class="tooltip-stats">
             <div>PV max : {{ hoveredTeamUnit.maxHp ?? hoveredTeamUnit.base_hp ?? '—' }}</div>
@@ -390,18 +487,36 @@
             <div class="tooltip-skill">{{ hoveredUnitSkillPanel.fullText }}</div>
           </div>
           <div
-            v-if="hoveredUnitSkillPanel.specText && hoveredTeamUnit.specialization"
+            v-if="hasCollectionUnitSpecialization(hoveredTeamUnit)"
             class="tooltip-spec-block"
           >
-            <div class="tooltip-skill-label">Spécialisation {{ String(hoveredTeamUnit.specialization).toUpperCase() }}</div>
-            <div class="tooltip-skill">{{ hoveredUnitSkillPanel.specText }}</div>
+            <div class="tooltip-skill-label">
+              Spécialisation {{ specializationDisplayLabel(hoveredTeamUnit) }}
+            </div>
+            <div v-if="hoveredUnitSkillPanel.specText" class="tooltip-skill">{{ hoveredUnitSkillPanel.specText }}</div>
           </div>
         </div>
 
-        <!-- Noyau actif (un seul par équipe) -->
-        <div v-if="teamNoyaux.length > 0" class="noyau-block">
-          <h3>Noyau actif</h3>
-          <div class="noyau-options">
+        <!-- Noyau actif (un seul par équipe) — replié par défaut, résumé sur une ligne -->
+        <div v-if="teamNoyaux.length > 0" class="noyau-block" :class="{ 'noyau-block-expanded': noyauExpanded }">
+          <button
+            type="button"
+            class="noyau-toggle"
+            :aria-expanded="noyauExpanded"
+            aria-controls="noyau-options-panel"
+            @click="noyauExpanded = !noyauExpanded"
+          >
+            <span class="noyau-toggle-chevron" aria-hidden="true">{{ noyauExpanded ? '▼' : '▶' }}</span>
+            <span class="noyau-inline-line">
+              <span class="noyau-label-inline">Noyau actif :</span>
+              <span class="noyau-effect-quote">"{{ activeNoyauSummaryText }}"</span>
+            </span>
+          </button>
+          <div
+            v-show="noyauExpanded"
+            id="noyau-options-panel"
+            class="noyau-options"
+          >
             <label class="noyau-option">
               <input type="radio" :value="0" v-model.number="selectedNoyauIndex" />
               <span>Aucun</span>
@@ -488,6 +603,49 @@
       </div>
     </div>
 
+  <!-- Tooltip riche au survol des unités de la collection -->
+  <Teleport to="body">
+    <Transition name="unit-tooltip">
+      <div
+        v-if="tooltipUnit"
+        class="unit-tooltip-popup"
+        :style="{ left: tooltipX + 'px', top: tooltipY + 'px' }"
+      >
+        <div class="utp-name">{{ tooltipUnit.name }}</div>
+        <div class="utp-meta">
+          <span class="level">Niv.{{ tooltipUnit.level ?? 1 }}</span>
+          <span class="badge nx-badge power">P{{ tooltipUnit.power_level ?? 1 }}</span>
+          <span class="badge nx-badge element" :class="'element-' + (tooltipUnit.element || 'neutral')">{{ elementLabel(tooltipUnit.element) }}</span>
+          <span class="badge nx-badge archetype" :class="archetypeClass(tooltipUnit)">{{ archetypeLabel(tooltipUnit) }}</span>
+          <span v-if="tooltipUnit.role" class="unit-role-tag">{{ tooltipUnit.role }}</span>
+          <span v-if="(tooltipUnit.ascension_count ?? 0) > 0" class="badge nx-badge ascended">↑</span>
+        </div>
+        <div class="utp-stats">
+          <span>❤ {{ tooltipUnit.maxHp ?? tooltipUnit.base_hp ?? '—' }}</span>
+          <span>⚔ {{ tooltipUnit.attack ?? tooltipUnit.base_attack ?? '—' }}</span>
+          <span>🛡 {{ tooltipUnit.defense ?? tooltipUnit.base_defense ?? '—' }}</span>
+          <span>⚡ {{ (tooltipUnit.fatigue ?? 0) > 0 ? effectiveSpeed(tooltipUnit) : (tooltipUnit.speed ?? tooltipUnit.base_speed ?? '—') }}</span>
+        </div>
+        <template v-if="tooltipSkillPanel.baseText || tooltipSkillPanel.fullText">
+          <div class="utp-section-title">Compétence <span class="utp-mastery">✦ {{ tooltipUnit.mastery ?? 0 }}</span></div>
+          <div class="utp-skill-desc">{{ tooltipSkillPanel.baseText || tooltipSkillPanel.fullText }}</div>
+        </template>
+        <template v-if="hasCollectionUnitSpecialization(tooltipUnit)">
+          <div class="utp-spec">
+            <strong>Spé {{ specializationDisplayLabel(tooltipUnit) }}</strong>
+            <template v-if="tooltipSkillPanel.specText"> — {{ tooltipSkillPanel.specText }}</template>
+          </div>
+        </template>
+        <div v-if="traitsList(tooltipUnit).length" class="utp-traits">
+          Traits : {{ traitsList(tooltipUnit).map(toTraitFr).join(', ') }}
+        </div>
+        <div class="utp-fatigue" :class="{ 'utp-fatigue-high': (tooltipUnit.fatigue ?? 0) > 50 }">
+          Fatigue : {{ tooltipUnit.fatigue ?? 0 }}%
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   </section>
 </template>
 
@@ -501,7 +659,7 @@ import {
   normalizeSkillDescription
 } from '../utils/skillDescription';
 import { getUnitImageUrl } from '../utils/unitImage';
-import { toTraitFr, resolveTraitFromSearch } from '../utils/i18nFr';
+import { toTraitFr, resolveTraitFromSearch, toStatFr } from '../utils/i18nFr';
 
 const SLOT_COUNT = 5;
 const MAX_TEAM_UNITS = 6;
@@ -534,6 +692,9 @@ type CollectionUnit = {
   skill_data?: Record<string, unknown> | string | null;
   basic_targeting?: string;
   skill_targeting?: string;
+  /** Unités custom / bestiaire : bonus de stat par branche (repli si pas de specA/specB dans skill_data). */
+  specA_bonus_stat?: string | null;
+  specB_bonus_stat?: string | null;
 };
 
 /** Règles de focus (aligné avec le backend). */
@@ -669,16 +830,135 @@ const lastSelectedPresetIndex = ref<number>(1);
 const justSavedPresetIndex = ref<number | null>(null);
 /** Index du noyau actif : 0 = Aucun, 1+ = index dans teamNoyaux */
 const selectedNoyauIndex = ref<number>(0);
+/** Panneau de choix du noyau : replié par défaut */
+const noyauExpanded = ref(false);
+
+/** Libellé une ligne : effet du noyau sélectionné (ou « Aucun ») */
+const activeNoyauSummaryText = computed(() => {
+  const idx = selectedNoyauIndex.value;
+  if (idx === 0) return 'Aucun';
+  const n = teamNoyaux.value[idx - 1];
+  return n?.description ?? '—';
+});
 
 const FAVORITES_KEY = 'nexus_team_favorites';
 const favoriteIds = ref<Set<number>>(new Set());
 const searchQuery = ref('');
 const selectedEffectFilter = ref<string>('');
+const selectedTraitFilters = ref<Set<string>>(new Set());
+const selectedPowerLevelFilters = ref<Set<number>>(new Set());
+const selectedRarityFilters = ref<Set<string>>(new Set());
+/** Panneau puissance / rareté replié par défaut */
+const showPowerRarityFilters = ref(false);
 const selectedUnitId = ref<number | null>(null);
 const showUnitsPanel = ref(true);
 const lastAddedSlot = ref<{ row: 'front' | 'back'; idx: number } | null>(null);
 const displayedPower = ref(0);
 const viewMode = ref<'grid' | 'list'>('grid');
+
+// ── Expand / collapse cartes ──────────────────────────────────────────────────
+const expandedUnitIds = ref<Set<number>>(new Set());
+
+function toggleExpandUnit(id: number) {
+  const next = new Set(expandedUnitIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedUnitIds.value = next;
+}
+
+// ── Filtre par traits ─────────────────────────────────────────────────────────
+function toggleTraitFilter(trait: string) {
+  const next = new Set(selectedTraitFilters.value);
+  if (next.has(trait)) next.delete(trait);
+  else next.add(trait);
+  selectedTraitFilters.value = next;
+}
+
+function clearTraitFilters() {
+  selectedTraitFilters.value = new Set();
+}
+
+const POWER_LEVEL_FILTER_VALUES = [1, 2, 3, 4, 5] as const;
+
+function togglePowerLevelFilter(level: number) {
+  const next = new Set(selectedPowerLevelFilters.value);
+  if (next.has(level)) next.delete(level);
+  else next.add(level);
+  selectedPowerLevelFilters.value = next;
+}
+
+function clearPowerLevelFilters() {
+  selectedPowerLevelFilters.value = new Set();
+}
+
+/** Clés normalisées (CSS / API) → libellé affiché */
+const RARITY_FILTER_OPTIONS: { key: string; label: string }[] = [
+  { key: 'common', label: 'Commune' },
+  { key: 'uncommon', label: 'Unco' },
+  { key: 'rare', label: 'Rare' },
+  { key: 'epic', label: 'Epique' },
+  { key: 'legendary', label: 'Légendaire' },
+  { key: 'mythic', label: 'Mythique' }
+];
+
+function normalizeCollectionRarity(raw: string | undefined | null): string {
+  const s = String(raw || 'common').toLowerCase().trim();
+  const allowed = new Set(RARITY_FILTER_OPTIONS.map((o) => o.key));
+  return allowed.has(s) ? s : 'common';
+}
+
+function toggleRarityFilter(key: string) {
+  const k = normalizeCollectionRarity(key);
+  const next = new Set(selectedRarityFilters.value);
+  if (next.has(k)) next.delete(k);
+  else next.add(k);
+  selectedRarityFilters.value = next;
+}
+
+function clearRarityFilters() {
+  selectedRarityFilters.value = new Set();
+}
+
+const extraPowerRarityFiltersActive = computed(
+  () => selectedPowerLevelFilters.value.size > 0 || selectedRarityFilters.value.size > 0
+);
+
+/** Traits distincts présents dans la collection entière (triés par label FR). */
+const availableTraits = computed<string[]>(() => {
+  const found = new Set<string>();
+  for (const u of collection.value) {
+    for (const t of traitsList(u)) found.add(t);
+  }
+  return [...found].sort((a, b) => toTraitFr(a).localeCompare(toTraitFr(b), 'fr'));
+});
+
+// ── Tooltip riche ─────────────────────────────────────────────────────────────
+const tooltipUnit = ref<CollectionUnit | null>(null);
+const tooltipX = ref(0);
+const tooltipY = ref(0);
+
+function showUnitTooltip(unit: CollectionUnit, event: MouseEvent) {
+  tooltipUnit.value = unit;
+  updateTooltipPos(event);
+}
+
+function hideUnitTooltip() {
+  tooltipUnit.value = null;
+}
+
+function updateTooltipPos(event: MouseEvent) {
+  const vw = window.innerWidth;
+  const tipW = 320;
+  const x = event.clientX + 18;
+  tooltipX.value = x + tipW > vw ? event.clientX - tipW - 8 : x;
+  tooltipY.value = Math.max(8, event.clientY - 10);
+}
+
+const tooltipSkillPanel = computed((): UnitSkillPanel => {
+  const u = tooltipUnit.value;
+  if (!u) return { baseText: '', fullText: '', specText: '' };
+  return unitSkillPanel(u);
+});
 
 function isSlotJustAdded(row: 'front' | 'back', idx: number): boolean {
   const s = lastAddedSlot.value;
@@ -811,9 +1091,17 @@ type UnitSkillPanel = { baseText: string; fullText: string; specText: string };
 function unitSkillPanel(unit: CollectionUnit): UnitSkillPanel {
   const data = parseSkillData(unit.skill_data);
   const spec = unit.specialization ?? null;
+  const specLetter =
+    spec != null && String(spec).trim() !== '' ? String(spec).trim().toUpperCase() : null;
   const baseText = data ? getUnitSkillBaseText(data) : '';
   const fullText = data ? getUnitSkillDisplayText(data, null) : '';
-  const specText = data ? getUnitSpecializationText(data, spec) : '';
+  let specText = data ? getUnitSpecializationText(data, spec) : '';
+  if (!specText && specLetter && (specLetter === 'A' || specLetter === 'B')) {
+    const statKey = specLetter === 'A' ? unit.specA_bonus_stat : unit.specB_bonus_stat;
+    if (statKey != null && String(statKey).trim()) {
+      specText = `Bonus : ${toStatFr(String(statKey))}.`;
+    }
+  }
   return { baseText, fullText, specText };
 }
 
@@ -825,10 +1113,20 @@ function unitTooltip(unit: CollectionUnit): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-/** Unité avec choix de branche A/B (affiche la ligne spé même si le texte spec est vide). */
-function isSpecializedCollectionUnit(unit: CollectionUnit): boolean {
-  const s = String(unit.specialization ?? '').trim().toUpperCase();
-  return s === 'A' || s === 'B';
+/** Unité avec une spécialisation enregistrée (aligné collection : toute valeur non vide). */
+function hasCollectionUnitSpecialization(unit: CollectionUnit): boolean {
+  const raw = unit.specialization;
+  if (raw == null) return false;
+  const s = String(raw).trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  if (low === 'null' || low === 'undefined') return false;
+  return true;
+}
+
+/** Libellé affiché (ex. A, B). */
+function specializationDisplayLabel(unit: CollectionUnit): string {
+  return String(unit.specialization ?? '').trim().toUpperCase();
 }
 
 /** Tooltip au survol : description complète compétence + spécialisation si applicable. */
@@ -837,8 +1135,8 @@ function collectionUnitHoverTitle(unit: CollectionUnit): string {
   const lines: string[] = [];
   const skillBody = sk.baseText || sk.fullText;
   if (skillBody) lines.push('Compétence : ' + skillBody);
-  if (isSpecializedCollectionUnit(unit)) {
-    const specLabel = 'Spécialisation ' + String(unit.specialization).toUpperCase();
+  if (hasCollectionUnitSpecialization(unit)) {
+    const specLabel = 'Spécialisation ' + specializationDisplayLabel(unit);
     lines.push(sk.specText ? specLabel + ' : ' + sk.specText : specLabel);
   }
   return lines.length ? lines.join('\n\n') : unitTooltip(unit);
@@ -993,7 +1291,7 @@ const collectionNotInTeamSorted = computed(() => {
   return [...fav, ...rest];
 });
 
-/** Collection filtrée par la barre de recherche (nom, élément, trait FR) et par le filtre effet (liste déroulante). */
+/** Collection filtrée par la barre de recherche (nom, élément, trait FR), le filtre effet et le filtre traits. */
 const collectionFiltered = computed(() => {
   let list = collectionNotInTeamSorted.value;
 
@@ -1001,6 +1299,28 @@ const collectionFiltered = computed(() => {
   const effectFilter = selectedEffectFilter.value.trim();
   if (effectFilter) {
     list = list.filter((u) => getUnitBuffDebuffTypes(u).has(effectFilter));
+  }
+
+  // Filtre par traits sélectionnés (OR : au moins un trait coché doit être présent)
+  const selTraits = selectedTraitFilters.value;
+  if (selTraits.size > 0) {
+    list = list.filter((u) => traitsList(u).some((t) => selTraits.has(t)));
+  }
+
+  // Filtre par niveau de puissance P1–P5 (OR)
+  const selPower = selectedPowerLevelFilters.value;
+  if (selPower.size > 0) {
+    list = list.filter((u) => {
+      const pl = Number(u.power_level ?? 1);
+      const clamped = Number.isInteger(pl) && pl >= 1 && pl <= 5 ? pl : 1;
+      return selPower.has(clamped);
+    });
+  }
+
+  // Filtre par rareté (OR)
+  const selRar = selectedRarityFilters.value;
+  if (selRar.size > 0) {
+    list = list.filter((u) => selRar.has(normalizeCollectionRarity(u.rarity)));
   }
 
   // Filtre par recherche texte (nom, élément, trait)
@@ -1583,7 +1903,8 @@ onMounted(() => {
 
 .team-builder-layout {
   display: grid;
-  grid-template-columns: 2fr 1.3fr;
+  /* Centre : ~30 % de largeur en moins vs 2.65fr / 1fr ; le gain va au panneau Équipe */
+  grid-template-columns: 1.855fr 1.795fr;
   gap: 6px;
   height: calc(100vh - 60px);
   padding: 6px;
@@ -1592,7 +1913,7 @@ onMounted(() => {
 
 @media (max-width: 1400px) {
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1604,7 +1925,7 @@ onMounted(() => {
     grid-column: 1;
   }
   .unit-list-grid {
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    grid-template-columns: 1fr;
   }
   .collection-columns.view-mode-list {
     grid-template-columns: 1fr;
@@ -1887,8 +2208,9 @@ onMounted(() => {
 
 .unit-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  /* Une carte par ligne : largeur max pour la description de compétence + spé */
+  grid-template-columns: 1fr;
+  gap: 14px;
   align-content: start;
 }
 
@@ -2071,70 +2393,78 @@ onMounted(() => {
 
 .unit-list-grid .unit-card.unit-card-collection {
   margin-bottom: 0;
-  padding: 8px 10px;
-  gap: 5px;
-  font-size: 0.82rem;
-  min-height: 0;
+  padding: 12px 14px;
+  gap: 8px;
+  font-size: 0.86rem;
+  /* Hauteur de base plus généreuse pour la description de compétence (souvent tronquée avant) */
+  min-height: 15.5rem;
+  align-self: stretch;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-name {
-  font-size: 0.92rem;
-  line-height: 1.2;
+  font-size: 1rem;
+  line-height: 1.25;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-meta {
-  font-size: 0.72rem;
-  gap: 4px;
-  margin-top: 1px;
+  font-size: 0.76rem;
+  gap: 5px;
+  margin-top: 2px;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-stats-collection {
-  padding: 4px 6px;
-  font-size: 0.76rem;
-  gap: 3px 6px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+  gap: 4px 8px;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-block {
-  flex: 0 0 auto;
-  font-size: 0.84rem;
-  padding: 8px 10px;
-  line-height: 1.45;
+  flex: 1 1 auto;
+  min-height: 8.75rem;
+  font-size: 0.88rem;
+  padding: 10px 12px;
+  line-height: 1.48;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-panel-head {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-panel-label {
-  font-size: 0.58rem;
+  font-size: 0.62rem;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-mastery-tag {
-  font-size: 0.72rem;
+  font-size: 0.76rem;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-skill-desc {
-  font-size: 0.88rem;
-  line-height: 1.42;
+  font-size: 0.9rem;
+  line-height: 1.48;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .unit-spec-desc {
-  margin-top: 6px;
-  padding-top: 6px;
-  font-size: 0.82rem;
+  margin-top: 8px;
+  padding-top: 8px;
+  font-size: 0.86rem;
 }
 
 .unit-list-grid .unit-card.unit-card-collection .traits {
-  font-size: 0.68rem;
-  padding: 4px 6px;
-  max-height: 2.8em;
+  font-size: 0.72rem;
+  padding: 5px 8px;
+  max-height: 4.2em;
   overflow-y: auto;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .unit-list-list .unit-card.unit-card-collection {
-  padding: 10px 12px;
+  padding: 12px 14px;
   gap: 8px;
+  min-height: 15.5rem;
+}
+
+.unit-list-list .unit-card.unit-card-collection .unit-skill-block {
+  min-height: 8.75rem;
 }
 
 .unit-list-list .unit-card {
@@ -2185,8 +2515,11 @@ onMounted(() => {
   background: rgba(15, 23, 42, 0.92);
   border-width: 2px;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   min-height: fit-content;
+  min-width: 0;
+  /* Évite de clipper le bas des textes longs (parent .unit-card a overflow: hidden) */
+  overflow: visible;
 }
 
 .unit-card.unit-card-collection .rarity-bar,
@@ -2243,7 +2576,8 @@ onMounted(() => {
 }
 
 .unit-card.unit-card-collection .unit-skill-block {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 7.25rem;
 }
 
 .unit-card.unit-card-collection .unit-stats {
@@ -2271,11 +2605,11 @@ onMounted(() => {
 }
 
 .unit-card.unit-card-collection .traits {
-  font-size: 0.68rem;
-  padding: 4px 6px;
-  max-height: 2.8em;
+  font-size: 0.72rem;
+  padding: 5px 8px;
+  max-height: 4.2em;
   overflow-y: auto;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .unit-stats-collection {
@@ -2319,7 +2653,7 @@ onMounted(() => {
 
 .unit-card.unit-card-collection .unit-skill-desc,
 .unit-card.unit-card-collection .unit-spec-desc {
-  font-size: 0.82rem;
+  font-size: 0.88rem;
 }
 
 .unit-spec-desc {
@@ -2585,6 +2919,19 @@ onMounted(() => {
   background: linear-gradient(135deg, #ea580c, #dc2626); 
   color: #fff; 
 }
+.badge.fatigue-meta-badge {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #cbd5e1;
+  max-width: 100%;
+}
+.badge.fatigue-meta-badge.fatigue-meta-high {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fca5a5;
+}
+
 .badge.archetype-distance { 
   background: linear-gradient(135deg, #0891b2, #0e7490); 
   color: #fff; 
@@ -2928,7 +3275,6 @@ onMounted(() => {
 
 .slot-unit.slot-unit-has-image .slot-name,
 .slot-unit.slot-unit-has-image .slot-meta,
-.slot-unit.slot-unit-has-image .slot-stats-compact,
 .slot-unit.slot-unit-has-image .slot-fatigue,
 .slot-unit.slot-unit-has-image .slot-targeting {
   position: relative;
@@ -2974,17 +3320,6 @@ onMounted(() => {
 .slot-meta .badge {
   font-size: 0.65rem;
   padding: 0.05rem 0.25rem;
-}
-
-.slot-stats-compact {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px 4px;
-  margin-top: 5px;
-  font-size: 0.58rem;
-  line-height: 1.2;
-  color: #e2e8f0;
-  font-variant-numeric: tabular-nums;
 }
 
 .slot-fatigue {
@@ -3033,23 +3368,83 @@ onMounted(() => {
   position: relative;
   z-index: 2;
   margin-top: 4px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: rgba(30, 41, 59, 0.88);
   border-radius: 10px;
   border: 1px solid rgba(0, 255, 200, 0.22);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
 }
 
-.noyau-block h3 {
-  margin: 0 0 8px 0;
-  font-size: 0.9rem;
+.noyau-block-expanded {
+  padding-bottom: 10px;
+}
+
+.noyau-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 2px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.noyau-toggle:hover {
+  background: rgba(0, 255, 200, 0.07);
+}
+
+.noyau-toggle:focus-visible {
+  outline: 2px solid rgba(0, 255, 200, 0.45);
+  outline-offset: 2px;
+}
+
+.noyau-toggle-chevron {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  color: rgba(148, 163, 184, 0.95);
+  width: 1em;
+}
+
+.noyau-inline-line {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.noyau-label-inline {
+  flex-shrink: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
   color: #94a3b8;
+}
+
+.noyau-effect-quote {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .noyau-options {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 255, 200, 0.12);
 }
 
 .noyau-option {
@@ -3071,11 +3466,12 @@ onMounted(() => {
 
 .unit-tooltip {
   position: fixed;
-  overflow: hidden;
-  position: fixed;
   bottom: 40px;
   right: 40px;
-  width: 280px;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(420px, 55vh);
+  overflow-x: hidden;
+  overflow-y: auto;
 
   background: linear-gradient(180deg, #0b1a2a, #091523);
   border-radius: 12px;
@@ -3554,5 +3950,261 @@ onMounted(() => {
   background: transparent;
   color: #94a3b8;
   cursor: pointer;
+}
+
+/* ── Carte compacte (non expandée) ────────────────────────────────────────── */
+
+/* Supprime la min-height forcée quand la carte est réduite */
+.unit-list-grid .unit-card.unit-card-collection:not(.card-expanded),
+.unit-list-list .unit-card.unit-card-collection:not(.card-expanded) {
+  min-height: unset;
+}
+
+/* Supprime aussi la min-height du skill-block quand réduit (n'existe pas mais sécurité) */
+.unit-list-grid .unit-card.unit-card-collection:not(.card-expanded) .unit-skill-block,
+.unit-list-list .unit-card.unit-card-collection:not(.card-expanded) .unit-skill-block {
+  min-height: unset;
+}
+
+/* Meta compact : level, power, élément sur une seule ligne */
+.unit-meta-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+/* Actions dans le header : fav + expand */
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Bouton expand ▸ / ▾ */
+.expand-btn {
+  background: rgba(0, 255, 200, 0.08);
+  border: 1px solid rgba(0, 255, 200, 0.25);
+  border-radius: 6px;
+  color: #00ffc8;
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.expand-btn:hover {
+  background: rgba(0, 255, 200, 0.18);
+  border-color: rgba(0, 255, 200, 0.5);
+}
+
+/* ── Filtre par traits ─────────────────────────────────────────────────────── */
+.trait-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 255, 200, 0.12);
+  flex-shrink: 0;
+}
+
+.trait-filter-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.trait-filter-btn {
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  background: rgba(15, 23, 42, 0.6);
+  color: #94a3b8;
+  font-size: 0.73rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.trait-filter-btn:hover {
+  border-color: rgba(0, 255, 200, 0.4);
+  color: #e2e8f0;
+  background: rgba(0, 255, 200, 0.06);
+}
+.trait-filter-btn.active {
+  background: rgba(0, 255, 200, 0.18);
+  border-color: rgba(0, 255, 200, 0.55);
+  color: #00ffc8;
+  box-shadow: 0 0 8px rgba(0, 255, 200, 0.15);
+}
+
+.collection-filter-extra-wrap {
+  margin-bottom: 6px;
+}
+.collection-filter-extra-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  margin: 0 4px 4px;
+  border-radius: 20px;
+  border: 1px solid rgba(100, 116, 139, 0.4);
+  background: rgba(15, 23, 42, 0.55);
+  color: #94a3b8;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.collection-filter-extra-toggle:hover {
+  border-color: rgba(0, 255, 200, 0.35);
+  color: #e2e8f0;
+  background: rgba(0, 255, 200, 0.06);
+}
+.collection-filter-extra-toggle.open {
+  border-color: rgba(0, 255, 200, 0.45);
+  color: #a5f3fc;
+}
+.collection-filter-extra-toggle.has-active:not(.open) {
+  border-color: rgba(250, 204, 21, 0.35);
+}
+.collection-filter-extra-toggle-label {
+  flex: 1;
+  text-align: left;
+}
+.collection-filter-extra-badge {
+  color: #facc15;
+  font-size: 0.55rem;
+  line-height: 1;
+}
+.collection-filter-extra-chevron {
+  font-size: 0.65rem;
+  opacity: 0.85;
+}
+.collection-filters-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 14px;
+  margin-bottom: 4px;
+  padding-top: 2px;
+}
+.collection-filters-secondary .trait-filter-bar--split {
+  flex: 1 1 min(100%, 320px);
+  margin-bottom: 4px;
+}
+
+/* ── Tooltip riche au survol ──────────────────────────────────────────────── */
+.unit-tooltip-popup {
+  position: fixed;
+  z-index: 9999;
+  width: 310px;
+  max-width: calc(100vw - 24px);
+  background: linear-gradient(145deg, rgba(10, 18, 35, 0.97), rgba(6, 12, 25, 0.98));
+  border: 1px solid rgba(0, 255, 200, 0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(0, 255, 200, 0.08);
+  pointer-events: none;
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  backdrop-filter: blur(16px);
+}
+
+.utp-name {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #f8fafc;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+}
+
+.utp-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.utp-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  padding: 8px 10px;
+  background: rgba(0, 255, 200, 0.04);
+  border: 1px solid rgba(0, 255, 200, 0.1);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.utp-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: rgba(0, 255, 200, 0.75);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.utp-mastery {
+  font-size: 0.7rem;
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.utp-skill-desc {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.utp-spec {
+  font-size: 0.8rem;
+  color: #a5b4fc;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  line-height: 1.45;
+}
+
+.utp-traits {
+  font-size: 0.74rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+.utp-fatigue {
+  font-size: 0.74rem;
+  color: #64748b;
+}
+.utp-fatigue-high {
+  color: #f97316;
+  font-weight: 600;
+}
+
+/* Transitions tooltip */
+.unit-tooltip-enter-active,
+.unit-tooltip-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.unit-tooltip-enter-from,
+.unit-tooltip-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 </style>

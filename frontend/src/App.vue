@@ -46,7 +46,9 @@
             <router-link to="/campaign" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Campagne</router-link>
             <!-- Donjon joueur : tout joueur connecté. L’édition des compositions ennemies = Admin → Donjon Admin uniquement. -->
             <router-link to="/dungeon" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">Donjon</router-link>
-            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">P.v.P</router-link>
+            <router-link to="/pvp" class="menu-item menu-subitem" @click="combatsMenuOpen = false; sidebarOpen = false">
+              P.v.P<span v-if="pvpEnergyNav !== null"> ({{ pvpEnergyNav }})</span>
+            </router-link>
           </div>
         </div>
         <router-link to="/classement" class="menu-item" @click="sidebarOpen = false">Classement</router-link>
@@ -69,6 +71,7 @@
             <router-link to="/admin/campaign" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Campagne Admin</router-link>
             <router-link to="/admin/dungeon" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Donjon Admin</router-link>
             <router-link to="/admin/custom-unit" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Unité Personnalisée</router-link>
+            <router-link to="/admin/bots" class="menu-item menu-subitem" @click="adminMenuOpen = false; sidebarOpen = false">Bots joueurs</router-link>
           </div>
         </div>
       </nav>
@@ -82,6 +85,18 @@
       <router-view />
     </main>
     <TutorialOverlay />
+    <StageModal
+      v-if="combatTutorialShow && combatTutorialPending"
+      :show="combatTutorialShow"
+      :chapter="1"
+      :stage="1"
+      mode="normal"
+      :stage-info="combatTutorialStageInfo"
+      :campaign-team="[]"
+      :pending-battle="combatTutorialPending"
+      tutorial-mode
+      @close="onCombatTutorialModalClose"
+    />
     <Teleport to="body">
       <Transition name="client-update-banner">
         <div
@@ -194,6 +209,7 @@ import api, { authToken, clearToken, isAdminUser } from './api';
 import NexusParticles from './components/NexusParticles.vue';
 import NotificationBell from './components/NotificationBell.vue';
 import TutorialOverlay from './components/TutorialOverlay.vue';
+import StageModal from './views/StageModal.vue';
 import { startTutorial } from './composables/useTutorial';
 import { useClientUpdateCheck } from './composables/useClientUpdateCheck';
 import {
@@ -211,7 +227,23 @@ const isAdmin = computed(() => {
   void authToken.value;
   return isAdminUser();
 });
-const currentUser = ref<{ id: number; email: string; display_name: string; avatar_url?: string | null } | null>(null);
+const currentUser = ref<{
+  id: number;
+  email: string;
+  display_name: string;
+  avatar_url?: string | null;
+  combat_tutorial_completed?: boolean;
+} | null>(null);
+
+const combatTutorialShow = ref(false);
+const combatTutorialPending = ref<Record<string, unknown> | null>(null);
+const combatTutorialStageInfo = {
+  stage: 1,
+  isBoss: false,
+  cleared: false,
+  rewardClaimed: false,
+  available: true
+} as const;
 const sidebarOpen = ref(false);
 const adminMenuOpen = ref(false);
 const combatsMenuOpen = ref(false);
@@ -229,6 +261,8 @@ const dungeonFirstClearPopup = ref<DungeonFirstClearPayload | null>(null);
 const dailyRewardTimerId = ref<number | null>(null);
 const dailyRewardCheckInFlight = ref(false);
 const wallet = ref({ credits: 0, cores: 0, fragments: 0, gold: 0, divine_cores: 0, divine_credits: 0, divine_fragments: 0 });
+/** Compteur PvP (0–10) pour le libellé du menu — synchronisé via /pvp/me et événement pvp-me-updated */
+const pvpEnergyNav = ref<number | null>(null);
 const isAdminRoute = computed(() => route.path.startsWith('/admin'));
 const isCombatsRoute = computed(
   () => route.path === '/campaign' || route.path === '/dungeon' || route.path === '/pvp'
@@ -251,6 +285,9 @@ watch(() => route.path, (path) => {
   sidebarOpen.value = false;
   adminMenuOpen.value = path.startsWith('/admin');
   combatsMenuOpen.value = path === '/campaign' || path === '/pvp';
+  if (path === '/pvp' && authToken.value) {
+    void fetchPvpEnergyNav();
+  }
   if (path === '/news' && authToken.value) {
     const sig = getLatestNewsSignature();
     writeNewsLastSeenSignature(sig);
@@ -266,6 +303,69 @@ async function fetchCurrentUser() {
   } catch {
     currentUser.value = null;
   }
+}
+
+async function tryResumeCombatTutorial() {
+  if (!authToken.value) return;
+  const generalDone =
+    typeof localStorage !== 'undefined' && localStorage.getItem('nca_tutorial_v1_done') === '1';
+  try {
+    const { data: me } = await api.get('/auth/me');
+    if (me?.user?.combat_tutorial_completed) return;
+    const { data: pend } = await api.get('/battle/pending');
+    const pb = pend?.pendingBattle as Record<string, unknown> | undefined;
+    if (pb && String(pb.battleType) === 'tutorial') {
+      combatTutorialPending.value = pb;
+      combatTutorialShow.value = true;
+      return;
+    }
+    if (!generalDone) return;
+    const { data } = await api.post('/tutorial/start-battle');
+    if (data?.pendingBattle) {
+      combatTutorialPending.value = data.pendingBattle as Record<string, unknown>;
+      combatTutorialShow.value = true;
+    }
+  } catch (e: unknown) {
+    const st = (e as { response?: { status?: number } })?.response?.status;
+    if (st === 409) return;
+  }
+}
+
+async function onTutorialGeneralClosed() {
+  if (!authToken.value) return;
+  try {
+    const { data: me } = await api.get('/auth/me');
+    if (me?.user?.combat_tutorial_completed) return;
+    const { data } = await api.post('/tutorial/start-battle');
+    if (data?.pendingBattle) {
+      combatTutorialPending.value = data.pendingBattle as Record<string, unknown>;
+      combatTutorialShow.value = true;
+    }
+  } catch (e: unknown) {
+    const st = (e as { response?: { status?: number } })?.response?.status;
+    if (st === 409) return;
+  }
+}
+
+function onCombatTutorialModalClose() {
+  combatTutorialShow.value = false;
+  combatTutorialPending.value = null;
+  void fetchCurrentUser();
+}
+
+async function fetchPvpEnergyNav() {
+  if (!authToken.value) return;
+  try {
+    const { data } = await api.get('/pvp/me');
+    const n = data?.pvp_energy;
+    pvpEnergyNav.value = typeof n === 'number' ? n : null;
+  } catch {
+    pvpEnergyNav.value = null;
+  }
+}
+
+function handlePvpMeUpdated() {
+  void fetchPvpEnergyNav();
 }
 
 async function fetchWallet() {
@@ -390,12 +490,17 @@ watch(authToken, async (token) => {
     dailyRewardPopup.value = null;
     dungeonFirstClearPopup.value = null;
     wallet.value = { credits: 0, cores: 0, fragments: 0, gold: 0, divine_cores: 0, divine_credits: 0, divine_fragments: 0 };
+    pvpEnergyNav.value = null;
+    combatTutorialShow.value = false;
+    combatTutorialPending.value = null;
     return;
   }
   newsSeenSignature.value = readNewsLastSeenSignature();
   await fetchCurrentUser();
   await fetchWallet();
+  void fetchPvpEnergyNav();
   await checkDailyReward();
+  await tryResumeCombatTutorial();
   // Démarrer le tutoriel pour les nouveaux joueurs (après un délai pour laisser la popup quotidienne s'afficher)
   setTimeout(() => startTutorial(), 1800);
 }, { immediate: true });
@@ -411,21 +516,25 @@ function handleTutorialOpenSidebar() {
 onMounted(() => {
   window.addEventListener('profile-updated', fetchCurrentUser);
   window.addEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.addEventListener('pvp-me-updated', handlePvpMeUpdated);
   window.addEventListener('dungeon-first-clear', handleDungeonFirstClearEvent as EventListener);
   window.addEventListener('focus', handleWindowResume);
   document.addEventListener('visibilitychange', handleWindowResume);
   window.addEventListener('tutorial:open-combats', handleTutorialOpenCombats);
   window.addEventListener('tutorial:open-sidebar', handleTutorialOpenSidebar);
+  window.addEventListener('nca:tutorial-general-closed', onTutorialGeneralClosed);
 });
 
 onUnmounted(() => {
   window.removeEventListener('profile-updated', fetchCurrentUser);
   window.removeEventListener('wallet-updated', handleWalletUpdated as EventListener);
+  window.removeEventListener('pvp-me-updated', handlePvpMeUpdated);
   window.removeEventListener('dungeon-first-clear', handleDungeonFirstClearEvent as EventListener);
   window.removeEventListener('focus', handleWindowResume);
   document.removeEventListener('visibilitychange', handleWindowResume);
   window.removeEventListener('tutorial:open-combats', handleTutorialOpenCombats);
   window.removeEventListener('tutorial:open-sidebar', handleTutorialOpenSidebar);
+  window.removeEventListener('nca:tutorial-general-closed', onTutorialGeneralClosed);
   clearDailyRewardTimer();
 });
 

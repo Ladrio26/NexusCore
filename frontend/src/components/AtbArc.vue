@@ -1,9 +1,9 @@
 <template>
-  <svg class="atb-arc" viewBox="0 0 120 120" aria-hidden="true">
+  <svg class="atb-arc" data-tutorial-target="atb-arc" viewBox="0 0 120 120" aria-hidden="true">
     <path class="atb-bg" d="M 10 60 A 50 50 0 0 1 110 60" />
     <path
       class="atb-fill"
-      :class="{ ready: (value ?? 0) >= 100 }"
+      :class="{ ready: (value ?? 0) >= 100 - 1e-6 }"
       :d="arcPath"
     />
   </svg>

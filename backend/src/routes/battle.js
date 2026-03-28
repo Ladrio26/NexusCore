@@ -18,7 +18,7 @@ import {
   getSeasonKey,
   getCampaignXpPerUnit
 } from '../services/campaignService.js';
-import { recordPvpBattle, grantPvpXp, applyPvpFatigue } from '../services/pvpService.js';
+import { recordPvpBattle, grantPvpXp } from '../services/pvpService.js';
 import { deletePendingBattle, getPendingBattle, serializePendingBattle, updatePendingBattlePayload } from '../services/pendingBattleService.js';
 import { grantCombatArtifactRewards } from '../services/artifactService.js';
 import {
@@ -37,11 +37,13 @@ export function registerBattleRoutes(fastify, authenticate) {
     const seed = Number(session.seed) || 1;
     const bossModifier = session.bossModifier || undefined;
     const decisions = Array.isArray(session.decisions) ? session.decisions : [];
+    const isTutorial = session.isTutorial === true;
     const log = simulateBattle(session.teamA, session.teamB, {
       seed,
       bossModifier,
       interactive: true,
-      decisions
+      decisions,
+      isTutorial
     });
     const winner = log.summary?.winner;
     return {
@@ -59,7 +61,8 @@ export function registerBattleRoutes(fastify, authenticate) {
       interactiveSession: {
         ...session,
         seed,
-        decisions
+        decisions,
+        isTutorial: session.isTutorial === true
       }
     };
   }
@@ -96,7 +99,7 @@ export function registerBattleRoutes(fastify, authenticate) {
       const mode = String(pendingBattle.mode || 'normal').toLowerCase();
       const chapter = Number(pendingBattle.chapter);
       const stage = Number(pendingBattle.stage);
-      const seasonKey = mode === 'hard' ? (pendingBattle.seasonKey || getSeasonKey()) : null;
+      const seasonKey = pendingBattle.seasonKey || getSeasonKey();
       const finalizeData = pendingBattle.finalizeData || {};
       let allUserUnitIds = Array.isArray(finalizeData.allUserUnitIds) ? finalizeData.allUserUnitIds.map(Number).filter(Boolean) : [];
       if (allUserUnitIds.length === 0 && Array.isArray(finalizeData.team)) {
@@ -184,7 +187,6 @@ export function registerBattleRoutes(fastify, authenticate) {
       const ids = Array.isArray(attackerUserUnitIds) ? attackerUserUnitIds.map(Number).filter(Boolean) : [];
       if (!isDraw) {
         if (attackerWon) await grantPvpXp(ids, true);
-        await applyPvpFatigue(ids);
       }
       const creditsBonus = isDraw ? 0 : (attackerWon ? 3 : 0);
       const artifactRewards = await grantCombatArtifactRewards(userId, { victory: !!attackerWon, creditsBonus, battleType: 'pvp' });
@@ -217,6 +219,19 @@ export function registerBattleRoutes(fastify, authenticate) {
         success,
         clientCombatStats
       );
+    }
+
+    if (pendingBattle.battleType === 'tutorial') {
+      const won = pendingBattle.result === 'win';
+      if (won) {
+        await query('UPDATE users SET combat_tutorial_completed = 1 WHERE id = ?', [userId]);
+      }
+      await deletePendingBattle(userId, pendingBattleId);
+      return {
+        battleType: 'tutorial',
+        success: !!pendingBattle.success,
+        combat_tutorial_completed: won
+      };
     }
 
     if (pendingBattle.battleType === 'guild_war') {

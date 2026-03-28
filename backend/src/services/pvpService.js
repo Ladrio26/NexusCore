@@ -1,13 +1,10 @@
 /**
- * Service PvP : Elo, défense, historique, notifications, XP, fatigue.
+ * Service PvP : Elo, défense, historique, notifications, XP.
  * Réutilise le moteur de combat (simulateBattle) et les services existants.
  */
-import { query, getPool } from '../config/db.js';
+import { query, getPool, withTransaction } from '../config/db.js';
 import { MAX_TEAM_PRESETS } from '../constants/teamPresets.js';
-import { withTransaction } from '../config/db.js';
 import { addXp, redistributeXpFromMaxLevelUnits } from './xpService.js';
-import { applyCampaignFatigue } from './campaignService.js';
-
 const ELO_MIN = 0;
 const ELO_MATCHMAKING_RANGE = 100;
 
@@ -37,7 +34,6 @@ function computePvpEloDeltas(attackerElo, defenderElo, attackerWon) {
 }
 const PVP_XP_WIN = 1000;
 const PVP_XP_LOSS = 0;
-const PVP_FATIGUE_ATTACKER = 3;
 const PVP_RANK_REWARDS = Object.freeze([
   { key: 'SILVER_3', label: 'Argent 3', threshold: 300, credits: 50, cores: 1, fragments: 0, ascension_essence: 0, divine_credits: 0, divine_cores: 0, divine_fragments: 0 },
   { key: 'GOLD_3', label: 'Or 3', threshold: 600, credits: 100, cores: 3, fragments: 10, ascension_essence: 0, divine_credits: 10, divine_cores: 1, divine_fragments: 1 },
@@ -523,10 +519,3 @@ export async function grantPvpXp(attackerUserUnitIds, attackerWon) {
   return results;
 }
 
-/**
- * Applique la fatigue PvP aux unités attaquantes (+3).
- */
-export async function applyPvpFatigue(attackerUserUnitIds) {
-  if (attackerUserUnitIds.length === 0) return;
-  await applyCampaignFatigue(attackerUserUnitIds);
-}

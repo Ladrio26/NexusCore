@@ -6,7 +6,11 @@
 //     spd_eff_i = speed_i * speedMul (buffs/debuffs)
 //     spd_max = max(spd_eff_i)
 //     atb_i = 100 * spd_eff_i / spd_max
-// - Boucle : idem avec spd_eff_i
+// - Avancement naturel (advanceAtb) :
+//     Tant qu’au moins une unité vivante a ATB ≥ 100 − ε, aucun gain naturel (un tour est dû).
+//     Sinon, t = min_i (100 − atb_i) / spd_i sur les unités encore < 100 ; seules ces unités reçoivent
+//     spd_i × t. Après le pas, on corrige les flottants pour que la première unité à franchir le seuil
+//     soit bien à 100 (évite 99.999999… sans tour, ou tour « au plus haut ATB » sans vrai 100 %).
 // - Sélection acteur : parmi les unités « prêtes » (ATB ≥ 100 − ε), celle avec la **plus grande**
 //   valeur d’ATB joue en premier ; après son action on retire 100 (overflow conservé).
 // - La jauge **logique** peut dépasser 100 (boosts, synergie) ; l’UI peut plafonner l’affichage à 100 %.
@@ -70,6 +74,11 @@ export function initializeAtb(units) {
 
 export function advanceAtb(units) {
   const alive = units.filter((u) => u.alive === true);
+
+  if (alive.some((u) => isAtbReady(u))) {
+    return;
+  }
+
   const waiting = alive.filter((u) => isAtbWaiting(u));
 
   if (waiting.length === 0) {
@@ -88,10 +97,15 @@ export function advanceAtb(units) {
     return;
   }
 
-  for (const u of units) {
-    if (u.alive !== true) continue;
+  for (const u of waiting) {
     const spd = getEffectiveSpeed(u);
     u.atb += spd * t;
+  }
+
+  for (const u of waiting) {
+    if (u.atb >= 100 - ATB_READY_EPS && u.atb < 100) {
+      u.atb = 100;
+    }
   }
 }
 
